@@ -22,6 +22,7 @@
  */
 
 #include "brw_vec4.h"
+#include "brw_vec4_live_variables.h"
 #include "brw_cfg.h"
 
 using namespace brw;
@@ -114,6 +115,8 @@ instructions_match(vec4_instruction *a, vec4_instruction *b)
           a->conditional_mod == b->conditional_mod &&
           a->dst.type == b->dst.type &&
           a->dst.writemask == b->dst.writemask &&
+          a->force_writemask_all == b->force_writemask_all &&
+          a->regs_written == b->regs_written &&
           operands_match(a, b);
 }
 
@@ -160,21 +163,31 @@ vec4_visitor::opt_cse_local(bblock_t *block)
              */
             bool no_existing_temp = entry->tmp.file == BAD_FILE;
             if (no_existing_temp && !entry->generator->dst.is_null()) {
-               entry->tmp = src_reg(this, glsl_type::float_type);
-               entry->tmp.type = inst->dst.type;
-               entry->tmp.swizzle = BRW_SWIZZLE_XYZW;
+               entry->tmp = retype(src_reg(GRF, alloc.allocate(
+                                              entry->generator->regs_written),
+                                           NULL), inst->dst.type);
 
-               vec4_instruction *copy = MOV(entry->generator->dst, entry->tmp);
-               entry->generator->insert_after(block, copy);
+               for (unsigned i = 0; i < entry->generator->regs_written; ++i) {
+                  vec4_instruction *copy = MOV(offset(entry->generator->dst, i),
+                                               offset(entry->tmp, i));
+                  copy->force_writemask_all =
+                     entry->generator->force_writemask_all;
+                  entry->generator->insert_after(block, copy);
+               }
+
                entry->generator->dst = dst_reg(entry->tmp);
             }
 
             /* dest <- temp */
             if (!inst->dst.is_null()) {
                assert(inst->dst.type == entry->tmp.type);
-               vec4_instruction *copy = MOV(inst->dst, entry->tmp);
-               copy->force_writemask_all = inst->force_writemask_all;
-               inst->insert_before(block, copy);
+
+               for (unsigned i = 0; i < inst->regs_written; ++i) {
+                  vec4_instruction *copy = MOV(offset(inst->dst, i),
+                                               offset(entry->tmp, i));
+                  copy->force_writemask_all = inst->force_writemask_all;
+                  inst->insert_before(block, copy);
+               }
             }
 
             /* Set our iterator so that next time through the loop inst->next
@@ -219,13 +232,7 @@ vec4_visitor::opt_cse_local(bblock_t *block)
              * more -- a sure sign they'll fail operands_match().
              */
             if (src->file == GRF) {
-               assert((unsigned)(src->reg * 4 + 3) < (alloc.count * 4));
-
-               int last_reg_use = MAX2(MAX2(virtual_grf_end[src->reg * 4 + 0],
-                                            virtual_grf_end[src->reg * 4 + 1]),
-                                       MAX2(virtual_grf_end[src->reg * 4 + 2],
-                                            virtual_grf_end[src->reg * 4 + 3]));
-               if (last_reg_use < ip) {
+               if (var_range_end(var_from_reg(alloc, *src), 4) < ip) {
                   entry->remove();
                   ralloc_free(entry);
                   break;

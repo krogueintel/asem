@@ -74,9 +74,8 @@ is_channel_updated(vec4_instruction *inst, src_reg *values[4], int ch)
    if (!src || src->file != GRF)
       return false;
 
-   return (src->reg == inst->dst.reg &&
-	   src->reg_offset == inst->dst.reg_offset &&
-	   inst->dst.writemask & (1 << BRW_GET_SWZ(src->swizzle, ch)));
+   return (src->in_range(inst->dst, inst->regs_written) &&
+           inst->dst.writemask & (1 << BRW_GET_SWZ(src->swizzle, ch)));
 }
 
 static unsigned
@@ -274,10 +273,10 @@ try_copy_propagate(struct brw_context *brw, vec4_instruction *inst,
     */
    int s[4];
    for (int i = 0; i < 4; i++) {
-      s[i] = BRW_GET_SWZ(entry->value[i]->swizzle,
-			 BRW_GET_SWZ(inst->src[arg].swizzle, i));
+      s[i] = BRW_GET_SWZ(entry->value[i]->swizzle, i);
    }
-   value.swizzle = BRW_SWIZZLE4(s[0], s[1], s[2], s[3]);
+   value.swizzle = brw_compose_swizzle(inst->src[arg].swizzle,
+                                       BRW_SWIZZLE4(s[0], s[1], s[2], s[3]));
 
    if (value.file != UNIFORM &&
        value.file != GRF &&
@@ -330,13 +329,23 @@ try_copy_propagate(struct brw_context *brw, vec4_instruction *inst,
    if (value.equals(inst->src[arg]))
       return false;
 
-   /* Limit saturate propagation only to SEL with src1 bounded within 1.0 and 1.0
-    * otherwise, skip copy propagate altogether
-    */
-   if (entry->saturatemask & (1 << arg)) {
+   const unsigned dst_saturate_mask = inst->dst.writemask &
+      brw_apply_swizzle_to_mask(inst->src[arg].swizzle, entry->saturatemask);
+
+   if (dst_saturate_mask) {
+      /* We either saturate all or nothing. */
+      if (dst_saturate_mask != inst->dst.writemask)
+         return false;
+
+      /* Limit saturate propagation only to SEL with src1 bounded within 0.0
+       * and 1.0, otherwise skip copy propagate altogether.
+       */
       switch(inst->opcode) {
       case BRW_OPCODE_SEL:
-         if (inst->src[1].file != IMM ||
+         if (arg != 0 ||
+             inst->src[0].type != BRW_REGISTER_TYPE_F ||
+             inst->src[1].file != IMM ||
+             inst->src[1].type != BRW_REGISTER_TYPE_F ||
              inst->src[1].fixed_hw_reg.dw1.f < 0.0 ||
              inst->src[1].fixed_hw_reg.dw1.f > 1.0) {
             return false;
@@ -386,6 +395,10 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
 	 if (inst->src[i].file != GRF ||
 	     inst->src[i].reladdr)
 	    continue;
+
+         /* We only handle single-register copies. */
+         if (inst->regs_read(i) != 1)
+            continue;
 
 	 int reg = (alloc.offsets[inst->src[i].reg] +
 		    inst->src[i].reg_offset);
@@ -437,12 +450,13 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
 	  * the new value, so clear it.
 	  */
 	 bool direct_copy = is_direct_copy(inst);
-	 entries[reg].saturatemask = 0x0;
+         entries[reg].saturatemask &= ~inst->dst.writemask;
 	 for (int i = 0; i < 4; i++) {
 	    if (inst->dst.writemask & (1 << i)) {
-               entries[reg].value[i] = (!inst->saturate && direct_copy) ? &inst->src[0] : NULL;
-               entries[reg].saturatemask |= (((inst->saturate && direct_copy) ? 1 : 0) << i);
-	    }
+               entries[reg].value[i] = direct_copy ? &inst->src[0] : NULL;
+               entries[reg].saturatemask |=
+                  inst->saturate && direct_copy ? 1 << i : 0;
+            }
 	 }
 
 	 /* Clear the records for any registers whose current value came from
@@ -453,7 +467,7 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
 	 else {
 	    for (unsigned i = 0; i < alloc.total_size; i++) {
 	       for (int j = 0; j < 4; j++) {
-		  if (is_channel_updated(inst, entries[i].value, j)){
+		  if (is_channel_updated(inst, entries[i].value, j)) {
 		     entries[i].value[j] = NULL;
 		     entries[i].saturatemask &= ~(1 << j);
                   }

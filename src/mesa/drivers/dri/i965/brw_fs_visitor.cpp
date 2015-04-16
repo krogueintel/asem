@@ -502,15 +502,15 @@ fs_visitor::try_emit_b2f_of_comparison(ir_expression *ir)
     *     and(16)         g4<1>D          g2<8,8,1>D      1D
     *     and(16)         m6<1>D          -g4<8,8,1>D     0x3f800000UD
     *
-    * When the comparison is either == 0.0 or != 0.0 using the knowledge that
-    * the true (or false) case already results in zero would allow better code
-    * generation by possibly avoiding a load-immediate instruction.
+    * When the comparison is != 0.0 using the knowledge that the false case
+    * already results in zero would allow better code generation by possibly
+    * avoiding a load-immediate instruction.
     */
    ir_expression *cmp = ir->operands[0]->as_expression();
    if (cmp == NULL)
       return false;
 
-   if (cmp->operation == ir_binop_equal || cmp->operation == ir_binop_nequal) {
+   if (cmp->operation == ir_binop_nequal) {
       for (unsigned i = 0; i < 2; i++) {
          ir_constant *c = cmp->operands[i]->as_constant();
          if (c == NULL || !c->is_zero())
@@ -538,7 +538,7 @@ fs_visitor::try_emit_b2f_of_comparison(ir_expression *ir)
 
             fs_inst *inst = emit(SEL(this->result, op[i ^ 1], fs_reg(1.0f)));
             inst->predicate = BRW_PREDICATE_NORMAL;
-            inst->predicate_inverse = cmp->operation == ir_binop_equal;
+            inst->predicate_inverse = true;
             return true;
          }
       }
@@ -817,11 +817,9 @@ fs_visitor::visit(ir_expression *ir)
    case ir_unop_log:
       unreachable("not reached: should be handled by ir_explog_to_explog2");
    case ir_unop_sin:
-   case ir_unop_sin_reduced:
       emit_math(SHADER_OPCODE_SIN, this->result, op[0]);
       break;
    case ir_unop_cos:
-   case ir_unop_cos_reduced:
       emit_math(SHADER_OPCODE_COS, this->result, op[0]);
       break;
 
@@ -1586,6 +1584,69 @@ fs_visitor::emit_texture_gen4(ir_texture_opcode op, fs_reg dst,
    return inst;
 }
 
+fs_inst *
+fs_visitor::emit_texture_gen4_simd16(ir_texture_opcode op, fs_reg dst,
+                                     fs_reg coordinate, int vector_elements,
+                                     fs_reg shadow_c, fs_reg lod,
+                                     uint32_t sampler)
+{
+   fs_reg message(MRF, 2, BRW_REGISTER_TYPE_F, dispatch_width);
+   bool has_lod = op == ir_txl || op == ir_txb || op == ir_txf;
+
+   if (has_lod && shadow_c.file != BAD_FILE)
+      no16("TXB and TXL with shadow comparison unsupported in SIMD16.");
+
+   if (op == ir_txd)
+      no16("textureGrad unsupported in SIMD16.");
+
+   /* Copy the coordinates. */
+   for (int i = 0; i < vector_elements; i++) {
+      emit(MOV(retype(offset(message, i), coordinate.type), coordinate));
+      coordinate = offset(coordinate, 1);
+   }
+
+   fs_reg msg_end = offset(message, vector_elements);
+
+   /* Messages other than sample and ld require all three components */
+   if (has_lod || shadow_c.file != BAD_FILE) {
+      for (int i = vector_elements; i < 3; i++) {
+         emit(MOV(offset(message, i), fs_reg(0.0f)));
+      }
+   }
+
+   if (has_lod) {
+      fs_reg msg_lod = retype(offset(message, 3), op == ir_txf ?
+                              BRW_REGISTER_TYPE_UD : BRW_REGISTER_TYPE_F);
+      emit(MOV(msg_lod, lod));
+      msg_end = offset(msg_lod, 1);
+   }
+
+   if (shadow_c.file != BAD_FILE) {
+      fs_reg msg_ref = offset(message, 3 + has_lod);
+      emit(MOV(msg_ref, shadow_c));
+      msg_end = offset(msg_ref, 1);
+   }
+
+   enum opcode opcode;
+   switch (op) {
+   case ir_tex: opcode = SHADER_OPCODE_TEX; break;
+   case ir_txb: opcode = FS_OPCODE_TXB;     break;
+   case ir_txd: opcode = SHADER_OPCODE_TXD; break;
+   case ir_txl: opcode = SHADER_OPCODE_TXL; break;
+   case ir_txs: opcode = SHADER_OPCODE_TXS; break;
+   case ir_txf: opcode = SHADER_OPCODE_TXF; break;
+   default: unreachable("not reached");
+   }
+
+   fs_inst *inst = emit(opcode, dst, reg_undef, fs_reg(sampler));
+   inst->base_mrf = message.reg - 1;
+   inst->mlen = msg_end.reg - inst->base_mrf;
+   inst->header_present = true;
+   inst->regs_written = 8;
+
+   return inst;
+}
+
 /* gen5's sampler has slots for u, v, r, array index, then optional
  * parameters like shadow comparitor or LOD bias.  If optional
  * parameters aren't present, those base slots are optional and don't
@@ -1828,15 +1889,26 @@ fs_visitor::emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
       length++;
       break;
    case ir_txf:
-      /* Unfortunately, the parameters for LD are intermixed: u, lod, v, r. */
+      /* Unfortunately, the parameters for LD are intermixed: u, lod, v, r.
+       * On Gen9 they are u, v, lod, r
+       */
+
       emit(MOV(retype(sources[length], BRW_REGISTER_TYPE_D), coordinate));
       coordinate = offset(coordinate, 1);
       length++;
 
+      if (brw->gen >= 9) {
+         if (coord_components >= 2) {
+            emit(MOV(retype(sources[length], BRW_REGISTER_TYPE_D), coordinate));
+            coordinate = offset(coordinate, 1);
+         }
+         length++;
+      }
+
       emit(MOV(retype(sources[length], BRW_REGISTER_TYPE_D), lod));
       length++;
 
-      for (int i = 1; i < coord_components; i++) {
+      for (int i = brw->gen >= 9 ? 2 : 1; i < coord_components; i++) {
 	 emit(MOV(retype(sources[length], BRW_REGISTER_TYPE_D), coordinate));
 	 coordinate = offset(coordinate, 1);
 	 length++;
@@ -2148,6 +2220,9 @@ fs_visitor::emit_texture(ir_texture_opcode op,
                                shadow_c, lod, lod2, grad_components,
                                sample_index, sampler,
                                offset_value.file != BAD_FILE);
+   } else if (dispatch_width == 16) {
+      inst = emit_texture_gen4_simd16(op, dst, coordinate, coord_components,
+                                      shadow_c, lod, sampler);
    } else {
       inst = emit_texture_gen4(op, dst, coordinate, coord_components,
                                shadow_c, lod, lod2, grad_components,

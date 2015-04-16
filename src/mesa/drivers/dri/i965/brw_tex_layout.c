@@ -289,7 +289,8 @@ use_linear_1d_layout(struct brw_context *brw,
       GLenum base_format = _mesa_get_format_base_format(mt->format);
 
       if (base_format != GL_DEPTH_COMPONENT &&
-          base_format != GL_DEPTH_STENCIL)
+          base_format != GL_DEPTH_STENCIL &&
+          base_format != GL_STENCIL_INDEX)
          return true;
    }
 
@@ -458,7 +459,7 @@ brw_miptree_layout(struct brw_context *brw, struct intel_mipmap_tree *mt)
       }
       break;
    }
-   DBG("%s: %dx%dx%d\n", __FUNCTION__,
+   DBG("%s: %dx%dx%d\n", __func__,
        mt->total_width, mt->total_height, mt->cpp);
 }
 

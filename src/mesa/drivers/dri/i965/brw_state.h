@@ -155,8 +155,8 @@ extern const struct brw_tracked_state gen8_vs_state;
 static inline bool
 brw_state_dirty(struct brw_context *brw, GLuint mesa_flags, uint64_t brw_flags)
 {
-   return ((brw->state.dirty.mesa & mesa_flags) |
-           (brw->state.dirty.brw & brw_flags)) != 0;
+   return ((brw->NewGLState & mesa_flags) |
+           (brw->ctx.NewDriverState & brw_flags)) != 0;
 }
 
 /* brw_misc_state.c */
@@ -168,8 +168,10 @@ brw_depthbuffer_format(struct brw_context *brw);
 /***********************************************************************
  * brw_state.c
  */
-void brw_upload_state(struct brw_context *brw);
-void brw_clear_dirty_bits(struct brw_context *brw);
+void brw_upload_render_state(struct brw_context *brw);
+void brw_render_state_finished(struct brw_context *brw);
+void brw_upload_compute_state(struct brw_context *brw);
+void brw_compute_state_finished(struct brw_context *brw);
 void brw_init_state(struct brw_context *brw);
 void brw_destroy_state(struct brw_context *brw);
 

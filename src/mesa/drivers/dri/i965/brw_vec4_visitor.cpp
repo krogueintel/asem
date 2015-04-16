@@ -631,7 +631,7 @@ src_reg::src_reg(class vec4_visitor *v, const struct glsl_type *type)
    if (type->is_array() || type->is_record()) {
       this->swizzle = BRW_SWIZZLE_NOOP;
    } else {
-      this->swizzle = swizzle_for_size(type->vector_elements);
+      this->swizzle = brw_swizzle_for_size(type->vector_elements);
    }
 
    this->type = brw_type_for_base_type(type);
@@ -756,20 +756,15 @@ vec4_visitor::setup_builtin_uniform_values(ir_variable *ir)
          &this->prog->Parameters->ParameterValues[index][0];
 
       assert(this->uniforms < uniform_array_size);
-      this->uniform_vector_size[this->uniforms] = 0;
-      /* Add each of the unique swizzled channels of the element.
-       * This will end up matching the size of the glsl_type of this field.
-       */
-      int last_swiz = -1;
-      for (unsigned int j = 0; j < 4; j++) {
-	 int swiz = GET_SWZ(slots[i].swizzle, j);
-	 last_swiz = swiz;
 
-	 stage_prog_data->param[this->uniforms * 4 + j] = &values[swiz];
-	 assert(this->uniforms < uniform_array_size);
-	 if (swiz <= last_swiz)
-	    this->uniform_vector_size[this->uniforms]++;
-      }
+      for (unsigned j = 0; j < 4; j++)
+	 stage_prog_data->param[this->uniforms * 4 + j] =
+            &values[GET_SWZ(slots[i].swizzle, j)];
+
+      this->uniform_vector_size[this->uniforms] =
+         (ir->type->is_scalar() || ir->type->is_vector() ||
+          ir->type->is_matrix() ? ir->type->vector_elements : 4);
+
       this->uniforms++;
    }
 }
@@ -1416,11 +1411,9 @@ vec4_visitor::visit(ir_expression *ir)
    case ir_unop_log:
       unreachable("not reached: should be handled by ir_explog_to_explog2");
    case ir_unop_sin:
-   case ir_unop_sin_reduced:
       emit_math(SHADER_OPCODE_SIN, result_dst, op[0]);
       break;
    case ir_unop_cos:
-   case ir_unop_cos_reduced:
       emit_math(SHADER_OPCODE_COS, result_dst, op[0]);
       break;
 
@@ -1812,7 +1805,7 @@ vec4_visitor::visit(ir_expression *ir)
          pull->mlen = 1;
       }
 
-      packed_consts.swizzle = swizzle_for_size(ir->type->vector_elements);
+      packed_consts.swizzle = brw_swizzle_for_size(ir->type->vector_elements);
       packed_consts.swizzle += BRW_SWIZZLE4(const_offset % 16 / 4,
                                             const_offset % 16 / 4,
                                             const_offset % 16 / 4,
@@ -1929,43 +1922,16 @@ vec4_visitor::visit(ir_expression *ir)
 void
 vec4_visitor::visit(ir_swizzle *ir)
 {
-   src_reg src;
-   int i = 0;
-   int swizzle[4];
-
    /* Note that this is only swizzles in expressions, not those on the left
     * hand side of an assignment, which do write masking.  See ir_assignment
     * for that.
     */
+   const unsigned swz = brw_compose_swizzle(
+      brw_swizzle_for_size(ir->type->vector_elements),
+      BRW_SWIZZLE4(ir->mask.x, ir->mask.y, ir->mask.z, ir->mask.w));
 
    ir->val->accept(this);
-   src = this->result;
-   assert(src.file != BAD_FILE);
-
-   for (i = 0; i < ir->type->vector_elements; i++) {
-      switch (i) {
-      case 0:
-	 swizzle[i] = BRW_GET_SWZ(src.swizzle, ir->mask.x);
-	 break;
-      case 1:
-	 swizzle[i] = BRW_GET_SWZ(src.swizzle, ir->mask.y);
-	 break;
-      case 2:
-	 swizzle[i] = BRW_GET_SWZ(src.swizzle, ir->mask.z);
-	 break;
-      case 3:
-	 swizzle[i] = BRW_GET_SWZ(src.swizzle, ir->mask.w);
-	    break;
-      }
-   }
-   for (; i < 4; i++) {
-      /* Replicate the last channel out. */
-      swizzle[i] = swizzle[ir->type->vector_elements - 1];
-   }
-
-   src.swizzle = BRW_SWIZZLE4(swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
-
-   this->result = src;
+   this->result = swizzle(this->result, swz);
 }
 
 void
@@ -1987,7 +1953,7 @@ vec4_visitor::visit(ir_dereference_variable *ir)
       return;
 
    if (type->is_scalar() || type->is_vector() || type->is_matrix())
-      this->result.swizzle = swizzle_for_size(type->vector_elements);
+      this->result.swizzle = brw_swizzle_for_size(type->vector_elements);
 }
 
 
@@ -2046,7 +2012,7 @@ vec4_visitor::visit(ir_dereference_array *ir)
 
    /* If the type is smaller than a vec4, replicate the last channel out. */
    if (ir->type->is_scalar() || ir->type->is_vector() || ir->type->is_matrix())
-      src.swizzle = swizzle_for_size(ir->type->vector_elements);
+      src.swizzle = brw_swizzle_for_size(ir->type->vector_elements);
    else
       src.swizzle = BRW_SWIZZLE_NOOP;
    src.type = brw_type_for_base_type(ir->type);
@@ -2071,7 +2037,7 @@ vec4_visitor::visit(ir_dereference_record *ir)
 
    /* If the type is smaller than a vec4, replicate the last channel out. */
    if (ir->type->is_scalar() || ir->type->is_vector() || ir->type->is_matrix())
-      this->result.swizzle = swizzle_for_size(ir->type->vector_elements);
+      this->result.swizzle = brw_swizzle_for_size(ir->type->vector_elements);
    else
       this->result.swizzle = BRW_SWIZZLE_NOOP;
    this->result.type = brw_type_for_base_type(ir->type);
@@ -2142,7 +2108,7 @@ vec4_visitor::emit_block_move(dst_reg *dst, src_reg *src,
 
    dst->writemask = (1 << type->vector_elements) - 1;
 
-   src->swizzle = swizzle_for_size(type->vector_elements);
+   src->swizzle = brw_swizzle_for_size(type->vector_elements);
 
    vec4_instruction *inst = emit(MOV(*dst, *src));
    inst->predicate = predicate;
@@ -2230,7 +2196,7 @@ vec4_visitor::visit(ir_assignment *ir)
        */
       assert(src.swizzle ==
              (ir->rhs->type->is_matrix()
-              ? swizzle_for_size(ir->rhs->type->vector_elements)
+              ? brw_swizzle_for_size(ir->rhs->type->vector_elements)
               : BRW_SWIZZLE_NOOP));
 
       emit_block_move(&dst, &src, ir->rhs->type, predicate);
@@ -2247,22 +2213,12 @@ vec4_visitor::visit(ir_assignment *ir)
 
    last_rhs_inst = (vec4_instruction *)this->instructions.get_tail();
 
-   src_reg src = this->result;
-
    int swizzles[4];
-   int first_enabled_chan = 0;
    int src_chan = 0;
 
    assert(ir->lhs->type->is_vector() ||
 	  ir->lhs->type->is_scalar());
    dst.writemask = ir->write_mask;
-
-   for (int i = 0; i < 4; i++) {
-      if (dst.writemask & (1 << i)) {
-	 first_enabled_chan = BRW_GET_SWZ(src.swizzle, i);
-	 break;
-      }
-   }
 
    /* Swizzle a small RHS vector into the channels being written.
     *
@@ -2270,14 +2226,12 @@ vec4_visitor::visit(ir_assignment *ir)
     * present on the RHS while in our instructions we need to make
     * those channels appear in the slots of the vec4 they're written to.
     */
-   for (int i = 0; i < 4; i++) {
-      if (dst.writemask & (1 << i))
-	 swizzles[i] = BRW_GET_SWZ(src.swizzle, src_chan++);
-      else
-	 swizzles[i] = first_enabled_chan;
-   }
-   src.swizzle = BRW_SWIZZLE4(swizzles[0], swizzles[1],
-			      swizzles[2], swizzles[3]);
+   for (int i = 0; i < 4; i++)
+      swizzles[i] = (ir->write_mask & (1 << i) ? src_chan++ : 0);
+
+   src_reg src = swizzle(this->result,
+                         BRW_SWIZZLE4(swizzles[0], swizzles[1],
+                                      swizzles[2], swizzles[3]));
 
    if (try_rewrite_rhs_to_dst(ir, dst, src, pre_rhs_inst, last_rhs_inst)) {
       return;
@@ -3378,18 +3332,9 @@ vec4_visitor::emit_scratch_write(bblock_t *block, vec4_instruction *inst,
     * weren't initialized, it will confuse live interval analysis, which will
     * make spilling fail to make progress.
     */
-   src_reg temp = src_reg(this, glsl_type::vec4_type);
-   temp.type = inst->dst.type;
-   int first_writemask_chan = ffs(inst->dst.writemask) - 1;
-   int swizzles[4];
-   for (int i = 0; i < 4; i++)
-      if (inst->dst.writemask & (1 << i))
-         swizzles[i] = i;
-      else
-         swizzles[i] = first_writemask_chan;
-   temp.swizzle = BRW_SWIZZLE4(swizzles[0], swizzles[1],
-                               swizzles[2], swizzles[3]);
-
+   const src_reg temp = swizzle(retype(src_reg(this, glsl_type::vec4_type),
+                                       inst->dst.type),
+                                brw_swizzle_for_mask(inst->dst.writemask));
    dst_reg dst = dst_reg(brw_writemask(brw_vec8_grf(0, 0),
 				       inst->dst.writemask));
    vec4_instruction *write = SCRATCH_WRITE(dst, temp, index);
@@ -3402,6 +3347,39 @@ vec4_visitor::emit_scratch_write(bblock_t *block, vec4_instruction *inst,
    inst->dst.reg = temp.reg;
    inst->dst.reg_offset = temp.reg_offset;
    inst->dst.reladdr = NULL;
+}
+
+/**
+ * Checks if \p src and/or \p src.reladdr require a scratch read, and if so,
+ * adds the scratch read(s) before \p inst. The function also checks for
+ * recursive reladdr scratch accesses, issuing the corresponding scratch
+ * loads and rewriting reladdr references accordingly.
+ *
+ * \return \p src if it did not require a scratch load, otherwise, the
+ * register holding the result of the scratch load that the caller should
+ * use to rewrite src.
+ */
+src_reg
+vec4_visitor::emit_resolve_reladdr(int scratch_loc[], bblock_t *block,
+                                   vec4_instruction *inst, src_reg src)
+{
+   /* Resolve recursive reladdr scratch access by calling ourselves
+    * with src.reladdr
+    */
+   if (src.reladdr)
+      *src.reladdr = emit_resolve_reladdr(scratch_loc, block, inst,
+                                          *src.reladdr);
+
+   /* Now handle scratch access on src */
+   if (src.file == GRF && scratch_loc[src.reg] != -1) {
+      dst_reg temp = dst_reg(this, glsl_type::vec4_type);
+      emit_scratch_read(block, inst, temp, src, scratch_loc[src.reg]);
+      src.reg = temp.reg;
+      src.reg_offset = temp.reg_offset;
+      src.reladdr = NULL;
+   }
+
+   return src;
 }
 
 /**
@@ -3421,20 +3399,31 @@ vec4_visitor::move_grf_array_access_to_scratch()
     * scratch.
     */
    foreach_block_and_inst(block, vec4_instruction, inst, cfg) {
-      if (inst->dst.file == GRF && inst->dst.reladdr &&
-	  scratch_loc[inst->dst.reg] == -1) {
-	 scratch_loc[inst->dst.reg] = c->last_scratch;
-	 c->last_scratch += this->alloc.sizes[inst->dst.reg];
+      if (inst->dst.file == GRF && inst->dst.reladdr) {
+         if (scratch_loc[inst->dst.reg] == -1) {
+            scratch_loc[inst->dst.reg] = c->last_scratch;
+            c->last_scratch += this->alloc.sizes[inst->dst.reg];
+         }
+
+         for (src_reg *iter = inst->dst.reladdr;
+              iter->reladdr;
+              iter = iter->reladdr) {
+            if (iter->file == GRF && scratch_loc[iter->reg] == -1) {
+               scratch_loc[iter->reg] = c->last_scratch;
+               c->last_scratch += this->alloc.sizes[iter->reg];
+            }
+         }
       }
 
       for (int i = 0 ; i < 3; i++) {
-	 src_reg *src = &inst->src[i];
-
-	 if (src->file == GRF && src->reladdr &&
-	     scratch_loc[src->reg] == -1) {
-	    scratch_loc[src->reg] = c->last_scratch;
-	    c->last_scratch += this->alloc.sizes[src->reg];
-	 }
+         for (src_reg *iter = &inst->src[i];
+              iter->reladdr;
+              iter = iter->reladdr) {
+            if (iter->file == GRF && scratch_loc[iter->reg] == -1) {
+               scratch_loc[iter->reg] = c->last_scratch;
+               c->last_scratch += this->alloc.sizes[iter->reg];
+            }
+         }
       }
    }
 
@@ -3448,23 +3437,27 @@ vec4_visitor::move_grf_array_access_to_scratch()
       base_ir = inst->ir;
       current_annotation = inst->annotation;
 
-      if (inst->dst.file == GRF && scratch_loc[inst->dst.reg] != -1) {
-	 emit_scratch_write(block, inst, scratch_loc[inst->dst.reg]);
-      }
+      /* First handle scratch access on the dst. Notice we have to handle
+       * the case where the dst's reladdr also points to scratch space.
+       */
+      if (inst->dst.reladdr)
+         *inst->dst.reladdr = emit_resolve_reladdr(scratch_loc, block, inst,
+                                                   *inst->dst.reladdr);
 
+      /* Now that we have handled any (possibly recursive) reladdr scratch
+       * accesses for dst we can safely do the scratch write for dst itself
+       */
+      if (inst->dst.file == GRF && scratch_loc[inst->dst.reg] != -1)
+         emit_scratch_write(block, inst, scratch_loc[inst->dst.reg]);
+
+      /* Now handle scratch access on any src. In this case, since inst->src[i]
+       * already is a src_reg, we can just call emit_resolve_reladdr with
+       * inst->src[i] and it will take care of handling scratch loads for
+       * both src and src.reladdr (recursively).
+       */
       for (int i = 0 ; i < 3; i++) {
-	 if (inst->src[i].file != GRF || scratch_loc[inst->src[i].reg] == -1)
-	    continue;
-
-	 dst_reg temp = dst_reg(this, glsl_type::vec4_type);
-
-	 emit_scratch_read(block, inst, temp, inst->src[i],
-			   scratch_loc[inst->src[i].reg]);
-
-	 inst->src[i].file = temp.file;
-	 inst->src[i].reg = temp.reg;
-	 inst->src[i].reg_offset = temp.reg_offset;
-	 inst->src[i].reladdr = NULL;
+         inst->src[i] = emit_resolve_reladdr(scratch_loc, block, inst,
+                                             inst->src[i]);
       }
    }
 }

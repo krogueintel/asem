@@ -669,7 +669,7 @@ brw_update_renderbuffer_surface(struct brw_context *brw,
    format = brw->render_target_format[rb_format];
    if (unlikely(!brw->format_supported_as_render_target[rb_format])) {
       _mesa_problem(ctx, "%s: renderbuffer format %s unsupported\n",
-                    __FUNCTION__, _mesa_get_format_name(rb_format));
+                    __func__, _mesa_get_format_name(rb_format));
    }
 
    surf[0] = (BRW_SURFACE_2D << BRW_SURFACE_TYPE_SHIFT |
@@ -763,7 +763,7 @@ brw_update_renderbuffer_surfaces(struct brw_context *brw)
          brw, fb->Width, fb->Height, fb->Visual.samples,
          &brw->wm.base.surf_offset[surf_index]);
    }
-   brw->state.dirty.brw |= BRW_NEW_SURFACES;
+   brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
 
 const struct brw_tracked_state brw_renderbuffer_surfaces = {
@@ -852,7 +852,7 @@ brw_update_texture_surfaces(struct brw_context *brw)
          update_stage_texture_surfaces(brw, fs, &brw->wm.base, true);
    }
 
-   brw->state.dirty.brw |= BRW_NEW_SURFACES;
+   brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
 
 const struct brw_tracked_state brw_texture_surfaces = {
@@ -907,7 +907,7 @@ brw_upload_ubo_surfaces(struct brw_context *brw,
    }
 
    if (shader->NumUniformBlocks)
-      brw->state.dirty.brw |= BRW_NEW_SURFACES;
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
 
 static void
@@ -959,7 +959,7 @@ brw_upload_abo_surfaces(struct brw_context *brw,
    }
 
    if (prog->NumAtomicBuffers)
-      brw->state.dirty.brw |= BRW_NEW_SURFACES;
+      brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
 
 static void

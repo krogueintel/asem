@@ -159,10 +159,11 @@ brw_wm_prog_data_compare(const void *in_a, const void *in_b)
  * Depending on the instructions used (i.e. flow control instructions)
  * we'll use one of two code generators.
  */
-bool do_wm_prog(struct brw_context *brw,
-		struct gl_shader_program *prog,
-		struct brw_fragment_program *fp,
-		struct brw_wm_prog_key *key)
+bool
+brw_compile_wm_prog(struct brw_context *brw,
+                    struct gl_shader_program *prog,
+                    struct brw_fragment_program *fp,
+                    struct brw_wm_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
    void *mem_ctx = ralloc_context(NULL);
@@ -421,6 +422,27 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
    }
 }
 
+static bool
+brw_wm_state_dirty (struct brw_context *brw)
+{
+   return brw_state_dirty(brw,
+                          _NEW_BUFFERS |
+                          _NEW_COLOR |
+                          _NEW_DEPTH |
+                          _NEW_FRAG_CLAMP |
+                          _NEW_HINT |
+                          _NEW_LIGHT |
+                          _NEW_LINE |
+                          _NEW_MULTISAMPLE |
+                          _NEW_POLYGON |
+                          _NEW_STENCIL |
+                          _NEW_TEXTURE,
+                          BRW_NEW_FRAGMENT_PROGRAM |
+                          BRW_NEW_REDUCED_PRIMITIVE |
+                          BRW_NEW_STATS_WM |
+                          BRW_NEW_VUE_MAP_GEOM_OUT);
+}
+
 static void brw_wm_populate_key( struct brw_context *brw,
 				 struct brw_wm_prog_key *key )
 {
@@ -586,26 +608,12 @@ void
 brw_upload_wm_prog(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
+   struct gl_shader_program *current = ctx->_Shader->_CurrentFragmentProgram;
    struct brw_wm_prog_key key;
    struct brw_fragment_program *fp = (struct brw_fragment_program *)
       brw->fragment_program;
 
-   if (!brw_state_dirty(brw,
-                        _NEW_BUFFERS |
-                        _NEW_COLOR |
-                        _NEW_DEPTH |
-                        _NEW_FRAG_CLAMP |
-                        _NEW_HINT |
-                        _NEW_LIGHT |
-                        _NEW_LINE |
-                        _NEW_MULTISAMPLE |
-                        _NEW_POLYGON |
-                        _NEW_STENCIL |
-                        _NEW_TEXTURE,
-                        BRW_NEW_FRAGMENT_PROGRAM |
-                        BRW_NEW_REDUCED_PRIMITIVE |
-                        BRW_NEW_STATS_WM |
-                        BRW_NEW_VUE_MAP_GEOM_OUT))
+   if (!brw_wm_state_dirty(brw))
       return;
 
    brw_wm_populate_key(brw, &key);
@@ -613,8 +621,7 @@ brw_upload_wm_prog(struct brw_context *brw)
    if (!brw_search_cache(&brw->cache, BRW_CACHE_FS_PROG,
 			 &key, sizeof(key),
 			 &brw->wm.base.prog_offset, &brw->wm.prog_data)) {
-      bool success = do_wm_prog(brw, ctx->_Shader->_CurrentFragmentProgram, fp,
-				&key);
+      bool success = brw_compile_wm_prog(brw, current, fp, &key);
       (void) success;
       assert(success);
    }

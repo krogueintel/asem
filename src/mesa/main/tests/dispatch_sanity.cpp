@@ -922,6 +922,12 @@ const struct function gl_core_functions_possible[] = {
    { "glClipControl", 45, -1 },
 
    /* GL_ARB_direct_state_access */
+   { "glCreateTransformFeedbacks", 45, -1 },
+   { "glTransformFeedbackBufferBase", 45, -1 },
+   { "glTransformFeedbackBufferRange", 45, -1 },
+   { "glGetTransformFeedbackiv", 45, -1 },
+   { "glGetTransformFeedbacki_v", 45, -1 },
+   { "glGetTransformFeedbacki64_v", 45, -1 },
    { "glCreateBuffers", 45, -1 },
    { "glNamedBufferStorage", 45, -1 },
    { "glNamedBufferData", 45, -1 },
@@ -937,6 +943,10 @@ const struct function gl_core_functions_possible[] = {
    { "glGetNamedBufferParameteri64v", 45, -1 },
    { "glGetNamedBufferPointerv", 45, -1 },
    { "glGetNamedBufferSubData", 45, -1 },
+   { "glCreateRenderbuffers", 45, -1 },
+   { "glNamedRenderbufferStorage", 45, -1 },
+   { "glNamedRenderbufferStorageMultisample", 45, -1 },
+   { "glGetNamedRenderbufferParameteriv", 45, -1 },
    { "glCreateTextures", 45, -1 },
    { "glTextureStorage1D", 45, -1 },
    { "glTextureStorage2D", 45, -1 },
@@ -970,6 +980,13 @@ const struct function gl_core_functions_possible[] = {
    { "glTextureStorage3DMultisample", 45, -1 },
    { "glTextureBuffer", 45, -1 },
    { "glTextureBufferRange", 45, -1 },
+   { "glCreateSamplers", 45, -1 },
+   { "glCreateProgramPipelines", 45, -1 },
+   { "glCreateQueries", 45, -1 },
+   { "glGetQueryBufferObjectiv", 45, -1 },
+   { "glGetQueryBufferObjectuiv", 45, -1 },
+   { "glGetQueryBufferObjecti64v", 45, -1 },
+   { "glGetQueryBufferObjectui64v", 45, -1 },
 
    /* GL_EXT_polygon_offset_clamp */
    { "glPolygonOffsetClampEXT", 11, -1 },

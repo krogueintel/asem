@@ -24,6 +24,7 @@
 #include "main/blend.h"
 #include "main/samplerobj.h"
 #include "main/texformat.h"
+#include "main/teximage.h"
 #include "program/prog_parameter.h"
 
 #include "intel_mipmap_tree.h"
@@ -237,8 +238,11 @@ gen7_emit_buffer_surface_state(struct brw_context *brw,
    surf[1] = (bo ? bo->offset64 : 0) + buffer_offset; /* reloc */
    surf[2] = SET_FIELD((buffer_size - 1) & 0x7f, GEN7_SURFACE_WIDTH) |
              SET_FIELD(((buffer_size - 1) >> 7) & 0x3fff, GEN7_SURFACE_HEIGHT);
-   surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3f, BRW_SURFACE_DEPTH) |
-             (pitch - 1);
+   if (surface_format == BRW_SURFACEFORMAT_RAW)
+      surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3ff, BRW_SURFACE_DEPTH);
+   else
+      surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3f, BRW_SURFACE_DEPTH);
+   surf[3] |= (pitch - 1);
 
    surf[5] = SET_FIELD(GEN7_MOCS_L3, GEN7_SURFACE_MOCS);
 
@@ -301,7 +305,8 @@ gen7_update_texture_surface(struct gl_context *ctx,
    if (mt->align_w == 8)
       surf[0] |= GEN7_SURFACE_HALIGN_8;
 
-   if (mt->logical_depth0 > 1 && tObj->Target != GL_TEXTURE_3D)
+   if (_mesa_is_array_texture(tObj->Target) ||
+       tObj->Target == GL_TEXTURE_CUBE_MAP)
       surf[0] |= GEN7_SURFACE_IS_ARRAY;
 
    /* if this is a view with restricted NumLayers, then
@@ -463,7 +468,7 @@ gen7_update_renderbuffer_surface(struct brw_context *brw,
    format = brw->render_target_format[rb_format];
    if (unlikely(!brw->format_supported_as_render_target[rb_format])) {
       _mesa_problem(ctx, "%s: renderbuffer format %s unsupported\n",
-                    __FUNCTION__, _mesa_get_format_name(rb_format));
+                    __func__, _mesa_get_format_name(rb_format));
    }
 
    switch (gl_target) {

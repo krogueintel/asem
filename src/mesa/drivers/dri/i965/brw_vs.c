@@ -187,11 +187,11 @@ brw_vs_prog_data_compare(const void *in_a, const void *in_b)
    return true;
 }
 
-static bool
-do_vs_prog(struct brw_context *brw,
-	   struct gl_shader_program *prog,
-	   struct brw_vertex_program *vp,
-	   struct brw_vs_prog_key *key)
+bool
+brw_compile_vs_prog(struct brw_context *brw,
+                    struct gl_shader_program *prog,
+                    struct brw_vertex_program *vp,
+                    struct brw_vs_prog_key *key)
 {
    GLuint program_size;
    const GLuint *program;
@@ -401,71 +401,89 @@ brw_setup_vue_key_clip_info(struct brw_context *brw,
    }
 }
 
-void
-brw_upload_vs_prog(struct brw_context *brw)
+static bool
+brw_vs_state_dirty(struct brw_context *brw)
+{
+   return brw_state_dirty(brw,
+                          _NEW_BUFFERS |
+                          _NEW_LIGHT |
+                          _NEW_POINT |
+                          _NEW_POLYGON |
+                          _NEW_TEXTURE |
+                          _NEW_TRANSFORM,
+                          BRW_NEW_VERTEX_PROGRAM |
+                          BRW_NEW_VS_ATTRIB_WORKAROUNDS);
+}
+
+static void
+brw_vs_populate_key(struct brw_context *brw,
+                    struct brw_vs_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
-   struct brw_vs_prog_key key;
    /* BRW_NEW_VERTEX_PROGRAM */
    struct brw_vertex_program *vp =
       (struct brw_vertex_program *)brw->vertex_program;
    struct gl_program *prog = (struct gl_program *) brw->vertex_program;
    int i;
 
-   if (!brw_state_dirty(brw,
-                        _NEW_BUFFERS |
-                        _NEW_LIGHT |
-                        _NEW_POINT |
-                        _NEW_POLYGON |
-                        _NEW_TEXTURE |
-                        _NEW_TRANSFORM,
-                        BRW_NEW_VERTEX_PROGRAM |
-                        BRW_NEW_VS_ATTRIB_WORKAROUNDS))
-      return;
-
-   memset(&key, 0, sizeof(key));
+   memset(key, 0, sizeof(*key));
 
    /* Just upload the program verbatim for now.  Always send it all
     * the inputs it asks for, whether they are varying or not.
     */
-   key.base.program_string_id = vp->id;
-   brw_setup_vue_key_clip_info(brw, &key.base,
+   key->base.program_string_id = vp->id;
+   brw_setup_vue_key_clip_info(brw, &key->base,
                                vp->program.Base.UsesClipDistanceOut);
 
    /* _NEW_POLYGON */
    if (brw->gen < 6) {
-      key.copy_edgeflag = (ctx->Polygon.FrontMode != GL_FILL ||
-                           ctx->Polygon.BackMode != GL_FILL);
+      key->copy_edgeflag = (ctx->Polygon.FrontMode != GL_FILL ||
+                            ctx->Polygon.BackMode != GL_FILL);
    }
 
    if (prog->OutputsWritten & (VARYING_BIT_COL0 | VARYING_BIT_COL1 |
                                VARYING_BIT_BFC0 | VARYING_BIT_BFC1)) {
       /* _NEW_LIGHT | _NEW_BUFFERS */
-      key.clamp_vertex_color = ctx->Light._ClampVertexColor;
+      key->clamp_vertex_color = ctx->Light._ClampVertexColor;
    }
 
    /* _NEW_POINT */
    if (brw->gen < 6 && ctx->Point.PointSprite) {
       for (i = 0; i < 8; i++) {
 	 if (ctx->Point.CoordReplace[i])
-	    key.point_coord_replace |= (1 << i);
+            key->point_coord_replace |= (1 << i);
       }
    }
 
    /* _NEW_TEXTURE */
    brw_populate_sampler_prog_key_data(ctx, prog, brw->vs.base.sampler_count,
-                                      &key.base.tex);
+                                      &key->base.tex);
 
    /* BRW_NEW_VS_ATTRIB_WORKAROUNDS */
-   memcpy(key.gl_attrib_wa_flags, brw->vb.attrib_wa_flags,
+   memcpy(key->gl_attrib_wa_flags, brw->vb.attrib_wa_flags,
           sizeof(brw->vb.attrib_wa_flags));
+}
+
+void
+brw_upload_vs_prog(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   struct gl_shader_program **current = ctx->_Shader->CurrentProgram;
+   struct brw_vs_prog_key key;
+   /* BRW_NEW_VERTEX_PROGRAM */
+   struct brw_vertex_program *vp =
+      (struct brw_vertex_program *)brw->vertex_program;
+
+   if (!brw_vs_state_dirty(brw))
+      return;
+
+   brw_vs_populate_key(brw, &key);
 
    if (!brw_search_cache(&brw->cache, BRW_CACHE_VS_PROG,
 			 &key, sizeof(key),
 			 &brw->vs.base.prog_offset, &brw->vs.prog_data)) {
-      bool success =
-         do_vs_prog(brw, ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX], vp,
-                    &key);
+      bool success = brw_compile_vs_prog(brw, current[MESA_SHADER_VERTEX],
+                                         vp, &key);
       (void) success;
       assert(success);
    }
@@ -474,13 +492,13 @@ brw_upload_vs_prog(struct brw_context *brw)
    if (memcmp(&brw->vs.prog_data->base.vue_map, &brw->vue_map_geom_out,
               sizeof(brw->vue_map_geom_out)) != 0) {
       brw->vue_map_vs = brw->vs.prog_data->base.vue_map;
-      brw->state.dirty.brw |= BRW_NEW_VUE_MAP_VS;
+      brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_VS;
       if (brw->gen < 6) {
          /* No geometry shader support, so the VS VUE map is the VUE map for
           * the output of the "geometry" portion of the pipeline.
           */
          brw->vue_map_geom_out = brw->vue_map_vs;
-         brw->state.dirty.brw |= BRW_NEW_VUE_MAP_GEOM_OUT;
+         brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_GEOM_OUT;
       }
    }
 }
@@ -506,7 +524,7 @@ brw_vs_precompile(struct gl_context *ctx,
       (prog->OutputsWritten & (VARYING_BIT_COL0 | VARYING_BIT_COL1 |
                                VARYING_BIT_BFC0 | VARYING_BIT_BFC1));
 
-   success = do_vs_prog(brw, shader_prog, bvp, &key);
+   success = brw_compile_vs_prog(brw, shader_prog, bvp, &key);
 
    brw->vs.base.prog_offset = old_prog_offset;
    brw->vs.prog_data = old_prog_data;

@@ -24,145 +24,14 @@
 #include "glsl/ir.h"
 #include "glsl/ir_optimization.h"
 #include "glsl/nir/glsl_to_nir.h"
+#include "program/prog_to_nir.h"
 #include "brw_fs.h"
 #include "brw_nir.h"
-
-static void
-nir_optimize(nir_shader *nir)
-{
-   bool progress;
-   do {
-      progress = false;
-      nir_lower_vars_to_ssa(nir);
-      nir_validate_shader(nir);
-      nir_lower_alu_to_scalar(nir);
-      nir_validate_shader(nir);
-      progress |= nir_copy_prop(nir);
-      nir_validate_shader(nir);
-      nir_lower_phis_to_scalar(nir);
-      nir_validate_shader(nir);
-      progress |= nir_copy_prop(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_dce(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_cse(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_peephole_select(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_algebraic(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_constant_folding(nir);
-      nir_validate_shader(nir);
-      progress |= nir_opt_remove_phis(nir);
-      nir_validate_shader(nir);
-   } while (progress);
-}
-
-static bool
-count_nir_instrs_in_block(nir_block *block, void *state)
-{
-   int *count = (int *) state;
-   nir_foreach_instr(block, instr) {
-      *count = *count + 1;
-   }
-   return true;
-}
-
-static int
-count_nir_instrs(nir_shader *nir)
-{
-   int count = 0;
-   nir_foreach_overload(nir, overload) {
-      if (!overload->impl)
-         continue;
-      nir_foreach_block(overload->impl, count_nir_instrs_in_block, &count);
-   }
-   return count;
-}
 
 void
 fs_visitor::emit_nir_code()
 {
-   const nir_shader_compiler_options *options =
-      ctx->Const.ShaderCompilerOptions[stage].NirOptions;
-
-   /* first, lower the GLSL IR shader to NIR */
-   lower_output_reads(shader->base.ir);
-   nir_shader *nir = glsl_to_nir(&shader->base, options);
-   nir_validate_shader(nir);
-
-   nir_lower_global_vars_to_local(nir);
-   nir_validate_shader(nir);
-
-   nir_split_var_copies(nir);
-   nir_validate_shader(nir);
-
-   nir_optimize(nir);
-
-   /* Lower a bunch of stuff */
-   nir_lower_var_copies(nir);
-   nir_validate_shader(nir);
-
-   /* Get rid of split copies */
-   nir_optimize(nir);
-
-   nir_assign_var_locations_scalar_direct_first(nir, &nir->uniforms,
-                                                &num_direct_uniforms,
-                                                &nir->num_uniforms);
-   nir_assign_var_locations_scalar(&nir->inputs, &nir->num_inputs);
-   nir_assign_var_locations_scalar(&nir->outputs, &nir->num_outputs);
-
-   nir_lower_io(nir);
-   nir_validate_shader(nir);
-
-   nir_remove_dead_variables(nir);
-   nir_validate_shader(nir);
-
-   nir_lower_samplers(nir, shader_prog, shader->base.Program);
-   nir_validate_shader(nir);
-
-   nir_lower_system_values(nir);
-   nir_validate_shader(nir);
-
-   nir_lower_atomics(nir);
-   nir_validate_shader(nir);
-
-   nir_optimize(nir);
-
-   nir_lower_locals_to_regs(nir);
-   nir_validate_shader(nir);
-
-   nir_lower_to_source_mods(nir);
-   nir_validate_shader(nir);
-   nir_copy_prop(nir);
-   nir_validate_shader(nir);
-
-   if (unlikely(debug_enabled)) {
-      fprintf(stderr, "NIR (SSA form) for %s shader:\n", stage_name);
-      nir_print_shader(nir, stderr);
-   }
-
-   if (dispatch_width == 8) {
-      static GLuint msg_id = 0;
-      _mesa_gl_debug(&brw->ctx, &msg_id,
-                     MESA_DEBUG_SOURCE_SHADER_COMPILER,
-                     MESA_DEBUG_TYPE_OTHER,
-                     MESA_DEBUG_SEVERITY_NOTIFICATION,
-                     "%s NIR shader: %d inst\n",
-                     stage_abbrev,
-                     count_nir_instrs(nir));
-   }
-
-   nir_convert_from_ssa(nir);
-   nir_validate_shader(nir);
-
-   /* This is the last pass we run before we start emitting stuff.  It
-    * determines when we need to insert boolean resolves on Gen <= 5.  We
-    * run it last because it stashes data in instr->pass_flags and we don't
-    * want that to be squashed by other NIR passes.
-    */
-   if (brw->gen <= 5)
-      brw_nir_analyze_boolean_resolves(nir);
+   nir_shader *nir = prog->nir;
 
    /* emit the arrays used for inputs and outputs - load/store intrinsics will
     * be converted to reads/writes of these arrays
@@ -198,13 +67,6 @@ fs_visitor::emit_nir_code()
       assert(overload->impl);
       nir_emit_impl(overload->impl);
    }
-
-   if (unlikely(debug_enabled)) {
-      fprintf(stderr, "NIR (final form) for %s shader:\n", stage_name);
-      nir_print_shader(nir, stderr);
-   }
-
-   ralloc_free(nir);
 }
 
 void
@@ -309,6 +171,7 @@ void
 fs_visitor::nir_setup_uniforms(nir_shader *shader)
 {
    uniforms = shader->num_uniforms;
+   num_direct_uniforms = shader->num_direct_uniforms;
 
    /* We split the uniform register file in half.  The first half is
     * entirely direct uniforms.  The second half is indirect.
@@ -320,16 +183,25 @@ fs_visitor::nir_setup_uniforms(nir_shader *shader)
    if (dispatch_width != 8)
       return;
 
-   foreach_list_typed(nir_variable, var, node, &shader->uniforms) {
-      /* UBO's and atomics don't take up space in the uniform file */
+   if (shader_prog) {
+      foreach_list_typed(nir_variable, var, node, &shader->uniforms) {
+         /* UBO's and atomics don't take up space in the uniform file */
+         if (var->interface_type != NULL || var->type->contains_atomic())
+            continue;
 
-      if (var->interface_type != NULL || var->type->contains_atomic())
-         continue;
-
-      if (strncmp(var->name, "gl_", 3) == 0)
-         nir_setup_builtin_uniform(var);
-      else
-         nir_setup_uniform(var);
+         if (strncmp(var->name, "gl_", 3) == 0)
+            nir_setup_builtin_uniform(var);
+         else
+            nir_setup_uniform(var);
+      }
+   } else {
+      /* prog_to_nir doesn't create uniform variables; set param up directly. */
+      for (unsigned p = 0; p < prog->Parameters->NumParameters; p++) {
+         for (unsigned int i = 0; i < 4; i++) {
+            stage_prog_data->param[4 * p + i] =
+               &prog->Parameters->ParameterValues[p][i];
+         }
+      }
    }
 }
 
@@ -566,6 +438,8 @@ fs_visitor::nir_emit_block(nir_block *block)
 void
 fs_visitor::nir_emit_instr(nir_instr *instr)
 {
+   this->base_ir = instr;
+
    switch (instr->type) {
    case nir_instr_type_alu:
       nir_emit_alu(nir_instr_as_alu(instr));
@@ -592,6 +466,8 @@ fs_visitor::nir_emit_instr(nir_instr *instr)
    default:
       unreachable("unknown instruction type");
    }
+
+   this->base_ir = NULL;
 }
 
 static brw_reg_type
@@ -851,13 +727,11 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       unreachable("not reached: should be handled by ir_explog_to_explog2");
 
    case nir_op_fsin:
-   case nir_op_fsin_reduced:
       inst = emit_math(SHADER_OPCODE_SIN, result, op[0]);
       inst->saturate = instr->dest.saturate;
       break;
 
    case nir_op_fcos:
-   case nir_op_fcos_reduced:
       inst = emit_math(SHADER_OPCODE_COS, result, op[0]);
       inst->saturate = instr->dest.saturate;
       break;
@@ -1473,6 +1347,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
    case nir_intrinsic_load_uniform_indirect:
       has_indirect = true;
+      /* fallthrough */
    case nir_intrinsic_load_uniform: {
       unsigned index = instr->const_index[0];
 
@@ -1700,6 +1575,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
    case nir_intrinsic_store_output_indirect:
       has_indirect = true;
+      /* fallthrough */
    case nir_intrinsic_store_output: {
       fs_reg src = get_nir_src(instr->src[0]);
       unsigned index = 0;
@@ -1743,7 +1619,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
 
    int lod_components = 0, offset_components = 0;
 
-   fs_reg coordinate, shadow_comparitor, lod, lod2, sample_index, mcs, offset;
+   fs_reg coordinate, shadow_comparitor, lod, lod2, sample_index, mcs, tex_offset;
 
    for (unsigned i = 0; i < instr->num_srcs; i++) {
       fs_reg src = get_nir_src(instr->src[i].src);
@@ -1789,7 +1665,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
          sample_index = retype(src, BRW_REGISTER_TYPE_UD);
          break;
       case nir_tex_src_offset:
-         offset = retype(src, BRW_REGISTER_TYPE_D);
+         tex_offset = retype(src, BRW_REGISTER_TYPE_D);
          if (instr->is_array)
             offset_components = instr->coord_components - 1;
          else
@@ -1832,7 +1708,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
    for (unsigned i = 0; i < 3; i++) {
       if (instr->const_offset[i] != 0) {
          assert(offset_components == 0);
-         offset = fs_reg(brw_texture_offset(ctx, instr->const_offset, 3));
+         tex_offset = fs_reg(brw_texture_offset(ctx, instr->const_offset, 3));
          break;
       }
    }
@@ -1874,7 +1750,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
 
    emit_texture(op, dest_type, coordinate, instr->coord_components,
                 shadow_comparitor, lod, lod2, lod_components, sample_index,
-                offset, mcs, gather_component,
+                tex_offset, mcs, gather_component,
                 is_cube_array, is_rect, sampler, sampler_reg, texunit);
 
    fs_reg dest = get_nir_dest(instr->dest);

@@ -42,6 +42,45 @@
 #include <errno.h>
 
 static void
+fd_invalidate_resource(struct fd_context *ctx, struct pipe_resource *prsc)
+{
+	int i;
+
+	/* Go through the entire state and see if the resource is bound
+	 * anywhere. If it is, mark the relevant state as dirty. This is called on
+	 * realloc_bo.
+	 */
+
+	/* Constbufs */
+	for (i = 1; i < PIPE_MAX_CONSTANT_BUFFERS && !(ctx->dirty & FD_DIRTY_CONSTBUF); i++) {
+		if (ctx->constbuf[PIPE_SHADER_VERTEX].cb[i].buffer == prsc)
+			ctx->dirty |= FD_DIRTY_CONSTBUF;
+		if (ctx->constbuf[PIPE_SHADER_FRAGMENT].cb[i].buffer == prsc)
+			ctx->dirty |= FD_DIRTY_CONSTBUF;
+	}
+
+	/* VBOs */
+	for (i = 0; i < ctx->vtx.vertexbuf.count && !(ctx->dirty & FD_DIRTY_VTXBUF); i++) {
+		if (ctx->vtx.vertexbuf.vb[i].buffer == prsc)
+			ctx->dirty |= FD_DIRTY_VTXBUF;
+	}
+
+	/* Index buffer */
+	if (ctx->indexbuf.buffer == prsc)
+		ctx->dirty |= FD_DIRTY_INDEXBUF;
+
+	/* Textures */
+	for (i = 0; i < ctx->verttex.num_textures && !(ctx->dirty & FD_DIRTY_VERTTEX); i++) {
+		if (ctx->verttex.textures[i]->texture == prsc)
+			ctx->dirty |= FD_DIRTY_VERTTEX;
+	}
+	for (i = 0; i < ctx->fragtex.num_textures && !(ctx->dirty & FD_DIRTY_FRAGTEX); i++) {
+		if (ctx->fragtex.textures[i]->texture == prsc)
+			ctx->dirty |= FD_DIRTY_FRAGTEX;
+	}
+}
+
+static void
 realloc_bo(struct fd_resource *rsc, uint32_t size)
 {
 	struct fd_screen *screen = fd_screen(rsc->base.b.screen);
@@ -57,23 +96,21 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
 
 	rsc->bo = fd_bo_new(screen->dev, size, flags);
 	rsc->timestamp = 0;
-	rsc->dirty = false;
+	rsc->dirty = rsc->reading = false;
+	list_delinit(&rsc->list);
+	util_range_set_empty(&rsc->valid_buffer_range);
 }
 
 static void fd_resource_transfer_flush_region(struct pipe_context *pctx,
 		struct pipe_transfer *ptrans,
 		const struct pipe_box *box)
 {
-	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(ptrans->resource);
 
-	if (rsc->dirty)
-		fd_context_render(pctx);
-
-	if (rsc->timestamp) {
-		fd_pipe_wait(ctx->screen->pipe, rsc->timestamp);
-		rsc->timestamp = 0;
-	}
+	if (ptrans->resource->target == PIPE_BUFFER)
+		util_range_add(&rsc->valid_buffer_range,
+					   ptrans->box.x + box->x,
+					   ptrans->box.x + box->x + box->width);
 }
 
 static void
@@ -84,6 +121,11 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
 	struct fd_resource *rsc = fd_resource(ptrans->resource);
 	if (!(ptrans->usage & PIPE_TRANSFER_UNSYNCHRONIZED))
 		fd_bo_cpu_fini(rsc->bo);
+
+	util_range_add(&rsc->valid_buffer_range,
+				   ptrans->box.x,
+				   ptrans->box.x + ptrans->box.width);
+
 	pipe_resource_reference(&ptrans->resource, NULL);
 	util_slab_free(&ctx->transfer_pool, ptrans);
 }
@@ -127,13 +169,28 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	if (usage & PIPE_TRANSFER_WRITE)
 		op |= DRM_FREEDRENO_PREP_WRITE;
 
-	/* some state trackers (at least XA) don't do this.. */
-	if (!(usage & (PIPE_TRANSFER_FLUSH_EXPLICIT | PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE)))
-		fd_resource_transfer_flush_region(pctx, ptrans, box);
-
 	if (usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) {
 		realloc_bo(rsc, fd_bo_size(rsc->bo));
+		fd_invalidate_resource(ctx, prsc);
+	} else if ((usage & PIPE_TRANSFER_WRITE) &&
+			   prsc->target == PIPE_BUFFER &&
+			   !util_ranges_intersect(&rsc->valid_buffer_range,
+									  box->x, box->x + box->width)) {
+		/* We are trying to write to a previously uninitialized range. No need
+		 * to wait.
+		 */
 	} else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+		/* If the GPU is writing to the resource, or if it is reading from the
+		 * resource and we're trying to write to it, flush the renders.
+		 */
+		if (rsc->dirty ||
+			((ptrans->usage & PIPE_TRANSFER_WRITE) && rsc->reading))
+			fd_context_render(pctx);
+
+		/* The GPU keeps track of how the various bo's are being used, and
+		 * will wait if necessary for the proper operation to have
+		 * completed.
+		 */
 		ret = fd_bo_cpu_prep(rsc->bo, ctx->screen->pipe, op);
 		if (ret)
 			goto fail;
@@ -173,6 +230,8 @@ fd_resource_destroy(struct pipe_screen *pscreen,
 	struct fd_resource *rsc = fd_resource(prsc);
 	if (rsc->bo)
 		fd_bo_del(rsc->bo);
+	list_delinit(&rsc->list);
+	util_range_destroy(&rsc->valid_buffer_range);
 	FREE(rsc);
 }
 
@@ -215,14 +274,20 @@ setup_slices(struct fd_resource *rsc, uint32_t alignment)
 
 		slice->pitch = width = align(width, 32);
 		slice->offset = size;
-		/* 1d array, 2d array, 3d textures (but not cube!) must all have the
-		 * same layer size for each miplevel on a3xx. These are also the
-		 * targets that have non-1 alignment.
+		/* 1d array and 2d array textures must all have the same layer size
+		 * for each miplevel on a3xx. 3d textures can have different layer
+		 * sizes for high levels, but the hw auto-sizer is buggy (or at least
+		 * different than what this code does), so as soon as the layer size
+		 * range gets into range, we stop reducing it.
 		 */
-		if (level == 0 || layers_in_level == 1 || alignment == 1)
+		if (prsc->target == PIPE_TEXTURE_3D && (
+					level == 1 ||
+					(level > 1 && rsc->slices[level - 1].size0 > 0xf000)))
+			slice->size0 = align(slice->pitch * height * rsc->cpp, alignment);
+		else if (level == 0 || rsc->layer_first || alignment == 1)
 			slice->size0 = align(slice->pitch * height * rsc->cpp, alignment);
 		else
-			slice->size0 = rsc->slices[0].size0;
+			slice->size0 = rsc->slices[level - 1].size0;
 
 		size += slice->size0 * depth * layers_in_level;
 
@@ -274,7 +339,10 @@ fd_resource_create(struct pipe_screen *pscreen,
 	*prsc = *tmpl;
 
 	pipe_reference_init(&prsc->reference, 1);
+	list_inithead(&rsc->list);
 	prsc->screen = pscreen;
+
+	util_range_init(&rsc->valid_buffer_range);
 
 	rsc->base.vtbl = &fd_resource_vtbl;
 	rsc->cpp = util_format_get_blocksize(tmpl->format);
@@ -337,7 +405,10 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 	*prsc = *tmpl;
 
 	pipe_reference_init(&prsc->reference, 1);
+	list_inithead(&rsc->list);
 	prsc->screen = pscreen;
+
+	util_range_init(&rsc->valid_buffer_range);
 
 	rsc->bo = fd_screen_bo_from_handle(pscreen, handle, &slice->pitch);
 	if (!rsc->bo)

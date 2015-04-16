@@ -151,6 +151,7 @@ static void vectorize(struct ir3_compile_context *ctx,
 static void create_mov(struct ir3_compile_context *ctx,
 		struct tgsi_dst_register *dst, struct tgsi_src_register *src);
 static type_t get_ftype(struct ir3_compile_context *ctx);
+static type_t get_utype(struct ir3_compile_context *ctx);
 
 static unsigned setup_arrays(struct ir3_compile_context *ctx, unsigned file, unsigned i)
 {
@@ -252,7 +253,7 @@ compile_init(struct ir3_compile_context *ctx, struct ir3_shader_variant *so,
 	 * the assembler what the max addr reg value can be:
 	 */
 	if (info->indirect_files & FM(CONSTANT))
-		so->constlen = ctx->info.file_max[TGSI_FILE_CONSTANT] + 1;
+		so->constlen = MIN2(255, ctx->info.const_file_max[0] + 1);
 
 	i = 0;
 	i += setup_arrays(ctx, TGSI_FILE_INPUT, i);
@@ -261,12 +262,13 @@ compile_init(struct ir3_compile_context *ctx, struct ir3_shader_variant *so,
 	/* any others? we don't track arrays for const..*/
 
 	/* Immediates go after constants: */
-	if (so->type == SHADER_VERTEX) {
-		so->first_driver_param = info->file_max[TGSI_FILE_CONSTANT] + 1;
-		so->first_immediate = so->first_driver_param + 1;
-	} else {
-		so->first_immediate = info->file_max[TGSI_FILE_CONSTANT] + 1;
-	}
+	so->first_immediate = so->first_driver_param =
+		info->const_file_max[0] + 1;
+	/* 1 unit for the vertex id base */
+	if (so->type == SHADER_VERTEX)
+		so->first_immediate++;
+	/* 4 (vec4) units for ubo base addresses */
+	so->first_immediate += 4;
 	ctx->immediate_idx = 4 * (ctx->info.file_max[TGSI_FILE_IMMEDIATE] + 1);
 
 	ret = tgsi_parse_init(&ctx->parser, ctx->tokens);
@@ -717,6 +719,80 @@ ssa_src(struct ir3_compile_context *ctx, struct ir3_register *reg,
 		reg->offset = regid(off, chan);
 
 		instr = array_fanin(ctx, aid, src->File);
+	} else if (src->File == TGSI_FILE_CONSTANT && src->Dimension) {
+		const struct tgsi_full_src_register *fsrc = (const void *)src;
+		struct ir3_instruction *temp = NULL;
+		int ubo_regid = regid(ctx->so->first_driver_param, 0) +
+			fsrc->Dimension.Index - 1;
+		int offset = 0;
+
+		/* We don't handle indirect UBO array accesses... yet. */
+		compile_assert(ctx, !fsrc->Dimension.Indirect);
+		/* UBOs start at index 1. */
+		compile_assert(ctx, fsrc->Dimension.Index > 0);
+
+		if (src->Indirect) {
+			/* In case of an indirect index, it will have been loaded into an
+			 * address register. There will be a sequence of
+			 *
+			 *   shl.b x, val, 2
+			 *   mova a0, x
+			 *
+			 * We rely on this sequence to get the original val out and shift
+			 * it by 4, since we're dealing in vec4 units.
+			 */
+			compile_assert(ctx, ctx->block->address);
+			compile_assert(ctx, ctx->block->address->regs[1]->instr->opc ==
+						   OPC_SHL_B);
+
+			temp = instr = instr_create(ctx, 2, OPC_SHL_B);
+			ir3_reg_create(instr, 0, 0);
+			ir3_reg_create(instr, 0, IR3_REG_HALF | IR3_REG_SSA)->instr =
+				ctx->block->address->regs[1]->instr->regs[1]->instr;
+			ir3_reg_create(instr, 0, IR3_REG_IMMED)->iim_val = 4;
+		} else if (src->Index >= 64) {
+			/* Otherwise it's a plain index (in vec4 units). Move it into a
+			 * register.
+			 */
+			temp = instr = instr_create(ctx, 1, 0);
+			instr->cat1.src_type = get_utype(ctx);
+			instr->cat1.dst_type = get_utype(ctx);
+			ir3_reg_create(instr, 0, 0);
+			ir3_reg_create(instr, 0, IR3_REG_IMMED)->iim_val = src->Index * 16;
+		} else {
+			/* The offset is small enough to fit into the ldg instruction
+			 * directly.
+			 */
+			offset = src->Index * 16;
+		}
+
+		if (temp) {
+			/* If there was an offset (most common), add it to the buffer
+			 * address.
+			 */
+			instr = instr_create(ctx, 2, OPC_ADD_S);
+			ir3_reg_create(instr, 0, 0);
+			ir3_reg_create(instr, 0, IR3_REG_SSA)->instr = temp;
+			ir3_reg_create(instr, ubo_regid, IR3_REG_CONST);
+		} else {
+			/* Otherwise just load the buffer address directly */
+			instr = instr_create(ctx, 1, 0);
+			instr->cat1.src_type = get_utype(ctx);
+			instr->cat1.dst_type = get_utype(ctx);
+			ir3_reg_create(instr, 0, 0);
+			ir3_reg_create(instr, ubo_regid, IR3_REG_CONST);
+		}
+
+		temp = instr;
+
+		instr = instr_create(ctx, 6, OPC_LDG);
+		instr->cat6.type = TYPE_U32;
+		instr->cat6.offset = offset + chan * 4;
+		ir3_reg_create(instr, 0, 0);
+		ir3_reg_create(instr, 0, IR3_REG_SSA)->instr = temp;
+		ir3_reg_create(instr, 0, IR3_REG_IMMED)->iim_val = 1;
+
+		reg->flags &= ~(IR3_REG_RELATIV | IR3_REG_CONST);
 	} else {
 		/* normal case (not relative addressed GPR) */
 		instr = ssa_instr_get(ctx, src->File, regid(src->Index, chan));
@@ -886,10 +962,11 @@ add_src_reg_wrmask(struct ir3_compile_context *ctx,
 	else
 		compile_assert(ctx, src->Index < (1 << 6));
 
+	/* NOTE: abs/neg modifiers in tgsi only apply to float */
 	if (src->Absolute)
-		flags |= IR3_REG_ABS;
+		flags |= IR3_REG_FABS;
 	if (src->Negate)
-		flags |= IR3_REG_NEGATE;
+		flags |= IR3_REG_FNEG;
 
 	if (src->Indirect) {
 		flags |= IR3_REG_RELATIV;
@@ -1246,9 +1323,11 @@ vectorize(struct ir3_compile_context *ctx, struct ir3_instruction *instr,
 				} else {
 					reg = add_src_reg(ctx, cur, src, src_swiz(src, i));
 				}
-				reg->flags |= flags & ~IR3_REG_NEGATE;
-				if (flags & IR3_REG_NEGATE)
-					reg->flags ^= IR3_REG_NEGATE;
+				reg->flags |= flags & ~(IR3_REG_FNEG | IR3_REG_SNEG);
+				if (flags & IR3_REG_FNEG)
+					reg->flags ^= IR3_REG_FNEG;
+				if (flags & IR3_REG_SNEG)
+					reg->flags ^= IR3_REG_SNEG;
 			}
 			va_end(ap);
 		}
@@ -1392,8 +1471,8 @@ fill_tex_info(struct ir3_compile_context *ctx,
 	/*
 	 * lay out the first argument in the proper order:
 	 *  - actual coordinates first
-	 *  - array index
 	 *  - shadow reference
+	 *  - array index
 	 *  - projection w
 	 *
 	 * bias/lod go into the second arg
@@ -1869,7 +1948,7 @@ trans_cmp(const struct instr_translater *t,
 	case TGSI_OPCODE_FSLT:
 		/* absneg.s dst, (neg)tmp0 */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_S);
-		vectorize(ctx, instr, dst, 1, tmp_src, IR3_REG_NEGATE);
+		vectorize(ctx, instr, dst, 1, tmp_src, IR3_REG_SNEG);
 		break;
 	case TGSI_OPCODE_CMP:
 		a1 = &inst->Src[1].Register;
@@ -1951,7 +2030,7 @@ trans_icmp(const struct instr_translater *t,
 
 	/* absneg.s dst, (neg)tmp */
 	instr = instr_create(ctx, 2, OPC_ABSNEG_S);
-	vectorize(ctx, instr, dst, 1, tmp_src, IR3_REG_NEGATE);
+	vectorize(ctx, instr, dst, 1, tmp_src, IR3_REG_SNEG);
 
 	put_dst(ctx, inst, dst);
 }
@@ -2490,19 +2569,19 @@ trans_idiv(const struct instr_translater *t,
 	if (type_sint(src_type)) {
 		/* absneg.f af, (abs)af */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_F);
-		vectorize(ctx, instr, &af_dst, 1, af_src, IR3_REG_ABS);
+		vectorize(ctx, instr, &af_dst, 1, af_src, IR3_REG_FABS);
 
 		/* absneg.f bf, (abs)bf */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_F);
-		vectorize(ctx, instr, &bf_dst, 1, bf_src, IR3_REG_ABS);
+		vectorize(ctx, instr, &bf_dst, 1, bf_src, IR3_REG_FABS);
 
 		/* absneg.s a, (abs)numerator */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_S);
-		vectorize(ctx, instr, &a_dst, 1, a, IR3_REG_ABS);
+		vectorize(ctx, instr, &a_dst, 1, a, IR3_REG_SABS);
 
 		/* absneg.s b, (abs)denominator */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_S);
-		vectorize(ctx, instr, &b_dst, 1, b, IR3_REG_ABS);
+		vectorize(ctx, instr, &b_dst, 1, b, IR3_REG_SABS);
 	} else {
 		/* mov.u32u32 a, numerator */
 		instr = instr_create(ctx, 1, 0);
@@ -2617,7 +2696,7 @@ trans_idiv(const struct instr_translater *t,
 
 		/* absneg.s b, (neg)q */
 		instr = instr_create(ctx, 2, OPC_ABSNEG_S);
-		vectorize(ctx, instr, &b_dst, 1, q_src, IR3_REG_NEGATE);
+		vectorize(ctx, instr, &b_dst, 1, q_src, IR3_REG_SNEG);
 
 		/* sel.b dst, b, r, q */
 		instr = instr_create(ctx, 3, OPC_SEL_B32);
@@ -2693,14 +2772,16 @@ instr_cat2(const struct instr_translater *t,
 
 	switch (t->tgsi_opc) {
 	case TGSI_OPCODE_ABS:
+		src0_flags = IR3_REG_FABS;
+		break;
 	case TGSI_OPCODE_IABS:
-		src0_flags = IR3_REG_ABS;
+		src0_flags = IR3_REG_SABS;
 		break;
 	case TGSI_OPCODE_INEG:
-		src0_flags = IR3_REG_NEGATE;
+		src0_flags = IR3_REG_SNEG;
 		break;
 	case TGSI_OPCODE_SUB:
-		src1_flags = IR3_REG_NEGATE;
+		src1_flags = IR3_REG_FNEG;
 		break;
 	}
 
@@ -3102,15 +3183,23 @@ decl_in(struct ir3_compile_context *ctx, struct tgsi_full_declaration *decl)
 				} else {
 					bool use_ldlv = false;
 
-					/* I don't believe it is valid to not have Interp
-					 * on a normal frag shader input, and various parts
-					 * that that handle flat/smooth shading make this
-					 * assumption as well.
+					/* if no interpolation given, pick based on
+					 * semantic:
 					 */
-					compile_assert(ctx, decl->Declaration.Interpolate);
+					if (!decl->Declaration.Interpolate) {
+						switch (decl->Semantic.Name) {
+						case TGSI_SEMANTIC_COLOR:
+							so->inputs[n].interpolate =
+									TGSI_INTERPOLATE_COLOR;
+							break;
+						default:
+							so->inputs[n].interpolate =
+									TGSI_INTERPOLATE_LINEAR;
+						}
+					}
 
 					if (ctx->flat_bypass) {
-						switch (decl->Interp.Interpolate) {
+						switch (so->inputs[n].interpolate) {
 						case TGSI_INTERPOLATE_COLOR:
 							if (!ctx->so->key.rasterflat)
 								break;
@@ -3157,7 +3246,7 @@ decl_sv(struct ir3_compile_context *ctx, struct tgsi_full_declaration *decl)
 	so->inputs[n].compmask = 1;
 	so->inputs[n].regid = r;
 	so->inputs[n].inloc = ctx->next_inloc;
-	so->inputs[n].interpolate = false;
+	so->inputs[n].interpolate = TGSI_INTERPOLATE_CONSTANT;
 
 	struct ir3_instruction *instr = NULL;
 
@@ -3170,7 +3259,8 @@ decl_sv(struct ir3_compile_context *ctx, struct tgsi_full_declaration *decl)
 		instr->cat1.src_type = get_stype(ctx);
 		instr->cat1.dst_type = get_stype(ctx);
 		ir3_reg_create(instr, 0, 0);
-		ir3_reg_create(instr, regid(so->first_driver_param, 0), IR3_REG_CONST);
+		ir3_reg_create(instr, regid(so->first_driver_param + 4, 0),
+					   IR3_REG_CONST);
 		break;
 	case TGSI_SEMANTIC_INSTANCEID:
 		ctx->instance_id = instr = create_input(ctx->block, NULL, r);
@@ -3412,6 +3502,15 @@ compile_instructions(struct ir3_compile_context *ctx)
 
 			break;
 		}
+		case TGSI_TOKEN_TYPE_PROPERTY: {
+			struct tgsi_full_property *prop =
+				&ctx->parser.FullToken.FullProperty;
+			switch (prop->Property.PropertyName) {
+			case TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS:
+				ctx->so->color0_mrt = !!prop->u[0].Data;
+				break;
+			}
+		}
 		default:
 			break;
 		}
@@ -3494,23 +3593,6 @@ ir3_compile_shader(struct ir3_shader_variant *so,
 		}
 		so->outputs_count = j;
 		block->noutputs = j * 4;
-	}
-
-	/* for rendering to alpha format, we only need the .w component,
-	 * and we need it to be in the .x position:
-	 */
-	if (key.alpha) {
-		for (i = 0, j = 0; i < so->outputs_count; i++) {
-			unsigned name = sem2name(so->outputs[i].semantic);
-
-			/* move .w component to .x and discard others: */
-			if (name == TGSI_SEMANTIC_COLOR) {
-				block->outputs[(i*4)+0] = block->outputs[(i*4)+3];
-				block->outputs[(i*4)+1] = NULL;
-				block->outputs[(i*4)+2] = NULL;
-				block->outputs[(i*4)+3] = NULL;
-			}
-		}
 	}
 
 	/* if we want half-precision outputs, mark the output registers

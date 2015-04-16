@@ -25,6 +25,7 @@
 #include "main/mtypes.h"
 #include "main/samplerobj.h"
 #include "main/texformat.h"
+#include "main/teximage.h"
 #include "program/prog_parameter.h"
 
 #include "intel_mipmap_tree.h"
@@ -128,8 +129,11 @@ gen8_emit_buffer_surface_state(struct brw_context *brw,
 
    surf[2] = SET_FIELD((buffer_size - 1) & 0x7f, GEN7_SURFACE_WIDTH) |
              SET_FIELD(((buffer_size - 1) >> 7) & 0x3fff, GEN7_SURFACE_HEIGHT);
-   surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3f, BRW_SURFACE_DEPTH) |
-             (pitch - 1);
+   if (surface_format == BRW_SURFACEFORMAT_RAW)
+      surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3ff, BRW_SURFACE_DEPTH);
+   else
+      surf[3] = SET_FIELD(((buffer_size - 1) >> 21) & 0x3f, BRW_SURFACE_DEPTH);
+   surf[3] |= (pitch - 1);
    surf[7] = SET_FIELD(HSW_SCS_RED,   GEN7_SURFACE_SCS_R) |
              SET_FIELD(HSW_SCS_GREEN, GEN7_SURFACE_SCS_G) |
              SET_FIELD(HSW_SCS_BLUE,  GEN7_SURFACE_SCS_B) |
@@ -208,7 +212,8 @@ gen8_update_texture_surface(struct gl_context *ctx,
       surf[0] |= BRW_SURFACE_CUBEFACE_ENABLES;
    }
 
-   if (mt->logical_depth0 > 1 && tObj->Target != GL_TEXTURE_3D)
+   if (_mesa_is_array_texture(tObj->Target) ||
+       tObj->Target == GL_TEXTURE_CUBE_MAP)
       surf[0] |= GEN8_SURFACE_IS_ARRAY;
 
    surf[1] = SET_FIELD(mocs_wb, GEN8_SURFACE_MOCS) | mt->qpitch >> 2;
@@ -364,7 +369,7 @@ gen8_update_renderbuffer_surface(struct brw_context *brw,
       format = brw->render_target_format[rb_format];
       if (unlikely(!brw->format_supported_as_render_target[rb_format]))
          _mesa_problem(ctx, "%s: renderbuffer format %s unsupported\n",
-                       __FUNCTION__, _mesa_get_format_name(rb_format));
+                       __func__, _mesa_get_format_name(rb_format));
    }
 
    if (mt->mcs_mt) {

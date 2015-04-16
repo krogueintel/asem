@@ -71,6 +71,7 @@ static const struct debug_named_value debug_options[] = {
 		{"optdump",   FD_DBG_OPTDUMP,"Dump shader DAG to .dot files"},
 		{"glsl120",   FD_DBG_GLSL120,"Temporary flag to force GLSL 120 (rather than 130) on a3xx+"},
 		{"nocp",      FD_DBG_NOCP,   "Disable copy-propagation"},
+		{"nir",       FD_DBG_NIR,    "Enable experimental NIR compiler"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -94,6 +95,13 @@ fd_screen_get_vendor(struct pipe_screen *pscreen)
 {
 	return "freedreno";
 }
+
+static const char *
+fd_screen_get_device_vendor(struct pipe_screen *pscreen)
+{
+	return "Qualcomm";
+}
+
 
 static uint64_t
 fd_screen_get_timestamp(struct pipe_screen *pscreen)
@@ -172,6 +180,10 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
 		return is_a3xx(screen) || is_a4xx(screen);
 
+	case PIPE_CAP_INDEP_BLEND_ENABLE:
+	case PIPE_CAP_INDEP_BLEND_FUNC:
+		return is_a3xx(screen);
+
 	case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
 		return 256;
 
@@ -181,8 +193,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return (is_a3xx(screen) || is_a4xx(screen)) ? 130 : 120;
 
 	/* Unsupported features. */
-	case PIPE_CAP_INDEP_BLEND_ENABLE:
-	case PIPE_CAP_INDEP_BLEND_FUNC:
 	case PIPE_CAP_DEPTH_CLIP_DISABLE:
 	case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
 	case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
@@ -243,7 +253,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	/* Render targets. */
 	case PIPE_CAP_MAX_RENDER_TARGETS:
-		return 1;
+		return screen->max_rts;
 
 	/* Queries. */
 	case PIPE_CAP_QUERY_TIME_ELAPSED:
@@ -293,7 +303,7 @@ fd_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 	case PIPE_CAPF_MAX_LINE_WIDTH_AA:
 	case PIPE_CAPF_MAX_POINT_WIDTH:
 	case PIPE_CAPF_MAX_POINT_WIDTH_AA:
-		return 8192.0f;
+		return 4092.0f;
 	case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
 		return 16.0f;
 	case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
@@ -336,6 +346,10 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 	case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
 		return 16384;
 	case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
+		/* for now, let someone else flatten if/else when using NIR: */
+		if ((fd_mesa_debug & FD_DBG_NIR) &&
+				(is_a3xx(screen) || is_a4xx(screen)))
+			return 0;
 		return 8; /* XXX */
 	case PIPE_SHADER_CAP_MAX_INPUTS:
 	case PIPE_SHADER_CAP_MAX_OUTPUTS:
@@ -347,9 +361,9 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 		 * split between VS and FS.  Use lower limit of 256 to
 		 * avoid getting into impossible situations:
 		 */
-		return ((is_a3xx(screen) || is_a4xx(screen)) ? 256 : 64) * sizeof(float[4]);
+		return ((is_a3xx(screen) || is_a4xx(screen)) ? 4096 : 64) * sizeof(float[4]);
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-		return 1;
+		return is_a3xx(screen) ? 16 : 1;
 	case PIPE_SHADER_CAP_MAX_PREDS:
 		return 0; /* nothing uses this */
 	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
@@ -531,6 +545,7 @@ fd_screen_create(struct fd_device *dev)
 
 	pscreen->get_name = fd_screen_get_name;
 	pscreen->get_vendor = fd_screen_get_vendor;
+	pscreen->get_device_vendor = fd_screen_get_device_vendor;
 
 	pscreen->get_timestamp = fd_screen_get_timestamp;
 

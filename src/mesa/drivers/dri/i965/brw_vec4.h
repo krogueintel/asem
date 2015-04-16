@@ -201,6 +201,8 @@ public:
    bool opt_vector_float();
    bool opt_reduce_swizzle();
    bool dead_code_eliminate();
+   int var_range_start(unsigned v, unsigned n) const;
+   int var_range_end(unsigned v, unsigned n) const;
    bool virtual_grf_interferes(int a, int b);
    bool opt_copy_propagation(bool do_constant_prop = true);
    bool opt_cse_local(bblock_t *block);
@@ -256,7 +258,6 @@ public:
    vec4_instruction *IF(src_reg src0, src_reg src1,
                         enum brw_conditional_mod condition);
    vec4_instruction *IF(enum brw_predicate predicate);
-   EMIT1(PULL_CONSTANT_LOAD)
    EMIT1(SCRATCH_READ)
    EMIT2(SCRATCH_WRITE)
    EMIT3(LRP)
@@ -313,9 +314,6 @@ public:
    void emit_scalar(ir_instruction *ir, enum prog_opcode op,
 		    dst_reg dst, src_reg src0, src_reg src1);
 
-   void emit_scs(ir_instruction *ir, enum prog_opcode op,
-		 dst_reg dst, const src_reg &src);
-
    src_reg fix_3src_operand(src_reg src);
 
    void emit_math(enum opcode opcode, const dst_reg &dst, const src_reg &src0,
@@ -366,6 +364,8 @@ public:
 				dst_reg dst,
 				src_reg orig_src,
 				int base_offset);
+   src_reg emit_resolve_reladdr(int scratch_loc[], bblock_t *block,
+                                vec4_instruction *inst, src_reg src);
 
    bool try_emit_mad(ir_expression *ir);
    bool try_emit_b2f_of_compare(ir_expression *ir);

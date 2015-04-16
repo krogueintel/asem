@@ -149,6 +149,13 @@ struct brw_vue_prog_key;
 struct brw_wm_prog_key;
 struct brw_wm_prog_data;
 
+enum brw_pipeline {
+   BRW_RENDER_PIPELINE,
+   BRW_COMPUTE_PIPELINE,
+
+   BRW_NUM_PIPELINES
+};
+
 enum brw_cache_id {
    BRW_CACHE_FS_PROG,
    BRW_CACHE_BLORP_BLIT_PROG,
@@ -1110,7 +1117,7 @@ struct brw_context
 
    GLuint NewGLState;
    struct {
-      struct brw_state_flags dirty;
+      struct brw_state_flags pipelines[BRW_NUM_PIPELINES];
    } state;
 
    struct brw_cache cache;
@@ -1402,8 +1409,9 @@ struct brw_context
       int entries_per_oa_snapshot;
    } perfmon;
 
-   int num_atoms;
-   const struct brw_tracked_state atoms[57];
+   int num_atoms[BRW_NUM_PIPELINES];
+   const struct brw_tracked_state render_atoms[57];
+   const struct brw_tracked_state compute_atoms[1];
 
    /* If (INTEL_DEBUG & DEBUG_BATCH) */
    struct {
@@ -1673,7 +1681,6 @@ void brw_upload_abo_surfaces(struct brw_context *brw,
                              struct brw_stage_prog_data *prog_data);
 
 /* brw_surface_formats.c */
-bool brw_is_hiz_depth_format(struct brw_context *ctx, mesa_format format);
 bool brw_render_target_supported(struct brw_context *brw,
                                  struct gl_renderbuffer *rb);
 uint32_t brw_depth_format(struct brw_context *brw, mesa_format format);

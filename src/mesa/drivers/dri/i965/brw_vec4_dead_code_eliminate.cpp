@@ -80,9 +80,10 @@ vec4_visitor::dead_code_eliminate()
          if (inst->dst.file == GRF && !inst->has_side_effects()) {
             bool result_live[4] = { false };
 
-            for (int c = 0; c < 4; c++) {
-               int var = inst->dst.reg * 4 + c;
-               result_live[c] = BITSET_TEST(live, var);
+            for (unsigned i = 0; i < inst->regs_written; i++) {
+               for (int c = 0; c < 4; c++)
+                  result_live[c] |= BITSET_TEST(
+                     live, var_from_reg(alloc, offset(inst->dst, i), c));
             }
 
             /* If the instruction can't do writemasking, then it's all or
@@ -123,10 +124,12 @@ vec4_visitor::dead_code_eliminate()
          }
 
          if (inst->dst.file == GRF && !inst->predicate) {
-            for (int c = 0; c < 4; c++) {
-               if (inst->dst.writemask & (1 << c)) {
-                  int var = inst->dst.reg * 4 + c;
-                  BITSET_CLEAR(live, var);
+            for (unsigned i = 0; i < inst->regs_written; i++) {
+               for (int c = 0; c < 4; c++) {
+                  if (inst->dst.writemask & (1 << c)) {
+                     BITSET_CLEAR(live, var_from_reg(alloc,
+                                                     offset(inst->dst, i), c));
+                  }
                }
             }
          }
@@ -137,11 +140,11 @@ vec4_visitor::dead_code_eliminate()
 
          for (int i = 0; i < 3; i++) {
             if (inst->src[i].file == GRF) {
-               for (int c = 0; c < 4; c++) {
-                  int swiz = BRW_GET_SWZ(inst->src[i].swizzle, c);
-                  int var = inst->src[i].reg * 4 + swiz;
-
-                  BITSET_SET(live, var);
+               for (unsigned j = 0; j < inst->regs_read(i); j++) {
+                  for (int c = 0; c < 4; c++) {
+                     BITSET_SET(live, var_from_reg(alloc,
+                                                   offset(inst->src[i], j), c));
+                  }
                }
             }
          }

@@ -123,10 +123,17 @@ if test "x$INDENT" != "xcat"; then
 fi
 
 AX_CHECK_PYTHON_MAKO_MODULE($PYTHON_MAKO_REQUIRED)
-if test -n "$PYTHON2" -a "x$acv_mako_found" = "xyes"; then
-    AC_MSG_RESULT(yes)
+
+if test -z "$PYTHON2"; then
+    if test ! -f "$srcdir/src/util/format_srgb.c"; then
+        AC_MSG_ERROR([Python not found - unable to generate sources])
+    fi
 else
-    AC_MSG_ERROR([Python mako module v$PYTHON_MAKO_REQUIRED or higher not found])
+    if test "x$acv_mako_found" = xno; then
+        if test ! -f "$srcdir/src/mesa/main/format_unpack.c"; then
+            AC_MSG_ERROR([Python mako module v$PYTHON_MAKO_REQUIRED or higher not found])
+        fi
+    fi
 fi
 
 AC_PROG_INSTALL
@@ -223,7 +230,7 @@ _SAVE_LDFLAGS="$LDFLAGS"
 _SAVE_CPPFLAGS="$CPPFLAGS"
 
 dnl Compiler macros
-DEFINES="-DUSE_EXTERNAL_DXTN_LIB=1"
+DEFINES=""
 AC_SUBST([DEFINES])
 case "$host_os" in
 linux*|*-gnu*|gnu*)
@@ -1649,19 +1656,6 @@ dnl
 dnl OpenCL configuration
 dnl
 
-AC_ARG_WITH([libclc-path],
-   [AS_HELP_STRING([--with-libclc-path],
-         [DEPRECATED: See http://dri.freedesktop.org/wiki/GalliumCompute#How_to_Install])],
-   [LIBCLC_PATH="$withval"],
-   [LIBCLC_PATH=''])
-
-if test -n "$LIBCLC_PATH"; then
-   AC_MSG_ERROR([The --with-libclc-path option has been deprecated.
-                  Please review the updated build instructions for clover:
-		  http://dri.freedesktop.org/wiki/GalliumCompute])
-fi
-
-
 AC_ARG_WITH([clang-libdir],
    [AS_HELP_STRING([--with-clang-libdir],
          [Path to Clang libraries @<:@default=llvm-config --libdir@:>@])],
@@ -1824,21 +1818,6 @@ if ! echo "$egl_platforms" | grep -q 'x11'; then
     DEFINES="$DEFINES -DMESA_EGL_NO_X11_HEADERS"
     GL_PC_CFLAGS="$GL_PC_CFLAGS -DMESA_EGL_NO_X11_HEADERS"
 fi
-
-AC_ARG_WITH([max-width],
-    [AS_HELP_STRING([--with-max-width=N],
-                    [Maximum framebuffer width (4096)])],
-    [DEFINES="${DEFINES} -DMAX_WIDTH=${withval}";
-     AS_IF([test "${withval}" -gt "4096"],
-           [AC_MSG_WARN([Large framebuffer: see s_tritemp.h comments.])])]
-)
-AC_ARG_WITH([max-height],
-    [AS_HELP_STRING([--with-max-height=N],
-                    [Maximum framebuffer height (4096)])],
-    [DEFINES="${DEFINES} -DMAX_HEIGHT=${withval}";
-     AS_IF([test "${withval}" -gt "4096"],
-           [AC_MSG_WARN([Large framebuffer: see s_tritemp.h comments.])])]
-)
 
 dnl
 dnl Gallium LLVM

@@ -231,6 +231,8 @@ public:
    bool compute_to_mrf();
    bool dead_code_eliminate();
    bool remove_duplicate_mrf_writes();
+
+   bool opt_sampler_eot();
    bool virtual_grf_interferes(int a, int b);
    void schedule_instructions(instruction_scheduler_mode mode);
    void insert_gen4_send_dependency_workarounds();
@@ -271,6 +273,10 @@ public:
                               fs_reg shadow_comp,
                               fs_reg lod, fs_reg lod2, int grad_components,
                               uint32_t sampler);
+   fs_inst *emit_texture_gen4_simd16(ir_texture_opcode op, fs_reg dst,
+                                     fs_reg coordinate, int vector_elements,
+                                     fs_reg shadow_c, fs_reg lod,
+                                     uint32_t sampler);
    fs_inst *emit_texture_gen5(ir_texture_opcode op, fs_reg dst,
                               fs_reg coordinate, int coord_components,
                               fs_reg shadow_comp,

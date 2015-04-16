@@ -194,7 +194,7 @@ intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
    }
 
    DBG("%s %s to mt %p level %d layer %d\n",
-       __FUNCTION__, opname, mt, level, layer);
+       __func__, opname, mt, level, layer);
 
    if (brw->gen >= 8) {
       gen8_hiz_exec(brw, mt, level, layer, op);
@@ -276,7 +276,7 @@ retry:
    /* We've smashed all state compared to what the normal 3D pipeline
     * rendering tracks for GL.
     */
-   brw->state.dirty.brw = ~0ull;
+   brw->ctx.NewDriverState = ~0ull;
    brw->no_depth_or_stencil = false;
    brw->ib.type = -1;
 

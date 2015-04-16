@@ -43,6 +43,8 @@ static const struct debug_named_value debug_options[] = {
           "Dump generated QPU instructions" },
         { "qir",      VC4_DEBUG_QIR,
           "Dump QPU IR during program compile" },
+        { "nir",      VC4_DEBUG_NIR,
+          "Dump NIR during program compile" },
         { "tgsi",     VC4_DEBUG_TGSI,
           "Dump TGSI during program compile" },
         { "shaderdb", VC4_DEBUG_SHADERDB,
@@ -472,6 +474,7 @@ vc4_screen_create(int fd)
 
         pscreen->get_name = vc4_screen_get_name;
         pscreen->get_vendor = vc4_screen_get_vendor;
+        pscreen->get_device_vendor = vc4_screen_get_vendor;
 
         return pscreen;
 }

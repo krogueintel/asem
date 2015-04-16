@@ -441,9 +441,6 @@ public:
 
    void emit_arl(ir_instruction *ir, st_dst_reg dst, st_src_reg src0);
 
-   void emit_scs(ir_instruction *ir, unsigned op,
-                 st_dst_reg dst, const st_src_reg &src);
-
    bool try_emit_mad(ir_expression *ir,
               int mul_operand);
    bool try_emit_mad_for_and_not(ir_expression *ir,
@@ -964,101 +961,6 @@ glsl_to_tgsi_visitor::emit_arl(ir_instruction *ir,
       this->num_address_regs = dst.index + 1;
 
    emit(NULL, op, dst, src0);
-}
-
-/**
- * Emit an TGSI_OPCODE_SCS instruction
- *
- * The \c SCS opcode functions a bit differently than the other TGSI opcodes.
- * Instead of splatting its result across all four components of the
- * destination, it writes one value to the \c x component and another value to
- * the \c y component.
- *
- * \param ir        IR instruction being processed
- * \param op        Either \c TGSI_OPCODE_SIN or \c TGSI_OPCODE_COS depending
- *                  on which value is desired.
- * \param dst       Destination register
- * \param src       Source register
- */
-void
-glsl_to_tgsi_visitor::emit_scs(ir_instruction *ir, unsigned op,
-                               st_dst_reg dst,
-                               const st_src_reg &src)
-{
-   /* Vertex programs cannot use the SCS opcode.
-    */
-   if (this->prog->Target == GL_VERTEX_PROGRAM_ARB) {
-      emit_scalar(ir, op, dst, src);
-      return;
-   }
-
-   const unsigned component = (op == TGSI_OPCODE_SIN) ? 0 : 1;
-   const unsigned scs_mask = (1U << component);
-   int done_mask = ~dst.writemask;
-   st_src_reg tmp;
-
-   assert(op == TGSI_OPCODE_SIN || op == TGSI_OPCODE_COS);
-
-   /* If there are compnents in the destination that differ from the component
-    * that will be written by the SCS instrution, we'll need a temporary.
-    */
-   if (scs_mask != unsigned(dst.writemask)) {
-      tmp = get_temp(glsl_type::vec4_type);
-   }
-
-   for (unsigned i = 0; i < 4; i++) {
-      unsigned this_mask = (1U << i);
-      st_src_reg src0 = src;
-
-      if ((done_mask & this_mask) != 0)
-         continue;
-
-      /* The source swizzle specified which component of the source generates
-       * sine / cosine for the current component in the destination.  The SCS
-       * instruction requires that this value be swizzle to the X component.
-       * Replace the current swizzle with a swizzle that puts the source in
-       * the X component.
-       */
-      unsigned src0_swiz = GET_SWZ(src.swizzle, i);
-
-      src0.swizzle = MAKE_SWIZZLE4(src0_swiz, src0_swiz,
-                                   src0_swiz, src0_swiz);
-      for (unsigned j = i + 1; j < 4; j++) {
-         /* If there is another enabled component in the destination that is
-          * derived from the same inputs, generate its value on this pass as
-          * well.
-          */
-         if (!(done_mask & (1 << j)) &&
-             GET_SWZ(src0.swizzle, j) == src0_swiz) {
-            this_mask |= (1 << j);
-         }
-      }
-
-      if (this_mask != scs_mask) {
-         glsl_to_tgsi_instruction *inst;
-         st_dst_reg tmp_dst = st_dst_reg(tmp);
-
-         /* Emit the SCS instruction.
-          */
-         inst = emit(ir, TGSI_OPCODE_SCS, tmp_dst, src0);
-         inst->dst[0].writemask = scs_mask;
-
-         /* Move the result of the SCS instruction to the desired location in
-          * the destination.
-          */
-         tmp.swizzle = MAKE_SWIZZLE4(component, component,
-                                     component, component);
-         inst = emit(ir, TGSI_OPCODE_SCS, dst, tmp);
-         inst->dst[0].writemask = this_mask;
-      } else {
-         /* Emit the SCS instruction to write directly to the destination.
-          */
-         glsl_to_tgsi_instruction *inst = emit(ir, TGSI_OPCODE_SCS, dst, src0);
-         inst->dst[0].writemask = scs_mask;
-      }
-
-      done_mask |= this_mask;
-   }
 }
 
 int
@@ -1610,12 +1512,6 @@ glsl_to_tgsi_visitor::visit(ir_expression *ir)
       break;
    case ir_unop_cos:
       emit_scalar(ir, TGSI_OPCODE_COS, result_dst, op[0]);
-      break;
-   case ir_unop_sin_reduced:
-      emit_scs(ir, TGSI_OPCODE_SIN, result_dst, op[0]);
-      break;
-   case ir_unop_cos_reduced:
-      emit_scs(ir, TGSI_OPCODE_COS, result_dst, op[0]);
       break;
    case ir_unop_saturate: {
       glsl_to_tgsi_instruction *inst;
@@ -3465,6 +3361,7 @@ glsl_to_tgsi_visitor::glsl_to_tgsi_visitor()
    shader = NULL;
    options = NULL;
    have_sqrt = false;
+   have_fma = false;
 }
 
 glsl_to_tgsi_visitor::~glsl_to_tgsi_visitor()
@@ -3937,6 +3834,7 @@ glsl_to_tgsi_visitor::copy_propagate(void)
              inst->dst[0].index == inst->src[0].index) &&
           !inst->dst[0].reladdr &&
           !inst->saturate &&
+          inst->src[0].file != PROGRAM_ARRAY &&
           !inst->src[0].reladdr &&
           !inst->src[0].reladdr2 &&
           !inst->src[0].negate) {
@@ -5502,7 +5400,7 @@ out:
       free(t->immediates);
 
       if (t->error) {
-         debug_printf("%s: translate error flag set\n", __FUNCTION__);
+         debug_printf("%s: translate error flag set\n", __func__);
       }
 
       free(t);
@@ -5634,14 +5532,12 @@ get_mesa_program(struct gl_context *ctx,
    v->emit(NULL, TGSI_OPCODE_END);
 
    if (ctx->_Shader->Flags & GLSL_DUMP) {
-      printf("\n");
-      printf("GLSL IR for linked %s program %d:\n",
+      _mesa_log("\n");
+      _mesa_log("GLSL IR for linked %s program %d:\n",
              _mesa_shader_stage_to_string(shader->Stage),
              shader_program->Name);
-      _mesa_print_ir(stdout, shader->ir, NULL);
-      printf("\n");
-      printf("\n");
-      fflush(stdout);
+      _mesa_print_ir(_mesa_get_log_file(), shader->ir, NULL);
+      _mesa_log("\n\n");
    }
 
    prog->Instructions = NULL;

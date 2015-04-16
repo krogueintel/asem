@@ -43,6 +43,7 @@
 
 #include "brw_context.h"
 #include "brw_shader.h"
+#include "brw_nir.h"
 #include "brw_wm.h"
 #include "intel_batchbuffer.h"
 
@@ -136,10 +137,14 @@ brwProgramStringNotify(struct gl_context *ctx,
          brw_fragment_program_const(brw->fragment_program);
 
       if (newFP == curFP)
-	 brw->state.dirty.brw |= BRW_NEW_FRAGMENT_PROGRAM;
+	 brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
       newFP->id = get_new_program_id(brw->intelScreen);
 
       brw_add_texrect_params(prog);
+
+      if (ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions) {
+         prog->nir = brw_create_nir(brw, NULL, prog, MESA_SHADER_FRAGMENT);
+      }
 
       brw_fs_precompile(ctx, NULL, prog);
       break;
@@ -151,7 +156,7 @@ brwProgramStringNotify(struct gl_context *ctx,
          brw_vertex_program_const(brw->vertex_program);
 
       if (newVP == curVP)
-	 brw->state.dirty.brw |= BRW_NEW_VERTEX_PROGRAM;
+	 brw->ctx.NewDriverState |= BRW_NEW_VERTEX_PROGRAM;
       if (newVP->program.IsPositionInvariant) {
 	 _mesa_insert_mvp_code(ctx, &newVP->program);
       }
@@ -162,6 +167,10 @@ brwProgramStringNotify(struct gl_context *ctx,
       _tnl_program_string(ctx, target, prog);
 
       brw_add_texrect_params(prog);
+
+      if (ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions) {
+         prog->nir = brw_create_nir(brw, NULL, prog, MESA_SHADER_VERTEX);
+      }
 
       brw_vs_precompile(ctx, NULL, prog);
       break;

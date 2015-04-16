@@ -45,8 +45,9 @@
 
 #include "util/ralloc.h"
 
-static void compile_ff_gs_prog(struct brw_context *brw,
-                               struct brw_ff_gs_prog_key *key)
+void
+brw_compile_ff_gs_prog(struct brw_context *brw,
+                       struct brw_ff_gs_prog_key *key)
 {
    struct brw_ff_gs_compile c;
    const GLuint *program;
@@ -147,8 +148,19 @@ static void compile_ff_gs_prog(struct brw_context *brw,
    ralloc_free(mem_ctx);
 }
 
-static void populate_key(struct brw_context *brw,
-                         struct brw_ff_gs_prog_key *key)
+static bool
+brw_ff_gs_state_dirty(struct brw_context *brw)
+{
+   return brw_state_dirty(brw,
+                          _NEW_LIGHT,
+                          BRW_NEW_PRIMITIVE |
+                          BRW_NEW_TRANSFORM_FEEDBACK |
+                          BRW_NEW_VS_PROG_DATA);
+}
+
+static void
+brw_ff_gs_populate_key(struct brw_context *brw,
+                       struct brw_ff_gs_prog_key *key)
 {
    static const unsigned swizzle_for_offset[4] = {
       BRW_SWIZZLE4(0, 1, 2, 3),
@@ -226,19 +238,15 @@ brw_upload_ff_gs_prog(struct brw_context *brw)
 {
    struct brw_ff_gs_prog_key key;
 
-   if (!brw_state_dirty(brw,
-                        _NEW_LIGHT,
-                        BRW_NEW_PRIMITIVE |
-                        BRW_NEW_TRANSFORM_FEEDBACK |
-                        BRW_NEW_VS_PROG_DATA))
+   if (!brw_ff_gs_state_dirty(brw))
       return;
 
    /* Populate the key:
     */
-   populate_key(brw, &key);
+   brw_ff_gs_populate_key(brw, &key);
 
    if (brw->ff_gs.prog_active != key.need_gs_prog) {
-      brw->state.dirty.brw |= BRW_NEW_FF_GS_PROG_DATA;
+      brw->ctx.NewDriverState |= BRW_NEW_FF_GS_PROG_DATA;
       brw->ff_gs.prog_active = key.need_gs_prog;
    }
 
@@ -246,7 +254,7 @@ brw_upload_ff_gs_prog(struct brw_context *brw)
       if (!brw_search_cache(&brw->cache, BRW_CACHE_FF_GS_PROG,
 			    &key, sizeof(key),
 			    &brw->ff_gs.prog_offset, &brw->ff_gs.prog_data)) {
-	 compile_ff_gs_prog( brw, &key );
+         brw_compile_ff_gs_prog(brw, &key);
       }
    }
 }

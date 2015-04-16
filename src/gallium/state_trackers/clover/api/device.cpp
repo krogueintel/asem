@@ -196,6 +196,9 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_MEM_BASE_ADDR_ALIGN:
+      buf.as_scalar<cl_uint>() = 128 * 8;
+      break;
+
    case CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE:
       buf.as_scalar<cl_uint>() = 128;
       break;
@@ -301,7 +304,13 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_EXTENSIONS:
-      buf.as_string() = dev.has_doubles() ? "cl_khr_fp64" : "";
+      buf.as_string() =
+         "cl_khr_global_int32_base_atomics"
+         " cl_khr_global_int32_extended_atomics"
+         " cl_khr_local_int32_base_atomics"
+         " cl_khr_local_int32_extended_atomics"
+         " cl_khr_byte_addressable_store"
+         + std::string(dev.has_doubles() ? " cl_khr_fp64" : "");
       break;
 
    case CL_DEVICE_PLATFORM:
@@ -341,7 +350,7 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_OPENCL_C_VERSION:
-      buf.as_string() = "OpenCL C 1.1";
+      buf.as_string() = "OpenCL C 1.1 ";
       break;
 
    case CL_DEVICE_PARENT_DEVICE:

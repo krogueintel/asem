@@ -551,13 +551,14 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxInputComponents = 128;
    }
 
-   static const nir_shader_compiler_options gen4_nir_options = {
+   static const nir_shader_compiler_options nir_options = {
       .native_integers = true,
+      /* In order to help allow for better CSE at the NIR level we tell NIR
+       * to split all ffma instructions during opt_algebraic and we then
+       * re-combine them as a later step.
+       */
       .lower_ffma = true,
-   };
-
-   static const nir_shader_compiler_options gen6_nir_options = {
-      .native_integers = true,
+      .lower_sub = true,
    };
 
    /* We want the GLSL compiler to emit code that uses condition codes */
@@ -573,10 +574,6 @@ brw_initialize_context_constants(struct brw_context *brw)
 	 (i == MESA_SHADER_FRAGMENT);
       ctx->Const.ShaderCompilerOptions[i].EmitNoIndirectUniform = false;
       ctx->Const.ShaderCompilerOptions[i].LowerClipDistance = true;
-      if (brw->gen >= 6)
-         ctx->Const.ShaderCompilerOptions[i].NirOptions = &gen6_nir_options;
-      else
-         ctx->Const.ShaderCompilerOptions[i].NirOptions = &gen4_nir_options;
    }
 
    ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = true;
@@ -589,7 +586,13 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectOutput = true;
       ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectTemp = true;
       ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = false;
+
+      if (brw_env_var_as_boolean("INTEL_USE_NIR", false))
+         ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions = &nir_options;
    }
+
+   if (brw_env_var_as_boolean("INTEL_USE_NIR", true))
+      ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions = &nir_options;
 
    /* ARB_viewport_array */
    if (brw->gen >= 7 && ctx->API == API_OPENGL_CORE) {
@@ -722,7 +725,7 @@ brwCreateContext(gl_api api,
 
    struct brw_context *brw = rzalloc(NULL, struct brw_context);
    if (!brw) {
-      fprintf(stderr, "%s: failed to alloc context\n", __FUNCTION__);
+      fprintf(stderr, "%s: failed to alloc context\n", __func__);
       *dri_ctx_error = __DRI_CTX_ERROR_NO_MEMORY;
       return false;
    }
@@ -778,7 +781,7 @@ brwCreateContext(gl_api api,
 
    if (!_mesa_initialize_context(ctx, api, mesaVis, shareCtx, &functions)) {
       *dri_ctx_error = __DRI_CTX_ERROR_NO_MEMORY;
-      fprintf(stderr, "%s: failed to init mesa context\n", __FUNCTION__);
+      fprintf(stderr, "%s: failed to init mesa context\n", __func__);
       intelDestroyContext(driContextPriv);
       return false;
    }
@@ -921,10 +924,6 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    struct brw_context *brw =
       (struct brw_context *) driContextPriv->driverPrivate;
    struct gl_context *ctx = &brw->ctx;
-
-   assert(brw); /* should never be null */
-   if (!brw)
-      return;
 
    /* Dump a final BMP in case the application doesn't call SwapBuffers */
    if (INTEL_DEBUG & DEBUG_AUB) {

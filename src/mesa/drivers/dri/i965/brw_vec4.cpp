@@ -25,6 +25,8 @@
 #include "brw_fs.h"
 #include "brw_cfg.h"
 #include "brw_vs.h"
+#include "brw_nir.h"
+#include "brw_vec4_live_variables.h"
 #include "brw_dead_control_flow.h"
 
 extern "C" {
@@ -39,26 +41,6 @@ extern "C" {
 using namespace brw;
 
 namespace brw {
-
-/**
- * Common helper for constructing swizzles.  When only a subset of
- * channels of a vec4 are used, we don't want to reference the other
- * channels, as that will tell optimization passes that those other
- * channels are used.
- */
-unsigned
-swizzle_for_size(int size)
-{
-   static const unsigned size_swizzles[4] = {
-      BRW_SWIZZLE4(SWIZZLE_X, SWIZZLE_X, SWIZZLE_X, SWIZZLE_X),
-      BRW_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Y, SWIZZLE_Y),
-      BRW_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_Z),
-      BRW_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W),
-   };
-
-   assert((size >= 1) && (size <= 4));
-   return size_swizzles[size - 1];
-}
 
 void
 src_reg::init()
@@ -75,7 +57,7 @@ src_reg::src_reg(register_file file, int reg, const glsl_type *type)
    this->file = file;
    this->reg = reg;
    if (type && (type->is_scalar() || type->is_vector() || type->is_matrix()))
-      this->swizzle = swizzle_for_size(type->vector_elements);
+      this->swizzle = brw_swizzle_for_size(type->vector_elements);
    else
       this->swizzle = BRW_SWIZZLE_XYZW;
 }
@@ -143,7 +125,7 @@ src_reg::src_reg(struct brw_reg reg)
    this->type = reg.type;
 }
 
-src_reg::src_reg(dst_reg reg)
+src_reg::src_reg(const dst_reg &reg)
 {
    init();
 
@@ -153,24 +135,7 @@ src_reg::src_reg(dst_reg reg)
    this->type = reg.type;
    this->reladdr = reg.reladdr;
    this->fixed_hw_reg = reg.fixed_hw_reg;
-
-   int swizzles[4];
-   int next_chan = 0;
-   int last = 0;
-
-   for (int i = 0; i < 4; i++) {
-      if (!(reg.writemask & (1 << i)))
-         continue;
-
-      swizzles[next_chan++] = last = i;
-   }
-
-   for (; next_chan < 4; next_chan++) {
-      swizzles[next_chan] = last;
-   }
-
-   this->swizzle = BRW_SWIZZLE4(swizzles[0], swizzles[1],
-                                swizzles[2], swizzles[3]);
+   this->swizzle = brw_swizzle_for_mask(reg.writemask);
 }
 
 void
@@ -195,7 +160,7 @@ dst_reg::dst_reg(register_file file, int reg)
 }
 
 dst_reg::dst_reg(register_file file, int reg, const glsl_type *type,
-                 int writemask)
+                 unsigned writemask)
 {
    init();
 
@@ -214,7 +179,7 @@ dst_reg::dst_reg(struct brw_reg reg)
    this->type = reg.type;
 }
 
-dst_reg::dst_reg(src_reg reg)
+dst_reg::dst_reg(const src_reg &reg)
 {
    init();
 
@@ -222,14 +187,7 @@ dst_reg::dst_reg(src_reg reg)
    this->reg = reg.reg;
    this->reg_offset = reg.reg_offset;
    this->type = reg.type;
-   /* How should we do writemasking when converting from a src_reg?  It seems
-    * pretty obvious that for src.xxxx the caller wants to write to src.x, but
-    * what about for src.wx?  Just special-case src.xxxx for now.
-    */
-   if (reg.swizzle == BRW_SWIZZLE_XXXX)
-      this->writemask = WRITEMASK_X;
-   else
-      this->writemask = WRITEMASK_XYZW;
+   this->writemask = brw_mask_for_swizzle(reg.swizzle);
    this->reladdr = reg.reladdr;
    this->fixed_hw_reg = reg.fixed_hw_reg;
 }
@@ -459,59 +417,26 @@ vec4_visitor::opt_reduce_swizzle()
           inst->is_send_from_grf())
          continue;
 
-      int swizzle[4];
+      unsigned swizzle;
 
       /* Determine which channels of the sources are read. */
       switch (inst->opcode) {
       case VEC4_OPCODE_PACK_BYTES:
-         swizzle[0] = 0;
-         swizzle[1] = 1;
-         swizzle[2] = 2;
-         swizzle[3] = 3;
-         break;
       case BRW_OPCODE_DP4:
       case BRW_OPCODE_DPH: /* FINISHME: DPH reads only three channels of src0,
                             *           but all four of src1.
                             */
-         swizzle[0] = 0;
-         swizzle[1] = 1;
-         swizzle[2] = 2;
-         swizzle[3] = 3;
+         swizzle = brw_swizzle_for_size(4);
          break;
       case BRW_OPCODE_DP3:
-         swizzle[0] = 0;
-         swizzle[1] = 1;
-         swizzle[2] = 2;
-         swizzle[3] = -1;
+         swizzle = brw_swizzle_for_size(3);
          break;
       case BRW_OPCODE_DP2:
-         swizzle[0] = 0;
-         swizzle[1] = 1;
-         swizzle[2] = -1;
-         swizzle[3] = -1;
+         swizzle = brw_swizzle_for_size(2);
          break;
       default:
-         swizzle[0] = inst->dst.writemask & WRITEMASK_X ? 0 : -1;
-         swizzle[1] = inst->dst.writemask & WRITEMASK_Y ? 1 : -1;
-         swizzle[2] = inst->dst.writemask & WRITEMASK_Z ? 2 : -1;
-         swizzle[3] = inst->dst.writemask & WRITEMASK_W ? 3 : -1;
+         swizzle = brw_swizzle_for_mask(inst->dst.writemask);
          break;
-      }
-
-      /* Resolve unread channels (-1) by assigning them the swizzle of the
-       * first channel that is used.
-       */
-      int first_used_channel = 0;
-      for (int i = 0; i < 4; i++) {
-         if (swizzle[i] != -1) {
-            first_used_channel = swizzle[i];
-            break;
-         }
-      }
-      for (int i = 0; i < 4; i++) {
-         if (swizzle[i] == -1) {
-            swizzle[i] = first_used_channel;
-         }
       }
 
       /* Update sources' swizzles. */
@@ -521,12 +446,8 @@ vec4_visitor::opt_reduce_swizzle()
              inst->src[i].file != UNIFORM)
             continue;
 
-         int swiz[4];
-         for (int j = 0; j < 4; j++) {
-            swiz[j] = BRW_GET_SWZ(inst->src[i].swizzle, swizzle[j]);
-         }
-
-         unsigned new_swizzle = BRW_SWIZZLE4(swiz[0], swiz[1], swiz[2], swiz[3]);
+         const unsigned new_swizzle =
+            brw_compose_swizzle(swizzle, inst->src[i].swizzle);
          if (inst->src[i].swizzle != new_swizzle) {
             inst->src[i].swizzle = new_swizzle;
             progress = true;
@@ -644,12 +565,8 @@ vec4_visitor::pack_uniform_registers()
 	    continue;
 
 	 inst->src[i].reg = new_loc[src];
-
-	 int sx = BRW_GET_SWZ(inst->src[i].swizzle, 0) + new_chan[src];
-	 int sy = BRW_GET_SWZ(inst->src[i].swizzle, 1) + new_chan[src];
-	 int sz = BRW_GET_SWZ(inst->src[i].swizzle, 2) + new_chan[src];
-	 int sw = BRW_GET_SWZ(inst->src[i].swizzle, 3) + new_chan[src];
-	 inst->src[i].swizzle = BRW_SWIZZLE4(sx, sy, sz, sw);
+         inst->src[i].swizzle += BRW_SWIZZLE4(new_chan[src], new_chan[src],
+                                              new_chan[src], new_chan[src]);
       }
    }
 }
@@ -1015,43 +932,25 @@ vec4_instruction::can_reswizzle(int dst_writemask,
 void
 vec4_instruction::reswizzle(int dst_writemask, int swizzle)
 {
-   int new_writemask = 0;
-   int new_swizzle[4] = { 0 };
-
-   /* Dot product instructions write a single result into all channels. */
+   /* Destination write mask doesn't correspond to source swizzle for the dot
+    * product and pack_bytes instructions.
+    */
    if (opcode != BRW_OPCODE_DP4 && opcode != BRW_OPCODE_DPH &&
-       opcode != BRW_OPCODE_DP3 && opcode != BRW_OPCODE_DP2) {
+       opcode != BRW_OPCODE_DP3 && opcode != BRW_OPCODE_DP2 &&
+       opcode != VEC4_OPCODE_PACK_BYTES) {
       for (int i = 0; i < 3; i++) {
          if (src[i].file == BAD_FILE || src[i].file == IMM)
             continue;
 
-         /* Destination write mask doesn't correspond to source swizzle for the
-          * pack_bytes instruction.
-          */
-         if (opcode == VEC4_OPCODE_PACK_BYTES)
-            continue;
-
-         for (int c = 0; c < 4; c++) {
-            new_swizzle[c] = BRW_GET_SWZ(src[i].swizzle, BRW_GET_SWZ(swizzle, c));
-         }
-
-         src[i].swizzle = BRW_SWIZZLE4(new_swizzle[0], new_swizzle[1],
-                                       new_swizzle[2], new_swizzle[3]);
+         src[i].swizzle = brw_compose_swizzle(swizzle, src[i].swizzle);
       }
    }
 
-   for (int c = 0; c < 4; c++) {
-      int bit = 1 << BRW_GET_SWZ(swizzle, c);
-      /* Skip components of the swizzle not used by the dst. */
-      if (!(dst_writemask & (1 << c)))
-         continue;
-      /* If we were populating this component, then populate the
-       * corresponding channel of the new dst.
-       */
-      if (dst.writemask & bit)
-         new_writemask |= (1 << c);
-   }
-   dst.writemask = new_writemask;
+   /* Apply the specified swizzle and writemask to the original mask of
+    * written components.
+    */
+   dst.writemask = dst_writemask &
+                   brw_apply_swizzle_to_mask(swizzle, dst.writemask);
 }
 
 /*
@@ -1084,10 +983,7 @@ vec4_visitor::opt_register_coalesce()
       /* Can't coalesce this GRF if someone else was going to
        * read it later.
        */
-      if (this->virtual_grf_end[inst->src[0].reg * 4 + 0] > ip ||
-          this->virtual_grf_end[inst->src[0].reg * 4 + 1] > ip ||
-          this->virtual_grf_end[inst->src[0].reg * 4 + 2] > ip ||
-          this->virtual_grf_end[inst->src[0].reg * 4 + 3] > ip)
+      if (var_range_end(var_from_reg(alloc, inst->src[0]), 4) > ip)
 	 continue;
 
       /* We need to check interference with the final destination between this
@@ -1095,22 +991,10 @@ vec4_visitor::opt_register_coalesce()
        * we're eliminating.  To do that, keep track of which of our source
        * channels we've seen initialized.
        */
-      bool chans_needed[4] = {false, false, false, false};
-      int chans_remaining = 0;
-      int swizzle_mask = 0;
-      for (int i = 0; i < 4; i++) {
-	 int chan = BRW_GET_SWZ(inst->src[0].swizzle, i);
-
-	 if (!(inst->dst.writemask & (1 << i)))
-	    continue;
-
-         swizzle_mask |= (1 << chan);
-
-	 if (!chans_needed[chan]) {
-	    chans_needed[chan] = true;
-	    chans_remaining++;
-	 }
-      }
+      const unsigned chans_needed =
+         brw_apply_inv_swizzle_to_mask(inst->src[0].swizzle,
+                                       inst->dst.writemask);
+      unsigned chans_remaining = chans_needed;
 
       /* Now walk up the instruction stream trying to see if we can rewrite
        * everything writing to the temporary to write into the destination
@@ -1121,9 +1005,7 @@ vec4_visitor::opt_register_coalesce()
                                                   inst, block) {
          _scan_inst = scan_inst;
 
-	 if (scan_inst->dst.file == GRF &&
-	     scan_inst->dst.reg == inst->src[0].reg &&
-	     scan_inst->dst.reg_offset == inst->src[0].reg_offset) {
+         if (inst->src[0].in_range(scan_inst->dst, scan_inst->regs_written)) {
             /* Found something writing to the reg we want to coalesce away. */
             if (to_mrf) {
                /* SEND instructions can't have MRF as a destination. */
@@ -1143,20 +1025,17 @@ vec4_visitor::opt_register_coalesce()
             /* If we can't handle the swizzle, bail. */
             if (!scan_inst->can_reswizzle(inst->dst.writemask,
                                           inst->src[0].swizzle,
-                                          swizzle_mask)) {
+                                          chans_needed)) {
                break;
             }
 
+            /* This doesn't handle coalescing of multiple registers. */
+            if (scan_inst->regs_written > 1)
+               break;
+
 	    /* Mark which channels we found unconditional writes for. */
-	    if (!scan_inst->predicate) {
-	       for (int i = 0; i < 4; i++) {
-		  if (scan_inst->dst.writemask & (1 << i) &&
-		      chans_needed[i]) {
-		     chans_needed[i] = false;
-		     chans_remaining--;
-		  }
-	       }
-	    }
+	    if (!scan_inst->predicate)
+               chans_remaining &= ~scan_inst->dst.writemask;
 
 	    if (chans_remaining == 0)
 	       break;
@@ -1169,11 +1048,9 @@ vec4_visitor::opt_register_coalesce()
           */
 	 bool interfered = false;
 	 for (int i = 0; i < 3; i++) {
-	    if (scan_inst->src[i].file == GRF &&
-		scan_inst->src[i].reg == inst->src[0].reg &&
-		scan_inst->src[i].reg_offset == inst->src[0].reg_offset) {
+            if (inst->src[0].in_range(scan_inst->src[i],
+                                      scan_inst->regs_read(i)))
 	       interfered = true;
-	    }
 	 }
 	 if (interfered)
 	    break;
@@ -1181,10 +1058,8 @@ vec4_visitor::opt_register_coalesce()
          /* If somebody else writes our destination here, we can't coalesce
           * before that.
           */
-         if (scan_inst->dst.file == inst->dst.file &&
-             scan_inst->dst.reg == inst->dst.reg) {
+         if (inst->dst.in_range(scan_inst->dst, scan_inst->regs_written))
 	    break;
-         }
 
          /* Check for reads of the register we're trying to coalesce into.  We
           * can't go rewriting instructions above that to put some other value
@@ -1197,11 +1072,9 @@ vec4_visitor::opt_register_coalesce()
             }
          } else {
             for (int i = 0; i < 3; i++) {
-               if (scan_inst->src[i].file == inst->dst.file &&
-                   scan_inst->src[i].reg == inst->dst.reg &&
-                   scan_inst->src[i].reg_offset == inst->src[0].reg_offset) {
+               if (inst->dst.in_range(scan_inst->src[i],
+                                      scan_inst->regs_read(i)))
                   interfered = true;
-               }
             }
             if (interfered)
                break;
@@ -1269,15 +1142,12 @@ vec4_visitor::split_virtual_grfs()
     * to split.
     */
    foreach_block_and_inst(block, vec4_instruction, inst, cfg) {
-      /* If there's a SEND message loading from a GRF on gen7+, it needs to be
-       * contiguous.
-       */
-      if (inst->is_send_from_grf()) {
-         for (int i = 0; i < 3; i++) {
-            if (inst->src[i].file == GRF) {
-               split_grf[inst->src[i].reg] = false;
-            }
-         }
+      if (inst->dst.file == GRF && inst->regs_written > 1)
+         split_grf[inst->dst.reg] = false;
+
+      for (int i = 0; i < 3; i++) {
+         if (inst->src[i].file == GRF && inst->regs_read(i) > 1)
+            split_grf[inst->src[i].reg] = false;
       }
    }
 
@@ -1940,6 +1810,8 @@ brw_vs_emit(struct brw_context *brw,
    bool start_busy = false;
    double start_time = 0;
    const unsigned *assembly = NULL;
+   bool use_nir =
+      brw->ctx.Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions != NULL;
 
    if (unlikely(brw->perf_debug)) {
       start_busy = (brw->batch.last_bo &&
@@ -1954,7 +1826,17 @@ brw_vs_emit(struct brw_context *brw,
    if (unlikely(INTEL_DEBUG & DEBUG_VS))
       brw_dump_ir("vertex", prog, &shader->base, &c->vp->program.Base);
 
-   if (prog && brw->gen >= 8 && brw->scalar_vs) {
+   if (use_nir && !c->vp->program.Base.nir) {
+      /* Normally we generate NIR in LinkShader() or ProgramStringNotify(), but
+       * Mesa's fixed-function vertex program handling doesn't notify the driver
+       * at all.  Just do it here, at the last minute, even though it's lame.
+       */
+      assert(c->vp->program.Base.Id == 0 && prog == NULL);
+      c->vp->program.Base.nir =
+         brw_create_nir(brw, NULL, &c->vp->program.Base, MESA_SHADER_VERTEX);
+   }
+
+   if (brw->scalar_vs && (prog || use_nir)) {
       fs_visitor v(brw, mem_ctx, &c->key, prog_data, prog, &c->vp->program, 8);
       if (!v.run_vs()) {
          if (prog) {
@@ -1972,9 +1854,15 @@ brw_vs_emit(struct brw_context *brw,
                      &c->vp->program.Base, v.promoted_constants,
                      v.runtime_check_aads_emit, "VS");
       if (INTEL_DEBUG & DEBUG_VS) {
-         char *name = ralloc_asprintf(mem_ctx, "%s vertex shader %d",
-                                      prog->Label ? prog->Label : "unnamed",
-                                      prog->Name);
+         char *name;
+         if (prog) {
+            name = ralloc_asprintf(mem_ctx, "%s vertex shader %d",
+                                   prog->Label ? prog->Label : "unnamed",
+                                   prog->Name);
+         } else {
+            name = ralloc_asprintf(mem_ctx, "vertex program %d",
+                                   c->vp->program.Base.Id);
+         }
          g.enable_debug(name);
       }
       g.generate_code(v.cfg, 8);

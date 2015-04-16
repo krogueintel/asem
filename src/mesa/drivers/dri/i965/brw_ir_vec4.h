@@ -32,9 +32,6 @@ namespace brw {
 
 class dst_reg;
 
-unsigned
-swizzle_for_size(int size);
-
 class src_reg : public backend_reg
 {
 public:
@@ -56,9 +53,9 @@ public:
    src_reg(class vec4_visitor *v, const struct glsl_type *type);
    src_reg(class vec4_visitor *v, const struct glsl_type *type, int size);
 
-   explicit src_reg(dst_reg reg);
+   explicit src_reg(const dst_reg &reg);
 
-   GLuint swizzle; /**< BRW_SWIZZLE_XYZW macros from brw_reg.h. */
+   unsigned swizzle; /**< BRW_SWIZZLE_XYZW macros from brw_reg.h. */
 
    src_reg *reladdr;
 };
@@ -86,11 +83,7 @@ static inline src_reg
 swizzle(src_reg reg, unsigned swizzle)
 {
    assert(reg.file != HW_REG);
-   reg.swizzle = BRW_SWIZZLE4(
-      BRW_GET_SWZ(reg.swizzle, BRW_GET_SWZ(swizzle, 0)),
-      BRW_GET_SWZ(reg.swizzle, BRW_GET_SWZ(swizzle, 1)),
-      BRW_GET_SWZ(reg.swizzle, BRW_GET_SWZ(swizzle, 2)),
-      BRW_GET_SWZ(reg.swizzle, BRW_GET_SWZ(swizzle, 3)));
+   reg.swizzle = brw_compose_swizzle(swizzle, reg.swizzle);
    return reg;
 }
 
@@ -111,15 +104,16 @@ public:
 
    dst_reg();
    dst_reg(register_file file, int reg);
-   dst_reg(register_file file, int reg, const glsl_type *type, int writemask);
+   dst_reg(register_file file, int reg, const glsl_type *type,
+           unsigned writemask);
    dst_reg(struct brw_reg reg);
    dst_reg(class vec4_visitor *v, const struct glsl_type *type);
 
-   explicit dst_reg(src_reg reg);
+   explicit dst_reg(const src_reg &reg);
 
    bool equals(const dst_reg &r) const;
 
-   int writemask; /**< Bitfield of WRITEMASK_[XYZW] */
+   unsigned writemask; /**< Bitfield of WRITEMASK_[XYZW] */
 
    src_reg *reladdr;
 };

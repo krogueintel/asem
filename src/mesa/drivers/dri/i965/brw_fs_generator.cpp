@@ -517,6 +517,7 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
    int rlen = 4;
    uint32_t simd_mode;
    uint32_t return_format;
+   bool is_combined_send = inst->eot;
 
    switch (dst.type) {
    case BRW_REGISTER_TYPE_D:
@@ -622,16 +623,26 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
 	 /* Note that G45 and older determines shadow compare and dispatch width
 	  * from message length for most messages.
 	  */
-	 assert(dispatch_width == 8);
-	 msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE;
-	 if (inst->shadow_compare) {
-	    assert(inst->mlen == 6);
-	 } else {
-	    assert(inst->mlen <= 4);
-	 }
+         if (dispatch_width == 8) {
+            msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE;
+            if (inst->shadow_compare) {
+               assert(inst->mlen == 6);
+            } else {
+               assert(inst->mlen <= 4);
+            }
+         } else {
+            if (inst->shadow_compare) {
+               msg_type = BRW_SAMPLER_MESSAGE_SIMD16_SAMPLE_COMPARE;
+               assert(inst->mlen == 9);
+            } else {
+               msg_type = BRW_SAMPLER_MESSAGE_SIMD16_SAMPLE;
+               assert(inst->mlen <= 7 && inst->mlen % 2 == 1);
+            }
+         }
 	 break;
       case FS_OPCODE_TXB:
 	 if (inst->shadow_compare) {
+            assert(dispatch_width == 8);
 	    assert(inst->mlen == 6);
 	    msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_BIAS_COMPARE;
 	 } else {
@@ -642,6 +653,7 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
 	 break;
       case SHADER_OPCODE_TXL:
 	 if (inst->shadow_compare) {
+            assert(dispatch_width == 8);
 	    assert(inst->mlen == 6);
 	    msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_LOD_COMPARE;
 	 } else {
@@ -652,11 +664,12 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
 	 break;
       case SHADER_OPCODE_TXD:
 	 /* There is no sample_d_c message; comparisons are done manually */
+         assert(dispatch_width == 8);
 	 assert(inst->mlen == 7 || inst->mlen == 10);
 	 msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_GRADIENTS;
 	 break;
       case SHADER_OPCODE_TXF:
-	 assert(inst->mlen == 9);
+         assert(inst->mlen <= 9 && inst->mlen % 2 == 1);
 	 msg_type = BRW_SAMPLER_MESSAGE_SIMD16_LD;
 	 simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
 	 break;
@@ -674,6 +687,11 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
    if (simd_mode == BRW_SAMPLER_SIMD_MODE_SIMD16) {
       rlen = 8;
       dst = vec16(dst);
+   }
+
+   if (is_combined_send) {
+      assert(brw->gen >= 9 || brw->is_cherryview);
+      rlen = 0;
    }
 
    assert(brw->gen < 7 || !inst->header_present ||
@@ -780,6 +798,11 @@ fs_generator::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src
       /* visitor knows more than we do about the surface limit required,
        * so has already done marking.
        */
+   }
+
+   if (is_combined_send) {
+      brw_inst_set_eot(brw, brw_last_inst, true);
+      brw_inst_set_opcode(brw, brw_last_inst, BRW_OPCODE_SENDC);
    }
 }
 
@@ -1034,7 +1057,7 @@ fs_generator::generate_uniform_pull_constant_load_gen7(fs_inst *inst,
 
       brw_push_insn_state(p);
       brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-      brw_MOV(p, src, retype(brw_vec4_grf(0, 0), BRW_REGISTER_TYPE_UD));
+      brw_MOV(p, vec8(src), retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_UD));
       brw_set_default_access_mode(p, BRW_ALIGN_1);
 
       brw_MOV(p, get_element_ud(src, 2),
@@ -1602,7 +1625,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
          brw_set_default_compression_control(p, BRW_COMPRESSION_COMPRESSED);
          break;
       default:
-         unreachable(!"Invalid instruction width");
+         unreachable("Invalid instruction width");
       }
 
       switch (inst->opcode) {
