@@ -507,7 +507,8 @@ static inline GLuint brw_varying_to_offset(struct brw_vue_map *vue_map,
    return brw_vue_slot_to_offset(vue_map->varying_to_slot[varying]);
 }
 
-void brw_compute_vue_map(struct brw_context *brw, struct brw_vue_map *vue_map,
+void brw_compute_vue_map(const struct brw_device_info *devinfo,
+                         struct brw_vue_map *vue_map,
                          GLbitfield64 slots_valid);
 
 
@@ -1083,10 +1084,6 @@ struct brw_context
 
    int gen;
    int gt;
-   /* GT revision. This will be -1 if the revision couldn't be determined (eg,
-    * if the kernel doesn't support the query).
-    */
-   int revision;
 
    bool is_g4x;
    bool is_baytrail;
@@ -1454,8 +1451,8 @@ struct brw_context
 
    struct {
       drm_intel_bo *bo;
-      struct gl_shader_program **shader_programs;
-      struct gl_program **programs;
+      const char **names;
+      int *ids;
       enum shader_time_shader_type *types;
       uint64_t *cumulative;
       int num_entries;
@@ -1616,13 +1613,13 @@ void brw_upload_cs_urb_state(struct brw_context *brw);
 
 /* brw_fs_reg_allocate.cpp
  */
-void brw_fs_alloc_reg_sets(struct intel_screen *screen);
+void brw_fs_alloc_reg_sets(struct brw_compiler *compiler);
 
 /* brw_vec4_reg_allocate.cpp */
-void brw_vec4_alloc_reg_set(struct intel_screen *screen);
+void brw_vec4_alloc_reg_set(struct brw_compiler *compiler);
 
 /* brw_disasm.c */
-int brw_disassemble_inst(FILE *file, struct brw_context *brw,
+int brw_disassemble_inst(FILE *file, const struct brw_device_info *devinfo,
                          struct brw_inst *inst, bool is_compacted);
 
 /* brw_vs.c */

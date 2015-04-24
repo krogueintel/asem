@@ -364,6 +364,11 @@ public:
 				dst_reg dst,
 				src_reg orig_src,
 				int base_offset);
+   void emit_pull_constant_load_reg(dst_reg dst,
+                                    src_reg surf_index,
+                                    src_reg offset,
+                                    bblock_t *before_block,
+                                    vec4_instruction *before_inst);
    src_reg emit_resolve_reladdr(int scratch_loc[], bblock_t *block,
                                 vec4_instruction *inst, src_reg src);
 
@@ -495,6 +500,8 @@ private:
                                          struct brw_reg dst,
                                          struct brw_reg surf_index,
                                          struct brw_reg offset);
+   void generate_set_simd4x2_header_gen9(vec4_instruction *inst,
+                                         struct brw_reg dst);
    void generate_unpack_flags(struct brw_reg dst);
 
    void generate_untyped_atomic(vec4_instruction *inst,
@@ -507,8 +514,9 @@ private:
                                       struct brw_reg surf_index);
 
    struct brw_context *brw;
+   const struct brw_device_info *devinfo;
 
-   struct brw_compile *p;
+   struct brw_codegen *p;
 
    struct gl_shader_program *shader_prog;
    const struct gl_program *prog;

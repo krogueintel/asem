@@ -324,7 +324,7 @@ emit_system_values_block(nir_block *block, void *void_visitor)
 
       case nir_intrinsic_load_sample_mask_in:
          assert(v->stage == MESA_SHADER_FRAGMENT);
-         assert(v->brw->gen >= 7);
+         assert(v->devinfo->gen >= 7);
          reg = &v->nir_system_values[SYSTEM_VALUE_SAMPLE_MASK_IN];
          if (reg->file == BAD_FILE)
             *reg = fs_reg(retype(brw_vec8_grf(v->payload.sample_mask_in_reg, 0),
@@ -408,7 +408,7 @@ fs_visitor::nir_emit_if(nir_if *if_stmt)
 
    emit(BRW_OPCODE_ENDIF);
 
-   if (!try_replace_with_sel() && brw->gen < 6) {
+   if (!try_replace_with_sel() && devinfo->gen < 6) {
       no16("Can't support (non-uniform) control flow on SIMD16\n");
    }
 }
@@ -416,7 +416,7 @@ fs_visitor::nir_emit_if(nir_if *if_stmt)
 void
 fs_visitor::nir_emit_loop(nir_loop *loop)
 {
-   if (brw->gen < 6) {
+   if (devinfo->gen < 6) {
       no16("Can't support (non-uniform) control flow on SIMD16\n");
    }
 
@@ -517,7 +517,7 @@ fs_visitor::optimize_frontfacing_ternary(nir_alu_instr *instr,
 
    fs_reg tmp = vgrf(glsl_type::int_type);
 
-   if (brw->gen >= 6) {
+   if (devinfo->gen >= 6) {
       /* Bit 15 of g0.0 is 0 if the polygon is front facing. */
       fs_reg g0 = fs_reg(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_W));
 
@@ -785,7 +785,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_imul: {
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          emit(MUL(result, op[0], op[1]));
          break;
       } else {
@@ -793,14 +793,14 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
          nir_const_value *value1 = nir_src_as_const_value(instr->src[1].src);
 
          if (value0 && value0->u[0] < (1 << 16)) {
-            if (brw->gen < 7) {
+            if (devinfo->gen < 7) {
                emit(MUL(result, op[0], op[1]));
             } else {
                emit(MUL(result, op[1], op[0]));
             }
             break;
          } else if (value1 && value1->u[0] < (1 << 16)) {
-            if (brw->gen < 7) {
+            if (devinfo->gen < 7) {
                emit(MUL(result, op[1], op[0]));
             } else {
                emit(MUL(result, op[0], op[1]));
@@ -809,7 +809,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
          }
       }
 
-      if (brw->gen >= 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width), result.type);
@@ -822,7 +822,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
 
    case nir_op_imul_high:
    case nir_op_umul_high: {
-      if (brw->gen >= 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width), result.type);
@@ -838,7 +838,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_uadd_carry: {
-      if (brw->gen >= 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
@@ -850,7 +850,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
    }
 
    case nir_op_usub_borrow: {
-      if (brw->gen >= 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
@@ -888,27 +888,27 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_inot:
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          resolve_source_modifiers(&op[0]);
       }
       emit(NOT(result, op[0]));
       break;
    case nir_op_ixor:
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          resolve_source_modifiers(&op[0]);
          resolve_source_modifiers(&op[1]);
       }
       emit(XOR(result, op[0], op[1]));
       break;
    case nir_op_ior:
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          resolve_source_modifiers(&op[0]);
          resolve_source_modifiers(&op[1]);
       }
       emit(OR(result, op[0], op[1]));
       break;
    case nir_op_iand:
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          resolve_source_modifiers(&op[0]);
          resolve_source_modifiers(&op[1]);
       }
@@ -1013,7 +1013,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_fmin:
    case nir_op_imin:
    case nir_op_umin:
-      if (brw->gen >= 6) {
+      if (devinfo->gen >= 6) {
          inst = emit(BRW_OPCODE_SEL, result, op[0], op[1]);
          inst->conditional_mod = BRW_CONDITIONAL_L;
       } else {
@@ -1027,7 +1027,7 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_fmax:
    case nir_op_imax:
    case nir_op_umax:
-      if (brw->gen >= 6) {
+      if (devinfo->gen >= 6) {
          inst = emit(BRW_OPCODE_SEL, result, op[0], op[1]);
          inst->conditional_mod = BRW_CONDITIONAL_GE;
       } else {
@@ -1148,13 +1148,35 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
    /* If we need to do a boolean resolve, replace the result with -(x & 1)
     * to sign extend the low bit to 0/~0
     */
-   if (brw->gen <= 5 &&
+   if (devinfo->gen <= 5 &&
        (instr->instr.pass_flags & BRW_NIR_BOOLEAN_MASK) == BRW_NIR_BOOLEAN_NEEDS_RESOLVE) {
       fs_reg masked = vgrf(glsl_type::int_type);
       emit(AND(masked, result, fs_reg(1)));
       masked.negate = true;
       emit(MOV(retype(result, BRW_REGISTER_TYPE_D), masked));
    }
+}
+
+static fs_reg
+fs_reg_for_nir_reg(fs_visitor *v, nir_register *nir_reg,
+                   unsigned base_offset, nir_src *indirect)
+{
+   fs_reg reg;
+   if (nir_reg->is_global)
+      reg = v->nir_globals[nir_reg->index];
+   else
+      reg = v->nir_locals[nir_reg->index];
+
+   reg = offset(reg, base_offset * nir_reg->num_components);
+   if (indirect) {
+      int multiplier = nir_reg->num_components * (v->dispatch_width / 8);
+
+      reg.reladdr = new(v->mem_ctx) fs_reg(v->vgrf(glsl_type::int_type));
+      v->emit(v->MUL(*reg.reladdr, v->get_nir_src(*indirect),
+                     fs_reg(multiplier)));
+   }
+
+   return reg;
 }
 
 fs_reg
@@ -1171,44 +1193,22 @@ fs_visitor::get_nir_src(nir_src src)
 
       return reg;
    } else {
-      fs_reg reg;
-      if (src.reg.reg->is_global)
-         reg = nir_globals[src.reg.reg->index];
-      else
-         reg = nir_locals[src.reg.reg->index];
+      fs_reg reg = fs_reg_for_nir_reg(this, src.reg.reg, src.reg.base_offset,
+                                      src.reg.indirect);
 
       /* to avoid floating-point denorm flushing problems, set the type by
        * default to D - instructions that need floating point semantics will set
        * this to F if they need to
        */
-      reg = retype(offset(reg, src.reg.base_offset), BRW_REGISTER_TYPE_D);
-      if (src.reg.indirect) {
-         reg.reladdr = new(mem_ctx) fs_reg();
-         *reg.reladdr = retype(get_nir_src(*src.reg.indirect),
-                               BRW_REGISTER_TYPE_D);
-      }
-
-      return reg;
+      return retype(reg, BRW_REGISTER_TYPE_D);
    }
 }
 
 fs_reg
 fs_visitor::get_nir_dest(nir_dest dest)
 {
-   fs_reg reg;
-   if (dest.reg.reg->is_global)
-      reg = nir_globals[dest.reg.reg->index];
-   else
-      reg = nir_locals[dest.reg.reg->index];
-
-   reg = offset(reg, dest.reg.base_offset);
-   if (dest.reg.indirect) {
-      reg.reladdr = new(mem_ctx) fs_reg();
-      *reg.reladdr = retype(get_nir_src(*dest.reg.indirect),
-                            BRW_REGISTER_TYPE_D);
-   }
-
-   return reg;
+   return fs_reg_for_nir_reg(this, dest.reg.reg, dest.reg.base_offset,
+                             dest.reg.indirect);
 }
 
 void
@@ -1257,7 +1257,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       cmp->predicate = BRW_PREDICATE_NORMAL;
       cmp->flag_subreg = 1;
 
-      if (brw->gen >= 6) {
+      if (devinfo->gen >= 6) {
          emit_discard_jump();
       }
       break;
@@ -1482,8 +1482,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
        */
       no16("interpolate_at_* not yet supported in SIMD16 mode.");
 
-      fs_reg dst_x = vgrf(2);
-      fs_reg dst_y = offset(dst_x, 1);
+      fs_reg dst_xy = vgrf(2);
 
       /* For most messages, we need one reg of ignored data; the hardware
        * requires mlen==1 even when there is no payload. in the per-slot
@@ -1495,7 +1494,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
       switch (instr->intrinsic) {
       case nir_intrinsic_interp_var_at_centroid:
-         inst = emit(FS_OPCODE_INTERPOLATE_AT_CENTROID, dst_x, src, fs_reg(0u));
+         inst = emit(FS_OPCODE_INTERPOLATE_AT_CENTROID, dst_xy, src, fs_reg(0u));
          break;
 
       case nir_intrinsic_interp_var_at_sample: {
@@ -1503,7 +1502,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          nir_const_value *const_sample = nir_src_as_const_value(instr->src[0]);
          assert(const_sample);
          unsigned msg_data = const_sample ? const_sample->i[0] << 4 : 0;
-         inst = emit(FS_OPCODE_INTERPOLATE_AT_SAMPLE, dst_x, src,
+         inst = emit(FS_OPCODE_INTERPOLATE_AT_SAMPLE, dst_xy, src,
                      fs_reg(msg_data));
          break;
       }
@@ -1515,7 +1514,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
             unsigned off_x = MIN2((int)(const_offset->f[0] * 16), 7) & 0xf;
             unsigned off_y = MIN2((int)(const_offset->f[1] * 16), 7) & 0xf;
 
-            inst = emit(FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET, dst_x, src,
+            inst = emit(FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET, dst_xy, src,
                         fs_reg(off_x | (off_y << 4)));
          } else {
             src = vgrf(glsl_type::ivec2_type);
@@ -1548,7 +1547,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
             }
 
             mlen = 2;
-            inst = emit(FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET, dst_x, src,
+            inst = emit(FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET, dst_xy, src,
                         fs_reg(0u));
          }
          break;
@@ -1567,7 +1566,7 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          fs_reg src = interp_reg(instr->variables[0]->var->data.location, j);
          src.type = dest.type;
 
-         emit(FS_OPCODE_LINTERP, dest, dst_x, dst_y, src);
+         emit(FS_OPCODE_LINTERP, dest, dst_xy, src);
          dest = offset(dest, 1);
       }
       break;
@@ -1677,7 +1676,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
       case nir_tex_src_sampler_offset: {
          /* Figure out the highest possible sampler index and mark it as used */
          uint32_t max_used = sampler + instr->sampler_array_size - 1;
-         if (instr->op == nir_texop_tg4 && brw->gen < 8) {
+         if (instr->op == nir_texop_tg4 && devinfo->gen < 8) {
             max_used += stage_prog_data->binding_table.gather_texture_start;
          } else {
             max_used += stage_prog_data->binding_table.texture_start;
@@ -1697,7 +1696,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
    }
 
    if (instr->op == nir_texop_txf_ms) {
-      if (brw->gen >= 7 &&
+      if (devinfo->gen >= 7 &&
           key_tex->compressed_multisample_layout_mask & (1 << sampler)) {
          mcs = emit_mcs_fetch(coordinate, instr->coord_components, sampler_reg);
       } else {
@@ -1708,7 +1707,7 @@ fs_visitor::nir_emit_texture(nir_tex_instr *instr)
    for (unsigned i = 0; i < 3; i++) {
       if (instr->const_offset[i] != 0) {
          assert(offset_components == 0);
-         tex_offset = fs_reg(brw_texture_offset(ctx, instr->const_offset, 3));
+         tex_offset = fs_reg(brw_texture_offset(instr->const_offset, 3));
          break;
       }
    }

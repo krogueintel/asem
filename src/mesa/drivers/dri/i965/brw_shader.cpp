@@ -32,6 +32,19 @@
 #include "glsl/glsl_parser_extras.h"
 #include "main/shaderapi.h"
 
+struct brw_compiler *
+brw_compiler_create(void *mem_ctx, const struct brw_device_info *devinfo)
+{
+   struct brw_compiler *compiler = rzalloc(mem_ctx, struct brw_compiler);
+
+   compiler->devinfo = devinfo;
+
+   brw_fs_alloc_reg_sets(compiler);
+   brw_vec4_alloc_reg_set(compiler);
+
+   return compiler;
+}
+
 struct gl_shader *
 brw_new_shader(struct gl_context *ctx, GLuint name, GLuint type)
 {
@@ -393,14 +406,8 @@ brw_math_function(enum opcode op)
 }
 
 uint32_t
-brw_texture_offset(struct gl_context *ctx, int *offsets,
-                   unsigned num_components)
+brw_texture_offset(int *offsets, unsigned num_components)
 {
-   /* If the driver does not support GL_ARB_gpu_shader5, the offset
-    * must be constant.
-    */
-   assert(offsets != NULL || ctx->Extensions.ARB_gpu_shader5);
-
    if (!offsets) return 0;  /* nonconstant offset; caller will handle it. */
 
    /* Combine all three offsets into a single unsigned dword:
@@ -512,11 +519,6 @@ brw_instruction_name(enum opcode op)
    case FS_OPCODE_DDY_FINE:
       return "ddy_fine";
 
-   case FS_OPCODE_PIXEL_X:
-      return "pixel_x";
-   case FS_OPCODE_PIXEL_Y:
-      return "pixel_y";
-
    case FS_OPCODE_CINTERP:
       return "cinterp";
    case FS_OPCODE_LINTERP:
@@ -568,6 +570,10 @@ brw_instruction_name(enum opcode op)
       return "pull_constant_load";
    case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
       return "pull_constant_load_gen7";
+
+   case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
+      return "set_simd4x2_header_gen9";
+
    case VS_OPCODE_UNPACK_FLAGS_SIMD4X2:
       return "unpack_flags_simd4x2";
 
@@ -728,6 +734,7 @@ backend_visitor::backend_visitor(struct brw_context *brw,
                                  struct brw_stage_prog_data *stage_prog_data,
                                  gl_shader_stage stage)
    : brw(brw),
+     devinfo(brw->intelScreen->devinfo),
      ctx(&brw->ctx),
      shader(shader_prog ?
         (struct brw_shader *)shader_prog->_LinkedShaders[stage] : NULL),
@@ -1005,10 +1012,10 @@ backend_instruction::reads_accumulator_implicitly() const
 }
 
 bool
-backend_instruction::writes_accumulator_implicitly(struct brw_context *brw) const
+backend_instruction::writes_accumulator_implicitly(const struct brw_device_info *devinfo) const
 {
    return writes_accumulator ||
-          (brw->gen < 6 &&
+          (devinfo->gen < 6 &&
            ((opcode >= BRW_OPCODE_ADD && opcode < BRW_OPCODE_NOP) ||
             (opcode >= FS_OPCODE_DDX_COARSE && opcode <= FS_OPCODE_LINTERP &&
              opcode != FS_OPCODE_CINTERP)));
@@ -1190,7 +1197,7 @@ backend_visitor::assign_common_binding_table_offsets(uint32_t next_binding_table
    }
 
    if (prog->UsesGather) {
-      if (brw->gen >= 8) {
+      if (devinfo->gen >= 8) {
          stage_prog_data->binding_table.gather_texture_start =
             stage_prog_data->binding_table.texture_start;
       } else {

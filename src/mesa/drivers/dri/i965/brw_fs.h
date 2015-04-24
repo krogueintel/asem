@@ -514,8 +514,7 @@ public:
    fs_reg pixel_y;
    fs_reg wpos_w;
    fs_reg pixel_w;
-   fs_reg delta_x[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
-   fs_reg delta_y[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
+   fs_reg delta_xy[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
    fs_reg shader_start_time;
    fs_reg userplane[MAX_CLIP_PLANES];
 
@@ -557,7 +556,6 @@ private:
    void generate_fb_write(fs_inst *inst, struct brw_reg payload);
    void generate_urb_write(fs_inst *inst, struct brw_reg payload);
    void generate_blorp_fb_write(fs_inst *inst);
-   void generate_pixel_xy(struct brw_reg dst, bool is_x);
    void generate_linterp(fs_inst *inst, struct brw_reg dst,
 			 struct brw_reg *src);
    void generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src,
@@ -641,9 +639,9 @@ private:
    bool patch_discard_jumps_to_fb_writes();
 
    struct brw_context *brw;
-   struct gl_context *ctx;
+   const struct brw_device_info *devinfo;
 
-   struct brw_compile *p;
+   struct brw_codegen *p;
    const void * const key;
    struct brw_stage_prog_data * const prog_data;
 

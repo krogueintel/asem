@@ -275,6 +275,16 @@ is_logic_op(enum opcode opcode)
            opcode == BRW_OPCODE_NOT);
 }
 
+static bool
+can_change_source_types(fs_inst *inst)
+{
+   return !inst->src[0].abs && !inst->src[0].negate &&
+          (inst->opcode == BRW_OPCODE_MOV ||
+           (inst->opcode == BRW_OPCODE_SEL &&
+            inst->predicate != BRW_PREDICATE_NONE &&
+            !inst->src[1].abs && !inst->src[1].negate));
+}
+
 bool
 fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
 {
@@ -307,7 +317,7 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
     * instead. See also resolve_ud_negate() and comment in
     * fs_generator::generate_code.
     */
-   if (inst->src[arg].type == BRW_REGISTER_TYPE_UD &&
+   if (entry->src.type == BRW_REGISTER_TYPE_UD &&
        entry->src.negate)
       return false;
 
@@ -315,7 +325,7 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
 
    if ((has_source_modifiers || entry->src.file == UNIFORM ||
         !entry->src.is_contiguous()) &&
-       !inst->can_do_source_mods(brw))
+       !inst->can_do_source_mods(devinfo))
       return false;
 
    if (has_source_modifiers &&
@@ -346,10 +356,12 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
         type_sz(inst->src[arg].type)) % type_sz(entry->src.type) != 0)
       return false;
 
-   if (has_source_modifiers && entry->dst.type != inst->src[arg].type)
+   if (has_source_modifiers &&
+       entry->dst.type != inst->src[arg].type &&
+       !can_change_source_types(inst))
       return false;
 
-   if (brw->gen >= 8 && (entry->src.negate || entry->src.abs) &&
+   if (devinfo->gen >= 8 && (entry->src.negate || entry->src.abs) &&
        is_logic_op(inst->opcode)) {
       return false;
    }
@@ -412,9 +424,23 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
       break;
    }
 
-   if (!inst->src[arg].abs) {
-      inst->src[arg].abs = entry->src.abs;
-      inst->src[arg].negate ^= entry->src.negate;
+   if (has_source_modifiers) {
+      if (entry->dst.type != inst->src[arg].type) {
+         /* We are propagating source modifiers from a MOV with a different
+          * type.  If we got here, then we can just change the source and
+          * destination types of the instruction and keep going.
+          */
+         assert(can_change_source_types(inst));
+         for (int i = 0; i < inst->sources; i++) {
+            inst->src[i].type = entry->dst.type;
+         }
+         inst->dst.type = entry->dst.type;
+      }
+
+      if (!inst->src[arg].abs) {
+         inst->src[arg].abs = entry->src.abs;
+         inst->src[arg].negate ^= entry->src.negate;
+      }
    }
 
    return true;
@@ -453,14 +479,14 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       val.type = inst->src[i].type;
 
       if (inst->src[i].abs) {
-         if ((brw->gen >= 8 && is_logic_op(inst->opcode)) ||
+         if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
              !brw_abs_immediate(val.type, &val.fixed_hw_reg)) {
             continue;
          }
       }
 
       if (inst->src[i].negate) {
-         if ((brw->gen >= 8 && is_logic_op(inst->opcode)) ||
+         if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
              !brw_negate_immediate(val.type, &val.fixed_hw_reg)) {
             continue;
          }
@@ -476,7 +502,7 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       case SHADER_OPCODE_POW:
       case SHADER_OPCODE_INT_QUOTIENT:
       case SHADER_OPCODE_INT_REMAINDER:
-         if (brw->gen < 8)
+         if (devinfo->gen < 8)
             break;
          /* fallthrough */
       case BRW_OPCODE_BFI1:

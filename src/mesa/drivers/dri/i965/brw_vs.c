@@ -54,7 +54,8 @@ static inline void assign_vue_slot(struct brw_vue_map *vue_map,
  * Compute the VUE map for vertex shader program.
  */
 void
-brw_compute_vue_map(struct brw_context *brw, struct brw_vue_map *vue_map,
+brw_compute_vue_map(const struct brw_device_info *devinfo,
+                    struct brw_vue_map *vue_map,
                     GLbitfield64 slots_valid)
 {
    vue_map->slots_valid = slots_valid;
@@ -82,7 +83,7 @@ brw_compute_vue_map(struct brw_context *brw, struct brw_vue_map *vue_map,
    /* VUE header: format depends on chip generation and whether clipping is
     * enabled.
     */
-   if (brw->gen < 6) {
+   if (devinfo->gen < 6) {
       /* There are 8 dwords in VUE header pre-Ironlake:
        * dword 0-3 is indices, point width, clip flags.
        * dword 4-7 is ndc position
@@ -188,7 +189,7 @@ brw_vs_prog_data_compare(const void *in_a, const void *in_b)
 }
 
 bool
-brw_compile_vs_prog(struct brw_context *brw,
+brw_codegen_vs_prog(struct brw_context *brw,
                     struct gl_shader_program *prog,
                     struct brw_vertex_program *vp,
                     struct brw_vs_prog_key *key)
@@ -279,7 +280,8 @@ brw_compile_vs_prog(struct brw_context *brw,
       outputs_written |= BITFIELD64_BIT(VARYING_SLOT_CLIP_DIST1);
    }
 
-   brw_compute_vue_map(brw, &prog_data.base.vue_map, outputs_written);
+   brw_compute_vue_map(brw->intelScreen->devinfo,
+                       &prog_data.base.vue_map, outputs_written);
 
    if (0) {
       _mesa_fprint_program_opt(stderr, &c.vp->program.Base, PROG_PRINT_DEBUG,
@@ -482,7 +484,7 @@ brw_upload_vs_prog(struct brw_context *brw)
    if (!brw_search_cache(&brw->cache, BRW_CACHE_VS_PROG,
 			 &key, sizeof(key),
 			 &brw->vs.base.prog_offset, &brw->vs.prog_data)) {
-      bool success = brw_compile_vs_prog(brw, current[MESA_SHADER_VERTEX],
+      bool success = brw_codegen_vs_prog(brw, current[MESA_SHADER_VERTEX],
                                          vp, &key);
       (void) success;
       assert(success);
@@ -524,7 +526,7 @@ brw_vs_precompile(struct gl_context *ctx,
       (prog->OutputsWritten & (VARYING_BIT_COL0 | VARYING_BIT_COL1 |
                                VARYING_BIT_BFC0 | VARYING_BIT_BFC1));
 
-   success = brw_compile_vs_prog(brw, shader_prog, bvp, &key);
+   success = brw_codegen_vs_prog(brw, shader_prog, bvp, &key);
 
    brw->vs.base.prog_offset = old_prog_offset;
    brw->vs.prog_data = old_prog_data;

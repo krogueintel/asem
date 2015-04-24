@@ -38,6 +38,7 @@
 #include "main/version.h"
 #include "swrast/s_renderbuffer.h"
 #include "util/ralloc.h"
+#include "brw_shader.h"
 
 #include "utils.h"
 #include "xmlpool.h"
@@ -1304,6 +1305,29 @@ set_max_gl_versions(struct intel_screen *screen)
    }
 }
 
+/* drop when libdrm 2.4.61 is released */
+#ifndef I915_PARAM_REVISION
+#define I915_PARAM_REVISION 32
+#endif
+
+static int
+brw_get_revision(int fd)
+{
+   struct drm_i915_getparam gp;
+   int revision;
+   int ret;
+
+   memset(&gp, 0, sizeof(gp));
+   gp.param = I915_PARAM_REVISION;
+   gp.value = &revision;
+
+   ret = drmCommandWriteRead(fd, DRM_I915_GETPARAM, &gp, sizeof(gp));
+   if (ret)
+      revision = -1;
+
+   return revision;
+}
+
 /**
  * This is the driver specific part of the createNewScreen entry point.
  * Called when using DRI2.
@@ -1340,7 +1364,8 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
        return false;
 
    intelScreen->deviceID = drm_intel_bufmgr_gem_get_devid(intelScreen->bufmgr);
-   intelScreen->devinfo = brw_get_device_info(intelScreen->deviceID);
+   intelScreen->devinfo = brw_get_device_info(intelScreen->deviceID,
+                                              brw_get_revision(psp->fd));
    if (!intelScreen->devinfo)
       return false;
 
@@ -1382,8 +1407,8 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
    psp->extensions = !intelScreen->has_context_reset_notification
       ? intelScreenExtensions : intelRobustScreenExtensions;
 
-   brw_fs_alloc_reg_sets(intelScreen);
-   brw_vec4_alloc_reg_set(intelScreen);
+   intelScreen->compiler = brw_compiler_create(intelScreen,
+                                               intelScreen->devinfo);
 
    return (const __DRIconfig**) intel_screen_make_configs(psp);
 }

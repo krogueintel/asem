@@ -53,7 +53,7 @@
 extern "C" {
 #endif
 
-struct brw_context;
+struct brw_device_info;
 
 /** Number of general purpose registers (VS, WM, etc) */
 #define BRW_MAX_GRF 128
@@ -218,7 +218,7 @@ enum PACKED brw_reg_type {
    BRW_REGISTER_TYPE_Q,
 };
 
-unsigned brw_reg_type_to_hw_type(const struct brw_context *brw,
+unsigned brw_reg_type_to_hw_type(const struct brw_device_info *devinfo,
                                  enum brw_reg_type type, unsigned file);
 const char *brw_reg_type_letters(unsigned brw_reg_type);
 
@@ -265,7 +265,7 @@ struct brw_indirect {
 };
 
 
-static inline int
+static inline unsigned
 type_sz(unsigned type)
 {
    switch(type) {
@@ -702,6 +702,13 @@ static inline struct brw_reg
 brw_vec8_grf(unsigned nr, unsigned subnr)
 {
    return brw_vec8_reg(BRW_GENERAL_REGISTER_FILE, nr, subnr);
+}
+
+/** Construct float[16] general-purpose register */
+static inline struct brw_reg
+brw_vec16_grf(unsigned nr, unsigned subnr)
+{
+   return brw_vec16_reg(BRW_GENERAL_REGISTER_FILE, nr, subnr);
 }
 
 

@@ -37,19 +37,20 @@
 using namespace brw;
 
 static bool
-can_do_writemask(const struct brw_context *brw,
+can_do_writemask(const struct brw_device_info *devinfo,
                  const vec4_instruction *inst)
 {
    switch (inst->opcode) {
    case SHADER_OPCODE_GEN4_SCRATCH_READ:
    case VS_OPCODE_PULL_CONSTANT_LOAD:
    case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
+   case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
       return false;
    default:
       /* The MATH instruction on Gen6 only executes in align1 mode, which does
        * not support writemasking.
        */
-      if (brw->gen == 6 && inst->is_math())
+      if (devinfo->gen == 6 && inst->is_math())
          return false;
 
       if (inst->is_tex())
@@ -89,7 +90,7 @@ vec4_visitor::dead_code_eliminate()
             /* If the instruction can't do writemasking, then it's all or
              * nothing.
              */
-            if (!can_do_writemask(brw, inst)) {
+            if (!can_do_writemask(devinfo, inst)) {
                bool result = result_live[0] | result_live[1] |
                              result_live[2] | result_live[3];
                result_live[0] = result;

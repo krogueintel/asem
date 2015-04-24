@@ -346,10 +346,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 	case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
 		return 16384;
 	case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
-		/* for now, let someone else flatten if/else when using NIR: */
-		if ((fd_mesa_debug & FD_DBG_NIR) &&
-				(is_a3xx(screen) || is_a4xx(screen)))
-			return 0;
 		return 8; /* XXX */
 	case PIPE_SHADER_CAP_MAX_INPUTS:
 	case PIPE_SHADER_CAP_MAX_OUTPUTS:
@@ -363,7 +359,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 		 */
 		return ((is_a3xx(screen) || is_a4xx(screen)) ? 4096 : 64) * sizeof(float[4]);
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-		return is_a3xx(screen) ? 16 : 1;
+		return (is_a3xx(screen) || is_a4xx(screen)) ? 16 : 1;
 	case PIPE_SHADER_CAP_MAX_PREDS:
 		return 0; /* nothing uses this */
 	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:

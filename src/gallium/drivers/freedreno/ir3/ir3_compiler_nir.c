@@ -42,6 +42,7 @@
 
 #include "ir3_compiler.h"
 #include "ir3_shader.h"
+#include "ir3_nir.h"
 
 #include "instr-a3xx.h"
 #include "ir3.h"
@@ -149,7 +150,7 @@ static struct nir_shader *to_nir(const struct tgsi_token *tokens)
 		progress |= nir_copy_prop(s);
 		progress |= nir_opt_dce(s);
 		progress |= nir_opt_cse(s);
-		progress |= nir_opt_peephole_select(s);
+		progress |= ir3_nir_lower_if_else(s);
 		progress |= nir_opt_algebraic(s);
 		progress |= nir_opt_constant_folding(s);
 
@@ -565,13 +566,13 @@ create_frag_coord(struct ir3_compile *ctx, unsigned comp)
 		 * to subtract (integer) 8 and divide by 16 (right-
 		 * shift by 4) then convert to float:
 		 *
-		 *    add.s tmp, src, -8
+		 *    sub.s tmp, src, 8
 		 *    shr.b tmp, tmp, 4
 		 *    mov.u32f32 dst, tmp
 		 *
 		 */
-		instr = ir3_ADD_S(block, ctx->frag_coord[comp], 0,
-				create_immed(block, -8), 0);
+		instr = ir3_SUB_S(block, ctx->frag_coord[comp], 0,
+				create_immed(block, 8), 0);
 		instr = ir3_SHR_B(block, instr, 0,
 				create_immed(block, 4), 0);
 		instr = ir3_COV(block, instr, TYPE_U32, TYPE_F32);
@@ -975,6 +976,53 @@ emit_alu(struct ir3_compile *ctx, nir_alu_instr *alu)
 	}
 }
 
+/* handles direct/indirect UBO reads: */
+static void
+emit_intrinsic_load_ubo(struct ir3_compile *ctx, nir_intrinsic_instr *intr,
+		struct ir3_instruction **dst)
+{
+	struct ir3_block *b = ctx->block;
+	struct ir3_instruction *addr, *src0, *src1;
+	/* UBO addresses are the first driver params: */
+	unsigned ubo = regid(ctx->so->first_driver_param, 0);
+	unsigned off = intr->const_index[0];
+
+	/* First src is ubo index, which could either be an immed or not: */
+	src0 = get_src(ctx, &intr->src[0])[0];
+	if (is_same_type_mov(src0) &&
+			(src0->regs[1]->flags & IR3_REG_IMMED)) {
+		addr = create_uniform(ctx, ubo + src0->regs[1]->iim_val);
+	} else {
+		addr = create_uniform_indirect(ctx, ubo, get_addr(ctx, src0));
+	}
+
+	if (intr->intrinsic == nir_intrinsic_load_ubo_indirect) {
+		/* For load_ubo_indirect, second src is indirect offset: */
+		src1 = get_src(ctx, &intr->src[1])[0];
+
+		/* and add offset to addr: */
+		addr = ir3_ADD_S(b, addr, 0, src1, 0);
+	}
+
+	/* if offset is to large to encode in the ldg, split it out: */
+	if ((off + (intr->num_components * 4)) > 1024) {
+		/* split out the minimal amount to improve the odds that
+		 * cp can fit the immediate in the add.s instruction:
+		 */
+		unsigned off2 = off + (intr->num_components * 4) - 1024;
+		addr = ir3_ADD_S(b, addr, 0, create_immed(b, off2), 0);
+		off -= off2;
+	}
+
+	for (int i = 0; i < intr->num_components; i++) {
+		struct ir3_instruction *load =
+				ir3_LDG(b, addr, 0, create_immed(b, 1), 0);
+		load->cat6.type = TYPE_U32;
+		load->cat6.offset = off + i * 4;    /* byte offset */
+		dst[i] = load;
+	}
+}
+
 /* handles array reads: */
 static void
 emit_intrinisic_load_var(struct ir3_compile *ctx, nir_intrinsic_instr *intr,
@@ -1092,6 +1140,7 @@ static void add_sysval_input(struct ir3_compile *ctx, unsigned name,
 	so->inputs[n].interpolate = TGSI_INTERPOLATE_CONSTANT;
 	so->total_in++;
 
+	ctx->block->ninputs = MAX2(ctx->block->ninputs, r + 1);
 	ctx->block->inputs[r] = instr;
 }
 
@@ -1123,6 +1172,10 @@ emit_intrinisic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 			dst[i] = create_uniform_indirect(ctx, n,
 					get_addr(ctx, src[0]));
 		}
+		break;
+	case nir_intrinsic_load_ubo:
+	case nir_intrinsic_load_ubo_indirect:
+		emit_intrinsic_load_ubo(ctx, intr, dst);
 		break;
 	case nir_intrinsic_load_input:
 		compile_assert(ctx, intr->const_index[1] == 1);
@@ -1329,6 +1382,29 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 		}
 	}
 
+	switch (tex->op) {
+	case nir_texop_tex:      opc = OPC_SAM;      break;
+	case nir_texop_txb:      opc = OPC_SAMB;     break;
+	case nir_texop_txl:      opc = OPC_SAML;     break;
+	case nir_texop_txd:      opc = OPC_SAMGQ;    break;
+	case nir_texop_txf:      opc = OPC_ISAML;    break;
+	case nir_texop_txf_ms:
+	case nir_texop_txs:
+	case nir_texop_lod:
+	case nir_texop_tg4:
+	case nir_texop_query_levels:
+		compile_error(ctx, "Unhandled NIR tex type: %d\n", tex->op);
+		return;
+	}
+
+	tex_info(tex, &flags, &coords);
+
+	/* scale up integer coords for TXF based on the LOD */
+	if (opc == OPC_ISAML) {
+		assert(has_lod);
+		for (i = 0; i < coords; i++)
+			coord[i] = ir3_SHL_B(b, coord[i], 0, lod, 0);
+	}
 	/*
 	 * lay out the first argument in the proper order:
 	 *  - actual coordinates first
@@ -1339,8 +1415,6 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 	 *
 	 * bias/lod go into the second arg
 	 */
-
-	tex_info(tex, &flags, &coords);
 
 	/* insert tex coords: */
 	for (i = 0; i < coords; i++)
@@ -1396,21 +1470,6 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 
 		if (has_lod | has_bias)
 			src1[nsrc1++] = lod;
-	}
-
-	switch (tex->op) {
-	case nir_texop_tex:      opc = OPC_SAM;      break;
-	case nir_texop_txb:      opc = OPC_SAMB;     break;
-	case nir_texop_txl:      opc = OPC_SAML;     break;
-	case nir_texop_txd:      opc = OPC_SAMGQ;    break;
-	case nir_texop_txf:      opc = OPC_ISAML;    break;
-	case nir_texop_txf_ms:
-	case nir_texop_txs:
-	case nir_texop_lod:
-	case nir_texop_tg4:
-	case nir_texop_query_levels:
-		compile_error(ctx, "Unhandled NIR tex type: %d\n", tex->op);
-		return;
 	}
 
 	switch (tex->dest_type) {
@@ -1642,7 +1701,8 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 
 				so->inputs[n].bary = true;
 
-				instr = create_frag_input(ctx, idx, use_ldlv);
+				instr = create_frag_input(ctx,
+						so->inputs[n].inloc + i - 8, use_ldlv);
 			}
 		} else {
 			instr = create_input(ctx->block, NULL, idx);
@@ -1726,16 +1786,22 @@ emit_instructions(struct ir3_compile *ctx)
 	unsigned noutputs = exec_list_length(&ctx->s->outputs) * 4;
 
 	/* we need to allocate big enough outputs array so that
-	 * we can stuff the kill's at the end:
+	 * we can stuff the kill's at the end.  Likewise for vtx
+	 * shaders, we need to leave room for sysvals:
 	 */
-	if (ctx->so->type == SHADER_FRAGMENT)
+	if (ctx->so->type == SHADER_FRAGMENT) {
 		noutputs += ARRAY_SIZE(ctx->kill);
+	} else if (ctx->so->type == SHADER_VERTEX) {
+		ninputs += 8;
+	}
 
 	ctx->block = ir3_block_create(ctx->ir, 0, ninputs, noutputs);
 
-	if (ctx->so->type == SHADER_FRAGMENT)
+	if (ctx->so->type == SHADER_FRAGMENT) {
 		ctx->block->noutputs -= ARRAY_SIZE(ctx->kill);
-
+	} else if (ctx->so->type == SHADER_VERTEX) {
+		ctx->block->ninputs -= 8;
+	}
 
 	/* for fragment shader, we have a single input register (usually
 	 * r0.xy) which is used as the base for bary.f varying fetch instrs:

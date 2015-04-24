@@ -62,7 +62,7 @@ static void compile_clip_prog( struct brw_context *brw,
 
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func, mem_ctx);
+   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
@@ -117,7 +117,8 @@ static void compile_clip_prog( struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_CLIP)) {
       fprintf(stderr, "clip:\n");
-      brw_disassemble(brw, c.func.store, 0, program_size, stderr);
+      brw_disassemble(brw->intelScreen->devinfo, c.func.store,
+                      0, program_size, stderr);
       fprintf(stderr, "\n");
    }
 

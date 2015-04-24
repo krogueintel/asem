@@ -26,8 +26,8 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-#ifndef FD3_COMPILER_H_
-#define FD3_COMPILER_H_
+#ifndef IR3_COMPILER_H_
+#define IR3_COMPILER_H_
 
 #include "ir3_shader.h"
 
@@ -39,4 +39,4 @@ int ir3_compile_shader(struct ir3_shader_variant *so,
 		const struct tgsi_token *tokens,
 		struct ir3_shader_key key, bool cp);
 
-#endif /* FD3_COMPILER_H_ */
+#endif /* IR3_COMPILER_H_ */
