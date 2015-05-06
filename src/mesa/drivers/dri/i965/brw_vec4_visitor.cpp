@@ -1374,6 +1374,17 @@ vec4_visitor::emit_pull_constant_load_reg(dst_reg dst,
 }
 
 void
+vec4_visitor::emit_uniformize(const dst_reg &dst, const src_reg &src)
+{
+   const src_reg chan_index(this, glsl_type::uint_type);
+
+   emit(SHADER_OPCODE_FIND_LIVE_CHANNEL, dst_reg(chan_index))
+      ->force_writemask_all = true;
+   emit(SHADER_OPCODE_BROADCAST, dst, src, chan_index)
+      ->force_writemask_all = true;
+}
+
+void
 vec4_visitor::visit(ir_expression *ir)
 {
    unsigned int operand;
@@ -1820,12 +1831,13 @@ vec4_visitor::visit(ir_expression *ir)
                               const_uniform_block->value.u[0]);
       } else {
          /* The block index is not a constant. Evaluate the index expression
-          * per-channel and add the base UBO index; the generator will select
-          * a value from any live channel.
+          * per-channel and add the base UBO index; we have to select a value
+          * from any live channel.
           */
          surf_index = src_reg(this, glsl_type::uint_type);
          emit(ADD(dst_reg(surf_index), op[0],
                   src_reg(prog_data->base.binding_table.ubo_start)));
+         emit_uniformize(dst_reg(surf_index), surf_index);
 
          /* Assume this may touch any UBO. It would be nice to provide
           * a tighter bound, but the array information is already lowered away.
@@ -1848,7 +1860,7 @@ vec4_visitor::visit(ir_expression *ir)
          }
       } else {
          offset = src_reg(this, glsl_type::uint_type);
-         emit(SHR(dst_reg(offset), op[1], src_reg(4)));
+         emit(SHR(dst_reg(offset), op[1], src_reg(4u)));
       }
 
       emit_pull_constant_load_reg(dst_reg(packed_consts),
@@ -2506,8 +2518,9 @@ vec4_visitor::visit(ir_texture *ir)
       /* Emit code to evaluate the actual indexing expression */
       nonconst_sampler_index->accept(this);
       dst_reg temp(this, glsl_type::uint_type);
-      emit(ADD(temp, this->result, src_reg(sampler)))
-         ->force_writemask_all = true;
+      emit(ADD(temp, this->result, src_reg(sampler)));
+      emit_uniformize(temp, src_reg(temp));
+
       sampler_reg = src_reg(temp);
    } else {
       /* Single sampler, or constant array index; the indexing expression
@@ -2961,8 +2974,8 @@ vec4_visitor::emit_untyped_atomic(unsigned atomic_op, unsigned surf_index,
     * unused channels will be masked out.
     */
    vec4_instruction *inst = emit(SHADER_OPCODE_UNTYPED_ATOMIC, dst,
-                                 src_reg(atomic_op), src_reg(surf_index));
-   inst->base_mrf = 0;
+                                 brw_message_reg(0),
+                                 src_reg(surf_index), src_reg(atomic_op));
    inst->mlen = mlen;
 }
 
@@ -2977,9 +2990,9 @@ vec4_visitor::emit_untyped_surface_read(unsigned surf_index, dst_reg dst,
     * untyped surface read message, but that's OK because unused
     * channels will be masked out.
     */
-   vec4_instruction *inst = emit(SHADER_OPCODE_UNTYPED_SURFACE_READ,
-                                 dst, src_reg(surf_index));
-   inst->base_mrf = 0;
+   vec4_instruction *inst = emit(SHADER_OPCODE_UNTYPED_SURFACE_READ, dst,
+                                 brw_message_reg(0),
+                                 src_reg(surf_index), src_reg(1));
    inst->mlen = 1;
 }
 

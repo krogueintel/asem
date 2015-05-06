@@ -39,6 +39,7 @@
 #include "brw_context.h"
 #include "brw_eu.h"
 #include "brw_wm.h"
+#include "brw_cs.h"
 #include "brw_vec4.h"
 #include "brw_fs.h"
 #include "main/uniforms.h"
@@ -332,6 +333,18 @@ fs_visitor::emit_minmax(enum brw_conditional_mod conditionalmod, const fs_reg &d
       inst = emit(BRW_OPCODE_SEL, dst, src0, src1);
       inst->predicate = BRW_PREDICATE_NORMAL;
    }
+}
+
+void
+fs_visitor::emit_uniformize(const fs_reg &dst, const fs_reg &src)
+{
+   const fs_reg chan_index = vgrf(glsl_type::uint_type);
+
+   emit(SHADER_OPCODE_FIND_LIVE_CHANNEL, component(chan_index, 0))
+      ->force_writemask_all = true;
+   emit(SHADER_OPCODE_BROADCAST, component(dst, 0),
+        src, component(chan_index, 0))
+      ->force_writemask_all = true;
 }
 
 bool
@@ -892,7 +905,7 @@ fs_visitor::visit(ir_expression *ir)
       }
       break;
    case ir_binop_imul_high: {
-      if (devinfo->gen == 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
@@ -916,8 +929,10 @@ fs_visitor::visit(ir_expression *ir)
                 mul->src[1].type == BRW_REGISTER_TYPE_UD);
          if (mul->src[1].type == BRW_REGISTER_TYPE_D) {
             mul->src[1].type = BRW_REGISTER_TYPE_W;
+            mul->src[1].stride = 2;
          } else {
             mul->src[1].type = BRW_REGISTER_TYPE_UW;
+            mul->src[1].stride = 2;
          }
       }
 
@@ -929,7 +944,7 @@ fs_visitor::visit(ir_expression *ir)
       emit_math(SHADER_OPCODE_INT_QUOTIENT, this->result, op[0], op[1]);
       break;
    case ir_binop_carry: {
-      if (devinfo->gen == 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
@@ -940,7 +955,7 @@ fs_visitor::visit(ir_expression *ir)
       break;
    }
    case ir_binop_borrow: {
-      if (devinfo->gen == 7)
+      if (devinfo->gen >= 7)
          no16("SIMD16 explicit accumulator operands unsupported\n");
 
       struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
@@ -1192,13 +1207,13 @@ fs_visitor::visit(ir_expression *ir)
                                  const_uniform_block->value.u[0]);
       } else {
          /* The block index is not a constant. Evaluate the index expression
-          * per-channel and add the base UBO index; the generator will select
-          * a value from any live channel.
+          * per-channel and add the base UBO index; we have to select a value
+          * from any live channel.
           */
          surf_index = vgrf(glsl_type::uint_type);
          emit(ADD(surf_index, op[0],
-                  fs_reg(stage_prog_data->binding_table.ubo_start)))
-            ->force_writemask_all = true;
+                  fs_reg(stage_prog_data->binding_table.ubo_start)));
+         emit_uniformize(surf_index, surf_index);
 
          /* Assume this may touch any UBO. It would be nice to provide
           * a tighter bound, but the array information is already lowered away.
@@ -2302,8 +2317,9 @@ fs_visitor::visit(ir_texture *ir)
       /* Emit code to evaluate the actual indexing expression */
       nonconst_sampler_index->accept(this);
       fs_reg temp = vgrf(glsl_type::uint_type);
-      emit(ADD(temp, this->result, fs_reg(sampler)))
-            ->force_writemask_all = true;
+      emit(ADD(temp, this->result, fs_reg(sampler)));
+      emit_uniformize(temp, temp);
+
       sampler_reg = temp;
    } else {
       /* Single sampler, or constant array index; the indexing expression
@@ -3284,7 +3300,7 @@ fs_visitor::emit_untyped_atomic(unsigned atomic_op, unsigned surf_index,
 
    /* Emit the instruction. */
    fs_inst *inst = emit(SHADER_OPCODE_UNTYPED_ATOMIC, dst, src_payload,
-                        fs_reg(atomic_op), fs_reg(surf_index));
+                        fs_reg(surf_index), fs_reg(atomic_op));
    inst->mlen = mlen;
 }
 
@@ -3332,7 +3348,7 @@ fs_visitor::emit_untyped_surface_read(unsigned surf_index, fs_reg dst,
 
    /* Emit the instruction. */
    inst = emit(SHADER_OPCODE_UNTYPED_SURFACE_READ, dst, src_payload,
-               fs_reg(surf_index));
+               fs_reg(surf_index), fs_reg(1));
    inst->mlen = mlen;
 }
 
@@ -4154,6 +4170,28 @@ fs_visitor::resolve_ud_negate(fs_reg *reg)
    *reg = temp;
 }
 
+void
+fs_visitor::emit_cs_terminate()
+{
+   assert(brw->gen >= 7);
+
+   /* We are getting the thread ID from the compute shader header */
+   assert(stage == MESA_SHADER_COMPUTE);
+
+   /* We can't directly send from g0, since sends with EOT have to use
+    * g112-127. So, copy it to a virtual register, The register allocator will
+    * make sure it uses the appropriate register range.
+    */
+   struct brw_reg g0 = retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_UD);
+   fs_reg payload = fs_reg(GRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
+   fs_inst *inst = emit(MOV(payload, g0));
+   inst->force_writemask_all = true;
+
+   /* Send a message to the thread spawner to terminate the thread. */
+   inst = emit(CS_OPCODE_CS_TERMINATE, reg_undef, payload);
+   inst->eot = true;
+}
+
 /**
  * Resolve the result of a Gen4-5 CMP instruction to a proper boolean.
  *
@@ -4213,6 +4251,25 @@ fs_visitor::fs_visitor(struct brw_context *brw,
    init();
 }
 
+fs_visitor::fs_visitor(struct brw_context *brw,
+                       void *mem_ctx,
+                       const struct brw_cs_prog_key *key,
+                       struct brw_cs_prog_data *prog_data,
+                       struct gl_shader_program *shader_prog,
+                       struct gl_compute_program *cp,
+                       unsigned dispatch_width)
+   : backend_visitor(brw, shader_prog, &cp->Base, &prog_data->base,
+                     MESA_SHADER_COMPUTE),
+     reg_null_f(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_F)),
+     reg_null_d(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_D)),
+     reg_null_ud(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_UD)),
+     key(key), prog_data(&prog_data->base),
+     dispatch_width(dispatch_width)
+{
+   this->mem_ctx = mem_ctx;
+   init();
+}
+
 void
 fs_visitor::init()
 {
@@ -4223,6 +4280,9 @@ fs_visitor::init()
    case MESA_SHADER_VERTEX:
    case MESA_SHADER_GEOMETRY:
       key_tex = &((const brw_vue_prog_key *) key)->tex;
+      break;
+   case MESA_SHADER_COMPUTE:
+      key_tex = &((const brw_cs_prog_key*) key)->tex;
       break;
    default:
       unreachable("unhandled shader stage");

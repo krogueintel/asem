@@ -291,7 +291,6 @@ _mesa_GetAttribLocation(GLhandleARB program, const GLcharARB * name)
    return (loc >= 0) ? loc : -1;
 }
 
-
 unsigned
 _mesa_count_active_attribs(struct gl_shader_program *shProg)
 {
@@ -300,19 +299,15 @@ _mesa_count_active_attribs(struct gl_shader_program *shProg)
       return 0;
    }
 
-   exec_list *const ir = shProg->_LinkedShaders[MESA_SHADER_VERTEX]->ir;
-   unsigned i = 0;
-
-   foreach_in_list(ir_instruction, node, ir) {
-      const ir_variable *const var = node->as_variable();
-
-      if (!is_active_attrib(var))
-         continue;
-
-      i++;
+   struct gl_program_resource *res = shProg->ProgramResourceList;
+   unsigned count = 0;
+   for (unsigned j = 0; j < shProg->NumProgramResourceList; j++, res++) {
+      if (res->Type == GL_PROGRAM_INPUT &&
+          res->StageReferences & (1 << MESA_SHADER_VERTEX) &&
+          is_active_attrib(RESOURCE_VAR(res)))
+         count++;
    }
-
-   return i;
+   return count;
 }
 
 
@@ -324,20 +319,16 @@ _mesa_longest_attribute_name_length(struct gl_shader_program *shProg)
       return 0;
    }
 
-   exec_list *const ir = shProg->_LinkedShaders[MESA_SHADER_VERTEX]->ir;
+   struct gl_program_resource *res = shProg->ProgramResourceList;
    size_t longest = 0;
+   for (unsigned j = 0; j < shProg->NumProgramResourceList; j++, res++) {
+      if (res->Type == GL_PROGRAM_INPUT &&
+          res->StageReferences & (1 << MESA_SHADER_VERTEX)) {
 
-   foreach_in_list(ir_instruction, node, ir) {
-      const ir_variable *const var = node->as_variable();
-
-      if (var == NULL
-	  || var->data.mode != ir_var_shader_in
-	  || var->data.location == -1)
-	 continue;
-
-      const size_t len = strlen(var->name);
-      if (len >= longest)
-	 longest = len + 1;
+          const size_t length = strlen(RESOURCE_VAR(res)->name);
+          if (length >= longest)
+             longest = length + 1;
+      }
    }
 
    return longest;
@@ -818,6 +809,8 @@ stage_from_enum(GLenum ref)
       return MESA_SHADER_GEOMETRY;
    case GL_REFERENCED_BY_FRAGMENT_SHADER:
       return MESA_SHADER_FRAGMENT;
+   case GL_REFERENCED_BY_COMPUTE_SHADER:
+      return MESA_SHADER_COMPUTE;
    default:
       assert(!"shader stage not supported");
       return MESA_SHADER_STAGES;
@@ -833,6 +826,10 @@ is_resource_referenced(struct gl_shader_program *shProg,
                        struct gl_program_resource *res,
                        GLuint index, uint8_t stage)
 {
+   /* First, check if we even have such a stage active. */
+   if (!shProg->_LinkedShaders[stage])
+      return false;
+
    if (res->Type == GL_ATOMIC_COUNTER_BUFFER)
       return RESOURCE_ATC(res)->StageReferences[stage];
 
@@ -988,6 +985,9 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
    case GL_NUM_ACTIVE_VARIABLES:
    case GL_ACTIVE_VARIABLES:
       return get_buffer_property(shProg, res, prop, val, caller);
+   case GL_REFERENCED_BY_COMPUTE_SHADER:
+      if (!ctx->Extensions.ARB_compute_shader)
+         goto invalid_enum;
    case GL_REFERENCED_BY_VERTEX_SHADER:
    case GL_REFERENCED_BY_GEOMETRY_SHADER:
    case GL_REFERENCED_BY_FRAGMENT_SHADER:
@@ -1024,16 +1024,17 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
    case GL_IS_PER_PATCH:
    case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
    case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
-   /* GL_ARB_compute_shader */
-   case GL_REFERENCED_BY_COMPUTE_SHADER:
    default:
-      _mesa_error(ctx, GL_INVALID_ENUM, "%s(%s prop %s)", caller,
-                  _mesa_lookup_enum_by_nr(res->Type),
-                  _mesa_lookup_enum_by_nr(prop));
-      return 0;
+      goto invalid_enum;
    }
 
 #undef VALIDATE_TYPE
+
+invalid_enum:
+   _mesa_error(ctx, GL_INVALID_ENUM, "%s(%s prop %s)", caller,
+               _mesa_lookup_enum_by_nr(res->Type),
+               _mesa_lookup_enum_by_nr(prop));
+   return 0;
 
 invalid_operation:
    _mesa_error(ctx, GL_INVALID_OPERATION, "%s(%s prop %s)", caller,

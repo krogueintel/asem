@@ -502,6 +502,10 @@ fs_inst::is_send_from_grf() const
    case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
    case SHADER_OPCODE_UNTYPED_ATOMIC:
    case SHADER_OPCODE_UNTYPED_SURFACE_READ:
+   case SHADER_OPCODE_UNTYPED_SURFACE_WRITE:
+   case SHADER_OPCODE_TYPED_ATOMIC:
+   case SHADER_OPCODE_TYPED_SURFACE_READ:
+   case SHADER_OPCODE_TYPED_SURFACE_WRITE:
    case SHADER_OPCODE_URB_WRITE_SIMD8:
       return true;
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
@@ -758,6 +762,11 @@ fs_visitor::emit_shader_time_end()
          reset_type = ST_FS16_RESET;
       }
       break;
+   case MESA_SHADER_COMPUTE:
+      type = ST_CS;
+      written_type = ST_CS_WRITTEN;
+      reset_type = ST_CS_RESET;
+      break;
    default:
       unreachable("fs_visitor::emit_shader_time_end missing code");
    }
@@ -951,6 +960,14 @@ fs_inst::regs_read(int arg) const
       return mlen;
    } else if (opcode == SHADER_OPCODE_UNTYPED_SURFACE_READ && arg == 0) {
       return mlen;
+   } else if (opcode == SHADER_OPCODE_UNTYPED_SURFACE_WRITE && arg == 0) {
+      return mlen;
+   } else if (opcode == SHADER_OPCODE_TYPED_ATOMIC && arg == 0) {
+      return mlen;
+   } else if (opcode == SHADER_OPCODE_TYPED_SURFACE_READ && arg == 0) {
+      return mlen;
+   } else if (opcode == SHADER_OPCODE_TYPED_SURFACE_WRITE && arg == 0) {
+      return mlen;
    } else if (opcode == FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET && arg == 0) {
       return mlen;
    } else if (opcode == FS_OPCODE_LINTERP && arg == 0) {
@@ -1043,6 +1060,10 @@ fs_visitor::implied_mrf_writes(fs_inst *inst)
       return 2;
    case SHADER_OPCODE_UNTYPED_ATOMIC:
    case SHADER_OPCODE_UNTYPED_SURFACE_READ:
+   case SHADER_OPCODE_UNTYPED_SURFACE_WRITE:
+   case SHADER_OPCODE_TYPED_ATOMIC:
+   case SHADER_OPCODE_TYPED_SURFACE_READ:
+   case SHADER_OPCODE_TYPED_SURFACE_WRITE:
    case SHADER_OPCODE_URB_WRITE_SIMD8:
    case FS_OPCODE_INTERPOLATE_AT_CENTROID:
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
@@ -1719,9 +1740,15 @@ fs_visitor::assign_curb_setup()
    if (dispatch_width == 8) {
       prog_data->dispatch_grf_start_reg = payload.num_regs;
    } else {
-      assert(stage == MESA_SHADER_FRAGMENT);
-      brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
-      prog_data->dispatch_grf_start_reg_16 = payload.num_regs;
+      if (stage == MESA_SHADER_FRAGMENT) {
+         brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
+         prog_data->dispatch_grf_start_reg_16 = payload.num_regs;
+      } else if (stage == MESA_SHADER_COMPUTE) {
+         brw_cs_prog_data *prog_data = (brw_cs_prog_data*) this->prog_data;
+         prog_data->dispatch_grf_start_reg_16 = payload.num_regs;
+      } else {
+         unreachable("Unsupported shader type!");
+      }
    }
 
    prog_data->curb_read_length = ALIGN(stage_prog_data->nr_params, 8) / 8;
@@ -2519,6 +2546,22 @@ fs_visitor::opt_algebraic()
          }
          break;
       }
+      case SHADER_OPCODE_BROADCAST:
+         if (is_uniform(inst->src[0])) {
+            inst->opcode = BRW_OPCODE_MOV;
+            inst->sources = 1;
+            inst->force_writemask_all = true;
+            progress = true;
+         } else if (inst->src[1].file == IMM) {
+            inst->opcode = BRW_OPCODE_MOV;
+            inst->src[0] = component(inst->src[0],
+                                     inst->src[1].fixed_hw_reg.dw1.ud);
+            inst->sources = 1;
+            inst->force_writemask_all = true;
+            progress = true;
+         }
+         break;
+
       default:
 	 break;
       }
@@ -2536,6 +2579,54 @@ fs_visitor::opt_algebraic()
 }
 
 /**
+ * Optimize sample messages that have constant zero values for the trailing
+ * texture coordinates. We can just reduce the message length for these
+ * instructions instead of reserving a register for it. Trailing parameters
+ * that aren't sent default to zero anyway. This will cause the dead code
+ * eliminator to remove the MOV instruction that would otherwise be emitted to
+ * set up the zero value.
+ */
+bool
+fs_visitor::opt_zero_samples()
+{
+   /* Gen4 infers the texturing opcode based on the message length so we can't
+    * change it.
+    */
+   if (devinfo->gen < 5)
+      return false;
+
+   bool progress = false;
+
+   foreach_block_and_inst(block, fs_inst, inst, cfg) {
+      if (!inst->is_tex())
+         continue;
+
+      fs_inst *load_payload = (fs_inst *) inst->prev;
+
+      if (load_payload->is_head_sentinel() ||
+          load_payload->opcode != SHADER_OPCODE_LOAD_PAYLOAD)
+         continue;
+
+      /* We don't want to remove the message header. Removing all of the
+       * parameters is avoided because it seems to cause a GPU hang but I
+       * can't find any documentation indicating that this is expected.
+       */
+      while (inst->mlen > inst->header_present + dispatch_width / 8 &&
+             load_payload->src[(inst->mlen - inst->header_present) /
+                               (dispatch_width / 8) +
+                               inst->header_present - 1].is_zero()) {
+         inst->mlen -= dispatch_width / 8;
+         progress = true;
+      }
+   }
+
+   if (progress)
+      invalidate_live_intervals();
+
+   return progress;
+}
+
+/**
  * Optimize sample messages which are followed by the final RT write.
  *
  * CHV, and GEN9+ can mark a texturing SEND instruction with EOT to have its
@@ -2547,6 +2638,9 @@ bool
 fs_visitor::opt_sampler_eot()
 {
    brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
+
+   if (stage != MESA_SHADER_FRAGMENT)
+      return false;
 
    if (devinfo->gen < 9 && !devinfo->is_cherryview)
       return false;
@@ -2881,6 +2975,53 @@ fs_visitor::compute_to_mrf()
 
    if (progress)
       invalidate_live_intervals();
+
+   return progress;
+}
+
+/**
+ * Eliminate FIND_LIVE_CHANNEL instructions occurring outside any control
+ * flow.  We could probably do better here with some form of divergence
+ * analysis.
+ */
+bool
+fs_visitor::eliminate_find_live_channel()
+{
+   bool progress = false;
+   unsigned depth = 0;
+
+   foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
+      switch (inst->opcode) {
+      case BRW_OPCODE_IF:
+      case BRW_OPCODE_DO:
+         depth++;
+         break;
+
+      case BRW_OPCODE_ENDIF:
+      case BRW_OPCODE_WHILE:
+         depth--;
+         break;
+
+      case FS_OPCODE_DISCARD_JUMP:
+         /* This can potentially make control flow non-uniform until the end
+          * of the program.
+          */
+         return progress;
+
+      case SHADER_OPCODE_FIND_LIVE_CHANNEL:
+         if (depth == 0) {
+            inst->opcode = BRW_OPCODE_MOV;
+            inst->src[0] = fs_reg(0);
+            inst->sources = 1;
+            inst->force_writemask_all = true;
+            progress = true;
+         }
+         break;
+
+      default:
+         break;
+      }
+   }
 
    return progress;
 }
@@ -3726,6 +3867,14 @@ fs_visitor::setup_vs_payload()
 }
 
 void
+fs_visitor::setup_cs_payload()
+{
+   assert(brw->gen >= 7);
+
+   payload.num_regs = 1;
+}
+
+void
 fs_visitor::assign_binding_table_offsets()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
@@ -3763,8 +3912,6 @@ fs_visitor::calculate_register_pressure()
 void
 fs_visitor::optimize()
 {
-   const char *stage_name = stage == MESA_SHADER_VERTEX ? "vs" : "fs";
-
    split_virtual_grfs();
 
    move_uniform_array_access_to_pull_constants();
@@ -3778,7 +3925,7 @@ fs_visitor::optimize()
       if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {   \
          char filename[64];                                             \
          snprintf(filename, 64, "%s%d-%04d-%02d-%02d-" #pass,              \
-                  stage_name, dispatch_width, shader_prog ? shader_prog->Name : 0, iteration, pass_num); \
+                  stage_abbrev, dispatch_width, shader_prog ? shader_prog->Name : 0, iteration, pass_num); \
                                                                         \
          backend_visitor::dump_instructions(filename);                  \
       }                                                                 \
@@ -3790,7 +3937,8 @@ fs_visitor::optimize()
    if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER)) {
       char filename[64];
       snprintf(filename, 64, "%s%d-%04d-00-start",
-               stage_name, dispatch_width, shader_prog ? shader_prog->Name : 0);
+               stage_abbrev, dispatch_width,
+               shader_prog ? shader_prog->Name : 0);
 
       backend_visitor::dump_instructions(filename);
    }
@@ -3816,8 +3964,10 @@ fs_visitor::optimize()
       OPT(opt_register_renaming);
       OPT(opt_redundant_discard_jumps);
       OPT(opt_saturate_propagation);
+      OPT(opt_zero_samples);
       OPT(register_coalesce);
       OPT(compute_to_mrf);
+      OPT(eliminate_find_live_channel);
 
       OPT(compact_virtual_grfs);
    } while (progress);
@@ -3882,9 +4032,6 @@ fs_visitor::allocate_registers()
    }
 
    if (!allocated_without_spills) {
-      const char *stage_name = stage == MESA_SHADER_VERTEX ?
-         "Vertex" : "Fragment";
-
       /* We assume that any spilling is worse than just dropping back to
        * SIMD8.  There's probably actually some intermediate point where
        * SIMD16 with a couple of spills is still better.
@@ -4065,6 +4212,53 @@ fs_visitor::run_fs()
    return !failed;
 }
 
+bool
+fs_visitor::run_cs()
+{
+   assert(stage == MESA_SHADER_COMPUTE);
+   assert(shader);
+
+   sanity_param_count = prog->Parameters->NumParameters;
+
+   assign_common_binding_table_offsets(0);
+
+   setup_cs_payload();
+
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      emit_shader_time_begin();
+
+   emit_nir_code();
+
+   if (failed)
+      return false;
+
+   emit_cs_terminate();
+
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      emit_shader_time_end();
+
+   calculate_cfg();
+
+   optimize();
+
+   assign_curb_setup();
+
+   fixup_3src_null_dest();
+   allocate_registers();
+
+   if (failed)
+      return false;
+
+   /* If any state parameters were appended, then ParameterValues could have
+    * been realloced, in which case the driver uniform storage set up by
+    * _mesa_associate_uniform_storage() would point to freed memory.  Make
+    * sure that didn't happen.
+    */
+   assert(sanity_param_count == prog->Parameters->NumParameters);
+
+   return !failed;
+}
+
 const unsigned *
 brw_wm_fs_emit(struct brw_context *brw,
                void *mem_ctx,
@@ -4197,18 +4391,7 @@ brw_fs_precompile(struct gl_context *ctx,
                                          BRW_FS_VARYING_INPUT_MASK) > 16)
       key.input_slots_valid = fp->Base.InputsRead | VARYING_BIT_POS;
 
-   const bool has_shader_channel_select = brw->is_haswell || brw->gen >= 8;
-   unsigned sampler_count = _mesa_fls(fp->Base.SamplersUsed);
-   for (unsigned i = 0; i < sampler_count; i++) {
-      if (!has_shader_channel_select && (fp->Base.ShadowSamplers & (1 << i))) {
-         /* Assume DEPTH_TEXTURE_MODE is the default: X, X, X, 1 */
-         key.tex.swizzles[i] =
-            MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_X, SWIZZLE_X, SWIZZLE_ONE);
-      } else {
-         /* Color sampler: assume no swizzling. */
-         key.tex.swizzles[i] = SWIZZLE_XYZW;
-      }
-   }
+   brw_setup_tex_for_precompile(brw, &key.tex, &fp->Base);
 
    if (fp->Base.InputsRead & VARYING_BIT_POS) {
       key.drawable_height = ctx->DrawBuffer->Height;
@@ -4234,4 +4417,23 @@ brw_fs_precompile(struct gl_context *ctx,
    brw->wm.prog_data = old_prog_data;
 
    return success;
+}
+
+void
+brw_setup_tex_for_precompile(struct brw_context *brw,
+                             struct brw_sampler_prog_key_data *tex,
+                             struct gl_program *prog)
+{
+   const bool has_shader_channel_select = brw->is_haswell || brw->gen >= 8;
+   unsigned sampler_count = _mesa_fls(prog->SamplersUsed);
+   for (unsigned i = 0; i < sampler_count; i++) {
+      if (!has_shader_channel_select && (prog->ShadowSamplers & (1 << i))) {
+         /* Assume DEPTH_TEXTURE_MODE is the default: X, X, X, 1 */
+         tex->swizzles[i] =
+            MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_X, SWIZZLE_X, SWIZZLE_ONE);
+      } else {
+         /* Color sampler: assume no swizzling. */
+         tex->swizzles[i] = SWIZZLE_XYZW;
+      }
+   }
 }

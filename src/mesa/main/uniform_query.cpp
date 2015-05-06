@@ -129,14 +129,26 @@ _mesa_GetActiveUniformsiv(GLuint program,
 
    res_prop = resource_prop_from_uniform_prop(pname);
 
+   /* We need to first verify that each entry exists as active uniform. If
+    * not, generate error and do not cause any other side effects.
+    *
+    * In the case of and error condition, Page 16 (section 2.3.1 Errors)
+    * of the OpenGL 4.5 spec says:
+    *
+    *     "If the generating command modifies values through a pointer argu-
+    *     ment, no change is made to these values."
+    */
+   for (int i = 0; i < uniformCount; i++) {
+      if (!_mesa_program_resource_find_index(shProg, GL_UNIFORM,
+                                              uniformIndices[i])) {
+         _mesa_error(ctx, GL_INVALID_VALUE, "glGetActiveUniformsiv(index)");
+         return;
+      }
+   }
+
    for (int i = 0; i < uniformCount; i++) {
       res = _mesa_program_resource_find_index(shProg, GL_UNIFORM,
                                               uniformIndices[i]);
-      if (!res) {
-         _mesa_error(ctx, GL_INVALID_VALUE, "glGetActiveUniformsiv(index)");
-         break;
-      }
-
       if (!_mesa_program_resource_prop(shProg, res, uniformIndices[i],
                                        res_prop, &params[i],
                                        "glGetActiveUniformsiv"))
@@ -335,7 +347,8 @@ _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,
 	      &&
 	      (uni->type->base_type == GLSL_TYPE_INT
 	       || uni->type->base_type == GLSL_TYPE_UINT
-	       || uni->type->base_type == GLSL_TYPE_SAMPLER))) {
+               || uni->type->base_type == GLSL_TYPE_SAMPLER
+               || uni->type->base_type == GLSL_TYPE_IMAGE))) {
 	 memcpy(paramsOut, src, bytes);
       } else {
 	 union gl_constant_value *const dst =
@@ -354,6 +367,7 @@ _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,
 		  break;
 	       case GLSL_TYPE_INT:
 	       case GLSL_TYPE_SAMPLER:
+               case GLSL_TYPE_IMAGE:
 		  dst[i].f = (float) src[i].i;
 		  break;
 	       case GLSL_TYPE_BOOL:

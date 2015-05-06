@@ -292,6 +292,14 @@ intelInitExtensions(struct gl_context *ctx)
       /* Test if the kernel has the ioctl. */
       if (drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &dummy) == 0)
          ctx->Extensions.ARB_timer_query = true;
+
+      /* Only enable this in core profile because other parts of Mesa behave
+       * slightly differently when the extension is enabled.
+       */
+      if (ctx->API == API_OPENGL_CORE) {
+         ctx->Extensions.ARB_viewport_array = true;
+         ctx->Extensions.AMD_vertex_shader_viewport_index = true;
+      }
    }
 
    if (brw->gen >= 5) {
@@ -303,20 +311,14 @@ intelInitExtensions(struct gl_context *ctx)
 
    if (brw->gen >= 7) {
       ctx->Extensions.ARB_conservative_depth = true;
+      ctx->Extensions.ARB_gpu_shader5 = true;
+      ctx->Extensions.ARB_shader_atomic_counters = true;
       ctx->Extensions.ARB_texture_view = true;
       if (can_do_pipelined_register_writes(brw)) {
          ctx->Extensions.ARB_transform_feedback2 = true;
          ctx->Extensions.ARB_transform_feedback3 = true;
          ctx->Extensions.ARB_transform_feedback_instanced = true;
          ctx->Extensions.ARB_draw_indirect = true;
-      }
-
-      /* Only enable this in core profile because other parts of Mesa behave
-       * slightly differently when the extension is enabled.
-       */
-      if (ctx->API == API_OPENGL_CORE) {
-         ctx->Extensions.ARB_viewport_array = true;
-         ctx->Extensions.AMD_vertex_shader_viewport_index = true;
       }
 
       ctx->Extensions.ARB_texture_compression_bptc = true;
@@ -341,12 +343,6 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.EXT_texture_compression_s3tc = true;
 
    ctx->Extensions.ANGLE_texture_compression_dxt = true;
-
-   if (brw->gen >= 7)
-      ctx->Extensions.ARB_shader_atomic_counters = true;
-
-   if (brw->gen == 7)
-      ctx->Extensions.ARB_gpu_shader5 = true;
 
    ctx->Extensions.OES_texture_float = true;
    ctx->Extensions.OES_texture_float_linear = true;
