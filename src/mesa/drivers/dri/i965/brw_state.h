@@ -229,11 +229,14 @@ void brw_destroy_caches( struct brw_context *brw );
 #define BRW_BATCH_STRUCT(brw, s) \
    intel_batchbuffer_data(brw, (s), sizeof(*(s)), RENDER_RING)
 
-void *brw_state_batch(struct brw_context *brw,
-		      enum aub_state_struct_type type,
-		      int size,
-		      int alignment,
-		      uint32_t *out_offset);
+void *__brw_state_batch(struct brw_context *brw,
+                        enum aub_state_struct_type type,
+                        int size,
+                        int alignment,
+                        int index,
+                        uint32_t *out_offset);
+#define brw_state_batch(brw, type, size, alignment, out_offset) \
+   __brw_state_batch(brw, type, size, alignment, 0, out_offset)
 
 /* brw_wm_surface_state.c */
 void gen4_init_vtable_surface_functions(struct brw_context *brw);
@@ -246,6 +249,7 @@ void brw_configure_w_tiled(const struct intel_mipmap_tree *mt,
                            unsigned *pitch, uint32_t *tiling,
                            unsigned *format);
 
+const char *brw_surface_format_name(unsigned format);
 uint32_t brw_format_for_mesa_format(mesa_format mesa_format);
 
 GLuint translate_tex_target(GLenum target);
@@ -329,6 +333,18 @@ void brw_update_sampler_state(struct brw_context *brw,
                               const struct gl_sampler_object *sampler,
                               uint32_t *sampler_state,
                               uint32_t batch_offset_for_sampler_state);
+
+/* gen6_wm_state.c */
+void
+gen6_upload_wm_state(struct brw_context *brw,
+                     const struct brw_fragment_program *fp,
+                     const struct brw_wm_prog_data *prog_data,
+                     const struct brw_stage_state *stage_state,
+                     bool multisampled_fbo, int min_inv_per_frag,
+                     bool dual_source_blend_enable, bool kill_enable,
+                     bool color_buffer_write_enable, bool msaa_enabled,
+                     bool line_stipple_enable, bool polygon_stipple_enable,
+                     bool statistic_enable);
 
 /* gen6_sf_state.c */
 void

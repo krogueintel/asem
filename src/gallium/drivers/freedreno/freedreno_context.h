@@ -32,7 +32,7 @@
 #include "pipe/p_context.h"
 #include "indices/u_primconvert.h"
 #include "util/u_blitter.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 #include "util/u_slab.h"
 #include "util/u_string.h"
 
@@ -297,7 +297,7 @@ struct fd_context {
 	 */
 	struct fd_gmem_stateobj gmem;
 	struct fd_vsc_pipe      pipe[8];
-	struct fd_tile          tile[64];
+	struct fd_tile          tile[256];
 
 	/* which state objects need to be re-emit'd: */
 	enum {

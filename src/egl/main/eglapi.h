@@ -31,6 +31,11 @@
 #ifndef EGLAPI_INCLUDED
 #define EGLAPI_INCLUDED
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * A generic function ptr type
  */
@@ -77,22 +82,6 @@ typedef EGLBoolean (*WaitNative_t)(_EGLDriver *drv, _EGLDisplay *dpy, EGLint eng
 /* this function may be called from multiple threads at the same time */
 typedef _EGLProc (*GetProcAddress_t)(_EGLDriver *drv, const char *procname);
 
-
-
-#ifdef EGL_MESA_screen_surface
-typedef EGLBoolean (*ChooseModeMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, const EGLint *attrib_list, EGLModeMESA *modes, EGLint modes_size, EGLint *num_modes);
-typedef EGLBoolean (*GetModesMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, EGLModeMESA *modes, EGLint mode_size, EGLint *num_mode);
-typedef EGLBoolean (*GetModeAttribMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLMode *mode, EGLint attribute, EGLint *value);
-typedef EGLBoolean (*CopyContextMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *source, _EGLContext *dest, EGLint mask);
-typedef EGLBoolean (*GetScreensMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, EGLScreenMESA *screens, EGLint max_screens, EGLint *num_screens);
-typedef _EGLSurface *(*CreateScreenSurfaceMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *config, const EGLint *attrib_list);
-typedef EGLBoolean (*ShowScreenSurfaceMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, _EGLSurface *surface, _EGLMode *mode);
-typedef EGLBoolean (*ScreenPositionMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, EGLint x, EGLint y);
-typedef EGLBoolean (*QueryScreenMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, EGLint attribute, EGLint *value);
-typedef EGLBoolean (*QueryScreenSurfaceMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, _EGLSurface **surface);
-typedef EGLBoolean (*QueryScreenModeMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLScreen *screen, _EGLMode **mode);
-typedef const char * (*QueryModeStringMESA_t)(_EGLDriver *drv, _EGLDisplay *dpy, _EGLMode *mode);
-#endif /* EGL_MESA_screen_surface */
 
 
 typedef _EGLSurface *(*CreatePbufferFromClientBuffer_t)(_EGLDriver *drv, _EGLDisplay *dpy, EGLenum buftype, EGLClientBuffer buffer, _EGLConfig *config, const EGLint *attrib_list);
@@ -179,21 +168,6 @@ struct _egl_api
    WaitNative_t WaitNative;
    GetProcAddress_t GetProcAddress;
 
-#ifdef EGL_MESA_screen_surface
-   ChooseModeMESA_t ChooseModeMESA;
-   GetModesMESA_t GetModesMESA;
-   GetModeAttribMESA_t GetModeAttribMESA;
-   CopyContextMESA_t CopyContextMESA;
-   GetScreensMESA_t GetScreensMESA;
-   CreateScreenSurfaceMESA_t CreateScreenSurfaceMESA;
-   ShowScreenSurfaceMESA_t ShowScreenSurfaceMESA;
-   ScreenPositionMESA_t ScreenPositionMESA;
-   QueryScreenMESA_t QueryScreenMESA;
-   QueryScreenSurfaceMESA_t QueryScreenSurfaceMESA;
-   QueryScreenModeMESA_t QueryScreenModeMESA;
-   QueryModeStringMESA_t QueryModeStringMESA;
-#endif /* EGL_MESA_screen_surface */
-
    CreatePbufferFromClientBuffer_t CreatePbufferFromClientBuffer;
 
    CreateImageKHR_t CreateImageKHR;
@@ -239,5 +213,10 @@ struct _egl_api
    ExportDMABUFImageMESA_t ExportDMABUFImageMESA;
 #endif
 };
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* EGLAPI_INCLUDED */

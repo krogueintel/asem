@@ -722,10 +722,6 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       inst->saturate = instr->dest.saturate;
       break;
 
-   case nir_op_fexp:
-   case nir_op_flog:
-      unreachable("not reached: should be handled by ir_explog_to_explog2");
-
    case nir_op_fsin:
       inst = emit_math(SHADER_OPCODE_SIN, result, op[0]);
       inst->saturate = instr->dest.saturate;
@@ -784,41 +780,9 @@ fs_visitor::nir_emit_alu(nir_alu_instr *instr)
       inst->saturate = instr->dest.saturate;
       break;
 
-   case nir_op_imul: {
-      if (devinfo->gen >= 8) {
-         emit(MUL(result, op[0], op[1]));
-         break;
-      } else {
-         nir_const_value *value0 = nir_src_as_const_value(instr->src[0].src);
-         nir_const_value *value1 = nir_src_as_const_value(instr->src[1].src);
-
-         if (value0 && value0->u[0] < (1 << 16)) {
-            if (devinfo->gen < 7) {
-               emit(MUL(result, op[0], op[1]));
-            } else {
-               emit(MUL(result, op[1], op[0]));
-            }
-            break;
-         } else if (value1 && value1->u[0] < (1 << 16)) {
-            if (devinfo->gen < 7) {
-               emit(MUL(result, op[1], op[0]));
-            } else {
-               emit(MUL(result, op[0], op[1]));
-            }
-            break;
-         }
-      }
-
-      if (devinfo->gen >= 7)
-         no16("SIMD16 explicit accumulator operands unsupported\n");
-
-      struct brw_reg acc = retype(brw_acc_reg(dispatch_width), result.type);
-
-      emit(MUL(acc, op[0], op[1]));
-      emit(MACH(reg_null_d, op[0], op[1]));
-      emit(MOV(result, fs_reg(acc)));
+   case nir_op_imul:
+      emit(MUL(result, op[0], op[1]));
       break;
-   }
 
    case nir_op_imul_high:
    case nir_op_umul_high: {
@@ -1381,16 +1345,14 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          index -= num_direct_uniforms;
       }
 
-      for (int i = 0; i < instr->const_index[1]; i++) {
-         for (unsigned j = 0; j < instr->num_components; j++) {
-            fs_reg src = offset(retype(uniform_reg, dest.type), index);
-            if (has_indirect)
-               src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[0]));
-            index++;
+      for (unsigned j = 0; j < instr->num_components; j++) {
+         fs_reg src = offset(retype(uniform_reg, dest.type), index);
+         if (has_indirect)
+            src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[0]));
+         index++;
 
-            emit(MOV(dest, src));
-            dest = offset(dest, 1);
-         }
+         emit(MOV(dest, src));
+         dest = offset(dest, 1);
       }
       break;
    }
@@ -1462,17 +1424,15 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       /* fallthrough */
    case nir_intrinsic_load_input: {
       unsigned index = 0;
-      for (int i = 0; i < instr->const_index[1]; i++) {
-         for (unsigned j = 0; j < instr->num_components; j++) {
-            fs_reg src = offset(retype(nir_inputs, dest.type),
-                                instr->const_index[0] + index);
-            if (has_indirect)
-               src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[0]));
-            index++;
+      for (unsigned j = 0; j < instr->num_components; j++) {
+         fs_reg src = offset(retype(nir_inputs, dest.type),
+                             instr->const_index[0] + index);
+         if (has_indirect)
+            src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[0]));
+         index++;
 
-            emit(MOV(dest, src));
-            dest = offset(dest, 1);
-         }
+         emit(MOV(dest, src));
+         dest = offset(dest, 1);
       }
       break;
    }
@@ -1600,16 +1560,14 @@ fs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_store_output: {
       fs_reg src = get_nir_src(instr->src[0]);
       unsigned index = 0;
-      for (int i = 0; i < instr->const_index[1]; i++) {
-         for (unsigned j = 0; j < instr->num_components; j++) {
-            fs_reg new_dest = offset(retype(nir_outputs, src.type),
-                                     instr->const_index[0] + index);
-            if (has_indirect)
-               src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[1]));
-            index++;
-            emit(MOV(new_dest, src));
-            src = offset(src, 1);
-         }
+      for (unsigned j = 0; j < instr->num_components; j++) {
+         fs_reg new_dest = offset(retype(nir_outputs, src.type),
+                                  instr->const_index[0] + index);
+         if (has_indirect)
+            src.reladdr = new(mem_ctx) fs_reg(get_nir_src(instr->src[1]));
+         index++;
+         emit(MOV(new_dest, src));
+         src = offset(src, 1);
       }
       break;
    }

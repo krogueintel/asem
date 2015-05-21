@@ -1765,14 +1765,12 @@ store_dest(struct tgsi_exec_machine *mach,
    if (!dst)
       return;
 
-   switch (inst->Instruction.Saturate) {
-   case TGSI_SAT_NONE:
+   if (!inst->Instruction.Saturate) {
       for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i))
             dst->i[i] = chan->i[i];
-      break;
-
-   case TGSI_SAT_ZERO_ONE:
+   }
+   else {
       for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i)) {
             if (chan->f[i] < 0.0f)
@@ -1782,22 +1780,6 @@ store_dest(struct tgsi_exec_machine *mach,
             else
                dst->i[i] = chan->i[i];
          }
-      break;
-
-   case TGSI_SAT_MINUS_PLUS_ONE:
-      for (i = 0; i < TGSI_QUAD_SIZE; i++)
-         if (execmask & (1 << i)) {
-            if (chan->f[i] < -1.0f)
-               dst->f[i] = -1.0f;
-            else if (chan->f[i] > 1.0f)
-               dst->f[i] = 1.0f;
-            else
-               dst->i[i] = chan->i[i];
-         }
-      break;
-
-   default:
-      assert( 0 );
    }
 }
 
@@ -1952,7 +1934,7 @@ fetch_texel( struct tgsi_sampler *sampler,
 #define TEX_MODIFIER_LOD_BIAS       2
 #define TEX_MODIFIER_EXPLICIT_LOD   3
 #define TEX_MODIFIER_LEVEL_ZERO     4
-
+#define TEX_MODIFIER_GATHER         5
 
 /*
  * Fetch all 3 (for s,t,r coords) texel offsets, put them into int array.
@@ -2069,6 +2051,8 @@ exec_tex(struct tgsi_exec_machine *mach,
          control = tgsi_sampler_lod_explicit;
       else if (modifier == TEX_MODIFIER_LOD_BIAS)
          control = tgsi_sampler_lod_bias;
+      else if (modifier == TEX_MODIFIER_GATHER)
+         control = tgsi_sampler_gather;
    }
    else {
       for (i = dim; i < Elements(args); i++)
@@ -3315,16 +3299,14 @@ store_double_channel(struct tgsi_exec_machine *mach,
    union tgsi_double_channel temp;
    const uint execmask = mach->ExecMask;
 
-   switch (inst->Instruction.Saturate) {
-   case TGSI_SAT_NONE:
+   if (!inst->Instruction.Saturate) {
       for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i)) {
             dst[0].u[i] = chan->u[i][0];
             dst[1].u[i] = chan->u[i][1];
          }
-      break;
-
-   case TGSI_SAT_ZERO_ONE:
+   }
+   else {
       for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i)) {
             if (chan->d[i] < 0.0)
@@ -3337,25 +3319,6 @@ store_double_channel(struct tgsi_exec_machine *mach,
             dst[0].u[i] = temp.u[i][0];
             dst[1].u[i] = temp.u[i][1];
          }
-      break;
-
-   case TGSI_SAT_MINUS_PLUS_ONE:
-      for (i = 0; i < TGSI_QUAD_SIZE; i++)
-         if (execmask & (1 << i)) {
-            if (chan->d[i] < -1.0)
-               temp.d[i] = -1.0;
-            else if (chan->d[i] > 1.0)
-               temp.d[i] = 1.0;
-            else
-               temp.d[i] = chan->d[i];
-
-            dst[0].u[i] = temp.u[i][0];
-            dst[1].u[i] = temp.u[i][1];
-         }
-      break;
-
-   default:
-      assert( 0 );
    }
 
    store_dest_double(mach, &dst[0], reg, inst, chan_0, TGSI_EXEC_DATA_UINT);
@@ -4372,6 +4335,13 @@ exec_instruction(
       /* src[0] = texcoord (src[0].w = projection) */
       /* src[1] = sampler unit */
       exec_tex(mach, inst, TEX_MODIFIER_PROJECTED, 1);
+      break;
+
+   case TGSI_OPCODE_TG4:
+      /* src[0] = texcoord */
+      /* src[1] = component */
+      /* src[2] = sampler unit */
+      exec_tex(mach, inst, TEX_MODIFIER_GATHER, 2);
       break;
 
    case TGSI_OPCODE_UP2H:

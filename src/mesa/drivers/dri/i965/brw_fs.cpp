@@ -90,31 +90,6 @@ fs_inst::init(enum opcode opcode, uint8_t exec_size, const fs_reg &dst,
    }
    assert(this->exec_size != 0);
 
-   for (unsigned i = 0; i < sources; ++i) {
-      switch (this->src[i].file) {
-      case BAD_FILE:
-         this->src[i].effective_width = 8;
-         break;
-      case GRF:
-      case HW_REG:
-      case ATTR:
-         assert(this->src[i].width > 0);
-         if (this->src[i].width == 1) {
-            this->src[i].effective_width = this->exec_size;
-         } else {
-            this->src[i].effective_width = this->src[i].width;
-         }
-         break;
-      case IMM:
-      case UNIFORM:
-         this->src[i].effective_width = this->exec_size;
-         break;
-      default:
-         unreachable("Invalid source register file");
-      }
-   }
-   this->dst.effective_width = this->exec_size;
-
    this->conditional_mod = BRW_CONDITIONAL_NONE;
 
    /* This will be the case for almost all instructions. */
@@ -355,27 +330,21 @@ fs_visitor::CMP(fs_reg dst, fs_reg src0, fs_reg src1,
 }
 
 fs_inst *
-fs_visitor::LOAD_PAYLOAD(const fs_reg &dst, fs_reg *src, int sources)
+fs_visitor::LOAD_PAYLOAD(const fs_reg &dst, fs_reg *src, int sources,
+                         int header_size)
 {
-   uint8_t exec_size = dst.width;
-   for (int i = 0; i < sources; ++i) {
-      assert(src[i].width % dst.width == 0);
-      if (src[i].width > exec_size)
-         exec_size = src[i].width;
-   }
-
-   fs_inst *inst = new(mem_ctx) fs_inst(SHADER_OPCODE_LOAD_PAYLOAD, exec_size,
+   assert(dst.width % 8 == 0);
+   fs_inst *inst = new(mem_ctx) fs_inst(SHADER_OPCODE_LOAD_PAYLOAD, dst.width,
                                         dst, src, sources);
-   inst->regs_written = 0;
-   for (int i = 0; i < sources; ++i) {
-      /* The LOAD_PAYLOAD instruction only really makes sense if we are
-       * dealing with whole registers.  If this ever changes, we can deal
-       * with it later.
-       */
-      int size = inst->src[i].effective_width * type_sz(src[i].type);
-      assert(size % 32 == 0);
-      inst->regs_written += (size + 31) / 32;
-   }
+   inst->header_size = header_size;
+
+   for (int i = 0; i < header_size; i++)
+      assert(src[i].file != GRF || src[i].width * type_sz(src[i].type) == 32);
+   inst->regs_written = header_size;
+
+   for (int i = header_size; i < sources; ++i)
+      assert(src[i].file != GRF || src[i].width == dst.width);
+   inst->regs_written += (sources - header_size) * (dst.width / 8);
 
    return inst;
 }
@@ -430,7 +399,7 @@ fs_visitor::VARYING_PULL_CONSTANT_LOAD(const fs_reg &dst,
 
    if (devinfo->gen < 7) {
       inst->base_mrf = 13;
-      inst->header_present = true;
+      inst->header_size = 1;
       if (devinfo->gen == 4)
          inst->mlen = 3;
       else
@@ -478,7 +447,7 @@ fs_inst::equals(fs_inst *inst) const
            base_mrf == inst->base_mrf &&
            target == inst->target &&
            eot == inst->eot &&
-           header_present == inst->header_present &&
+           header_size == inst->header_size &&
            shadow_compare == inst->shadow_compare &&
            exec_size == inst->exec_size &&
            offset == inst->offset);
@@ -518,6 +487,30 @@ fs_inst::is_send_from_grf() const
 
       return false;
    }
+}
+
+bool
+fs_inst::is_copy_payload(const brw::simple_allocator &grf_alloc) const
+{
+   if (this->opcode != SHADER_OPCODE_LOAD_PAYLOAD)
+      return false;
+
+   fs_reg reg = this->src[0];
+   if (reg.file != GRF || reg.reg_offset != 0 || reg.stride == 0)
+      return false;
+
+   if (grf_alloc.sizes[reg.reg] != this->regs_written)
+      return false;
+
+   for (int i = 0; i < this->sources; i++) {
+      reg.type = this->src[i].type;
+      reg.width = this->src[i].width;
+      if (!this->src[i].equals(reg))
+         return false;
+      reg = ::offset(reg, 1);
+   }
+
+   return true;
 }
 
 bool
@@ -2607,14 +2600,17 @@ fs_visitor::opt_zero_samples()
           load_payload->opcode != SHADER_OPCODE_LOAD_PAYLOAD)
          continue;
 
-      /* We don't want to remove the message header. Removing all of the
-       * parameters is avoided because it seems to cause a GPU hang but I
-       * can't find any documentation indicating that this is expected.
+      /* We don't want to remove the message header or the first parameter.
+       * Removing the first parameter is not allowed, see the Haswell PRM
+       * volume 7, page 149:
+       *
+       *     "Parameter 0 is required except for the sampleinfo message, which
+       *      has no parameter 0"
        */
-      while (inst->mlen > inst->header_present + dispatch_width / 8 &&
-             load_payload->src[(inst->mlen - inst->header_present) /
+      while (inst->mlen > inst->header_size + dispatch_width / 8 &&
+             load_payload->src[(inst->mlen - inst->header_size) /
                                (dispatch_width / 8) +
-                               inst->header_present - 1].is_zero()) {
+                               inst->header_size - 1].is_zero()) {
          inst->mlen -= dispatch_width / 8;
          progress = true;
       }
@@ -2662,6 +2658,16 @@ fs_visitor::opt_sampler_eot()
    if (unlikely(tex_inst->is_head_sentinel()) || !tex_inst->is_tex())
       return false;
 
+   /* This optimisation doesn't seem to work for textureGather for some
+    * reason. I can't find any documentation or known workarounds to indicate
+    * that this is expected, but considering that it is probably pretty
+    * unlikely that a shader would directly write out the results from
+    * textureGather we might as well just disable it.
+    */
+   if (tex_inst->opcode == SHADER_OPCODE_TG4 ||
+       tex_inst->opcode == SHADER_OPCODE_TG4_OFFSET)
+      return false;
+
    /* If there's no header present, we need to munge the LOAD_PAYLOAD as well.
     * It's very likely to be the previous instruction.
     */
@@ -2675,6 +2681,7 @@ fs_visitor::opt_sampler_eot()
 
    tex_inst->offset |= fb_write->target << 24;
    tex_inst->eot = true;
+   tex_inst->dst = reg_null_ud;
    fb_write->remove(cfg->blocks[cfg->num_blocks - 1]);
 
    /* If a header is present, marking the eot is sufficient. Otherwise, we need
@@ -2683,7 +2690,7 @@ fs_visitor::opt_sampler_eot()
     * we have enough space, but it will make sure the dead code eliminator kills
     * the instruction that this will replace.
     */
-   if (tex_inst->header_present)
+   if (tex_inst->header_size != 0)
       return true;
 
    fs_reg send_header = vgrf(load_payload->sources + 1);
@@ -2708,11 +2715,11 @@ fs_visitor::opt_sampler_eot()
                                                     load_payload->sources + 1);
 
    new_load_payload->regs_written = load_payload->regs_written + 1;
+   new_load_payload->header_size = 1;
    tex_inst->mlen++;
-   tex_inst->header_present = true;
+   tex_inst->header_size = 1;
    tex_inst->insert_before(cfg->blocks[cfg->num_blocks - 1], new_load_payload);
    tex_inst->src[0] = send_header;
-   tex_inst->dst = reg_null_ud;
 
    return true;
 }
@@ -3047,7 +3054,7 @@ fs_visitor::emit_repclear_shader()
       write->saturate = key->clamp_fragment_color;
       write->base_mrf = color_mrf;
       write->target = 0;
-      write->header_present = false;
+      write->header_size = 0;
       write->mlen = 1;
    } else {
       assume(key->nr_color_regions > 0);
@@ -3056,7 +3063,7 @@ fs_visitor::emit_repclear_shader()
          write->saturate = key->clamp_fragment_color;
          write->base_mrf = base_mrf;
          write->target = i;
-         write->header_present = true;
+         write->header_size = 2;
          write->mlen = 3;
       }
    }
@@ -3405,99 +3412,254 @@ fs_visitor::lower_load_payload()
 {
    bool progress = false;
 
-   int vgrf_to_reg[alloc.count];
-   int reg_count = 0;
-   for (unsigned i = 0; i < alloc.count; ++i) {
-      vgrf_to_reg[i] = reg_count;
-      reg_count += alloc.sizes[i];
-   }
-
-   struct {
-      bool written:1; /* Whether this register has ever been written */
-      bool force_writemask_all:1;
-      bool force_sechalf:1;
-   } metadata[reg_count];
-   memset(metadata, 0, sizeof(metadata));
-
    foreach_block_and_inst_safe (block, fs_inst, inst, cfg) {
-      if (inst->dst.file == GRF) {
-         const int dst_reg = vgrf_to_reg[inst->dst.reg] + inst->dst.reg_offset;
-         bool force_sechalf = inst->force_sechalf &&
-                              !inst->force_writemask_all;
-         bool toggle_sechalf = inst->dst.width == 16 &&
-                               type_sz(inst->dst.type) == 4 &&
-                               !inst->force_writemask_all;
-         for (int i = 0; i < inst->regs_written; ++i) {
-            metadata[dst_reg + i].written = true;
-            metadata[dst_reg + i].force_sechalf = force_sechalf;
-            metadata[dst_reg + i].force_writemask_all = inst->force_writemask_all;
-            force_sechalf = (toggle_sechalf != force_sechalf);
+      if (inst->opcode != SHADER_OPCODE_LOAD_PAYLOAD)
+         continue;
+
+      assert(inst->dst.file == MRF || inst->dst.file == GRF);
+      assert(inst->saturate == false);
+
+      fs_reg dst = inst->dst;
+
+      /* Get rid of COMPR4.  We'll add it back in if we need it */
+      if (dst.file == MRF)
+         dst.reg = dst.reg & ~BRW_MRF_COMPR4;
+
+      dst.width = 8;
+      for (uint8_t i = 0; i < inst->header_size; i++) {
+         if (inst->src[i].file != BAD_FILE) {
+            fs_reg mov_dst = retype(dst, BRW_REGISTER_TYPE_UD);
+            fs_reg mov_src = retype(inst->src[i], BRW_REGISTER_TYPE_UD);
+            mov_src.width = 8;
+            fs_inst *mov = MOV(mov_dst, mov_src);
+            mov->force_writemask_all = true;
+            inst->insert_before(block, mov);
          }
+         dst = offset(dst, 1);
       }
 
-      if (inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD) {
-         assert(inst->dst.file == MRF || inst->dst.file == GRF);
-         fs_reg dst = inst->dst;
+      dst.width = inst->exec_size;
+      if (inst->dst.file == MRF && (inst->dst.reg & BRW_MRF_COMPR4) &&
+          inst->exec_size > 8) {
+         /* In this case, the payload portion of the LOAD_PAYLOAD isn't
+          * a straightforward copy.  Instead, the result of the
+          * LOAD_PAYLOAD is treated as interleaved and the first four
+          * non-header sources are unpacked as:
+          *
+          * m + 0: r0
+          * m + 1: g0
+          * m + 2: b0
+          * m + 3: a0
+          * m + 4: r1
+          * m + 5: g1
+          * m + 6: b1
+          * m + 7: a1
+          *
+          * This is used for gen <= 5 fb writes.
+          */
+         assert(inst->exec_size == 16);
+         assert(inst->header_size + 4 <= inst->sources);
+         for (uint8_t i = inst->header_size; i < inst->header_size + 4; i++) {
+            if (inst->src[i].file != BAD_FILE) {
+               if (devinfo->has_compr4) {
+                  fs_reg compr4_dst = retype(dst, inst->src[i].type);
+                  compr4_dst.reg |= BRW_MRF_COMPR4;
 
-         for (int i = 0; i < inst->sources; i++) {
-            dst.width = inst->src[i].effective_width;
-            dst.type = inst->src[i].type;
-
-            if (inst->src[i].file == BAD_FILE) {
-               /* Do nothing but otherwise increment as normal */
-            } else if (dst.file == MRF &&
-                       dst.width == 8 &&
-                       devinfo->has_compr4 &&
-                       i + 4 < inst->sources &&
-                       inst->src[i + 4].equals(horiz_offset(inst->src[i], 8))) {
-               fs_reg compr4_dst = dst;
-               compr4_dst.reg += BRW_MRF_COMPR4;
-               compr4_dst.width = 16;
-               fs_reg compr4_src = inst->src[i];
-               compr4_src.width = 16;
-               fs_inst *mov = MOV(compr4_dst, compr4_src);
-               mov->force_writemask_all = true;
-               inst->insert_before(block, mov);
-               /* Mark i+4 as BAD_FILE so we don't emit a MOV for it */
-               inst->src[i + 4].file = BAD_FILE;
-            } else {
-               fs_inst *mov = MOV(dst, inst->src[i]);
-               if (inst->src[i].file == GRF) {
-                  int src_reg = vgrf_to_reg[inst->src[i].reg] +
-                                inst->src[i].reg_offset;
-                  mov->force_sechalf = metadata[src_reg].force_sechalf;
-                  mov->force_writemask_all = metadata[src_reg].force_writemask_all;
+                  fs_inst *mov = MOV(compr4_dst, inst->src[i]);
+                  mov->force_writemask_all = inst->force_writemask_all;
+                  inst->insert_before(block, mov);
                } else {
-                  /* We don't have any useful metadata for immediates or
-                   * uniforms.  Assume that any of the channels of the
-                   * destination may be used.
-                   */
-                  assert(inst->src[i].file == IMM ||
-                         inst->src[i].file == UNIFORM);
-                  mov->force_writemask_all = true;
-               }
+                  /* Platform doesn't have COMPR4.  We have to fake it */
+                  fs_reg mov_dst = retype(dst, inst->src[i].type);
+                  mov_dst.width = 8;
 
-               if (dst.file == GRF) {
-                  const int dst_reg = vgrf_to_reg[dst.reg] + dst.reg_offset;
-                  const bool force_writemask = mov->force_writemask_all;
-                  metadata[dst_reg].force_writemask_all = force_writemask;
-                  metadata[dst_reg].force_sechalf = mov->force_sechalf;
-                  if (dst.width * type_sz(dst.type) > 32) {
-                     assert(!mov->force_sechalf);
-                     metadata[dst_reg + 1].force_writemask_all = force_writemask;
-                     metadata[dst_reg + 1].force_sechalf = !force_writemask;
-                  }
-               }
+                  fs_inst *mov = MOV(mov_dst, half(inst->src[i], 0));
+                  mov->force_writemask_all = inst->force_writemask_all;
+                  inst->insert_before(block, mov);
 
-               inst->insert_before(block, mov);
+                  mov = MOV(offset(mov_dst, 4), half(inst->src[i], 1));
+                  mov->force_writemask_all = inst->force_writemask_all;
+                  mov->force_sechalf = true;
+                  inst->insert_before(block, mov);
+               }
             }
 
-            dst = offset(dst, 1);
+            dst.reg++;
          }
 
-         inst->remove(block);
-         progress = true;
+         /* The loop above only ever incremented us through the first set
+          * of 4 registers.  However, thanks to the magic of COMPR4, we
+          * actually wrote to the first 8 registers, so we need to take
+          * that into account now.
+          */
+         dst.reg += 4;
+
+         /* The COMPR4 code took care of the first 4 sources.  We'll let
+          * the regular path handle any remaining sources.  Yes, we are
+          * modifying the instruction but we're about to delete it so
+          * this really doesn't hurt anything.
+          */
+         inst->header_size += 4;
       }
+
+      for (uint8_t i = inst->header_size; i < inst->sources; i++) {
+         if (inst->src[i].file != BAD_FILE) {
+            fs_inst *mov = MOV(retype(dst, inst->src[i].type),
+                               inst->src[i]);
+            mov->force_writemask_all = inst->force_writemask_all;
+            mov->force_sechalf = inst->force_sechalf;
+            inst->insert_before(block, mov);
+         }
+         dst = offset(dst, 1);
+      }
+
+      inst->remove(block);
+      progress = true;
+   }
+
+   if (progress)
+      invalidate_live_intervals();
+
+   return progress;
+}
+
+bool
+fs_visitor::lower_integer_multiplication()
+{
+   bool progress = false;
+
+   /* Gen8's MUL instruction can do a 32-bit x 32-bit -> 32-bit operation
+    * directly, but Cherryview cannot.
+    */
+   if (devinfo->gen >= 8 && !devinfo->is_cherryview)
+      return false;
+
+   foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
+      if (inst->opcode != BRW_OPCODE_MUL ||
+          inst->dst.is_accumulator() ||
+          (inst->dst.type != BRW_REGISTER_TYPE_D &&
+           inst->dst.type != BRW_REGISTER_TYPE_UD))
+         continue;
+
+#define insert(instr) inst->insert_before(block, instr)
+
+      /* The MUL instruction isn't commutative. On Gen <= 6, only the low
+       * 16-bits of src0 are read, and on Gen >= 7 only the low 16-bits of
+       * src1 are used.
+       *
+       * If multiplying by an immediate value that fits in 16-bits, do a
+       * single MUL instruction with that value in the proper location.
+       */
+      if (inst->src[1].file == IMM &&
+          inst->src[1].fixed_hw_reg.dw1.ud < (1 << 16)) {
+         if (devinfo->gen < 7) {
+            fs_reg imm(GRF, alloc.allocate(dispatch_width / 8),
+                       inst->dst.type, dispatch_width);
+            insert(MOV(imm, inst->src[1]));
+            insert(MUL(inst->dst, imm, inst->src[0]));
+         } else {
+            insert(MUL(inst->dst, inst->src[0], inst->src[1]));
+         }
+      } else {
+         /* Gen < 8 (and some Gen8+ low-power parts like Cherryview) cannot
+          * do 32-bit integer multiplication in one instruction, but instead
+          * must do a sequence (which actually calculates a 64-bit result):
+          *
+          *    mul(8)  acc0<1>D   g3<8,8,1>D      g4<8,8,1>D
+          *    mach(8) null       g3<8,8,1>D      g4<8,8,1>D
+          *    mov(8)  g2<1>D     acc0<8,8,1>D
+          *
+          * But on Gen > 6, the ability to use second accumulator register
+          * (acc1) for non-float data types was removed, preventing a simple
+          * implementation in SIMD16. A 16-channel result can be calculated by
+          * executing the three instructions twice in SIMD8, once with quarter
+          * control of 1Q for the first eight channels and again with 2Q for
+          * the second eight channels.
+          *
+          * Which accumulator register is implicitly accessed (by AccWrEnable
+          * for instance) is determined by the quarter control. Unfortunately
+          * Ivybridge (and presumably Baytrail) has a hardware bug in which an
+          * implicit accumulator access by an instruction with 2Q will access
+          * acc1 regardless of whether the data type is usable in acc1.
+          *
+          * Specifically, the 2Q mach(8) writes acc1 which does not exist for
+          * integer data types.
+          *
+          * Since we only want the low 32-bits of the result, we can do two
+          * 32-bit x 16-bit multiplies (like the mul and mach are doing), and
+          * adjust the high result and add them (like the mach is doing):
+          *
+          *    mul(8)  g7<1>D     g3<8,8,1>D      g4.0<8,8,1>UW
+          *    mul(8)  g8<1>D     g3<8,8,1>D      g4.1<8,8,1>UW
+          *    shl(8)  g9<1>D     g8<8,8,1>D      16D
+          *    add(8)  g2<1>D     g7<8,8,1>D      g8<8,8,1>D
+          *
+          * We avoid the shl instruction by realizing that we only want to add
+          * the low 16-bits of the "high" result to the high 16-bits of the
+          * "low" result and using proper regioning on the add:
+          *
+          *    mul(8)  g7<1>D     g3<8,8,1>D      g4.0<16,8,2>UW
+          *    mul(8)  g8<1>D     g3<8,8,1>D      g4.1<16,8,2>UW
+          *    add(8)  g7.1<2>UW  g7.1<16,8,2>UW  g8<16,8,2>UW
+          *
+          * Since it does not use the (single) accumulator register, we can
+          * schedule multi-component multiplications much better.
+          */
+
+         fs_reg low = inst->dst;
+         fs_reg high(GRF, alloc.allocate(dispatch_width / 8),
+                     inst->dst.type, dispatch_width);
+
+         if (brw->gen >= 7) {
+            fs_reg src1_0_w = inst->src[1];
+            fs_reg src1_1_w = inst->src[1];
+
+            if (inst->src[1].file == IMM) {
+               src1_0_w.fixed_hw_reg.dw1.ud &= 0xffff;
+               src1_1_w.fixed_hw_reg.dw1.ud >>= 16;
+            } else {
+               src1_0_w.type = BRW_REGISTER_TYPE_UW;
+               src1_0_w.stride = 2;
+
+               src1_1_w.type = BRW_REGISTER_TYPE_UW;
+               src1_1_w.stride = 2;
+               src1_1_w.subreg_offset += type_sz(BRW_REGISTER_TYPE_UW);
+            }
+            insert(MUL(low, inst->src[0], src1_0_w));
+            insert(MUL(high, inst->src[0], src1_1_w));
+         } else {
+            fs_reg src0_0_w = inst->src[0];
+            fs_reg src0_1_w = inst->src[0];
+
+            src0_0_w.type = BRW_REGISTER_TYPE_UW;
+            src0_0_w.stride = 2;
+
+            src0_1_w.type = BRW_REGISTER_TYPE_UW;
+            src0_1_w.stride = 2;
+            src0_1_w.subreg_offset += type_sz(BRW_REGISTER_TYPE_UW);
+
+            insert(MUL(low, src0_0_w, inst->src[1]));
+            insert(MUL(high, src0_1_w, inst->src[1]));
+         }
+
+         fs_reg dst = inst->dst;
+         dst.type = BRW_REGISTER_TYPE_UW;
+         dst.subreg_offset = 2;
+         dst.stride = 2;
+
+         high.type = BRW_REGISTER_TYPE_UW;
+         high.stride = 2;
+
+         low.type = BRW_REGISTER_TYPE_UW;
+         low.subreg_offset = 2;
+         low.stride = 2;
+
+         insert(ADD(dst, low, high));
+      }
+#undef insert
+
+      inst->remove(block);
+      progress = true;
    }
 
    if (progress)
@@ -3984,6 +4146,7 @@ fs_visitor::optimize()
    }
 
    OPT(opt_combine_constants);
+   OPT(lower_integer_multiplication);
 
    lower_uniform_pull_constant_loads();
 }
@@ -4286,7 +4449,8 @@ brw_wm_fs_emit(struct brw_context *brw,
 
    /* Now the main event: Visit the shader IR and generate our FS IR for it.
     */
-   fs_visitor v(brw, mem_ctx, key, prog_data, prog, fp, 8);
+   fs_visitor v(brw, mem_ctx, MESA_SHADER_FRAGMENT, key, &prog_data->base,
+                prog, &fp->Base, 8);
    if (!v.run_fs()) {
       if (prog) {
          prog->LinkStatus = false;
@@ -4300,7 +4464,8 @@ brw_wm_fs_emit(struct brw_context *brw,
    }
 
    cfg_t *simd16_cfg = NULL;
-   fs_visitor v2(brw, mem_ctx, key, prog_data, prog, fp, 16);
+   fs_visitor v2(brw, mem_ctx, MESA_SHADER_FRAGMENT, key, &prog_data->base,
+                 prog, &fp->Base, 16);
    if (likely(!(INTEL_DEBUG & DEBUG_NO16) || brw->use_rep_send)) {
       if (!v.simd16_unsupported) {
          /* Try a SIMD16 compile */

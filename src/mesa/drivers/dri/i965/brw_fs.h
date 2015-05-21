@@ -75,30 +75,14 @@ public:
 
    fs_visitor(struct brw_context *brw,
               void *mem_ctx,
-              const struct brw_wm_prog_key *key,
-              struct brw_wm_prog_data *prog_data,
+              gl_shader_stage stage,
+              const void *key,
+              struct brw_stage_prog_data *prog_data,
               struct gl_shader_program *shader_prog,
-              struct gl_fragment_program *fp,
-              unsigned dispatch_width);
-
-   fs_visitor(struct brw_context *brw,
-              void *mem_ctx,
-              const struct brw_vs_prog_key *key,
-              struct brw_vs_prog_data *prog_data,
-              struct gl_shader_program *shader_prog,
-              struct gl_vertex_program *cp,
-              unsigned dispatch_width);
-
-   fs_visitor(struct brw_context *brw,
-              void *mem_ctx,
-              const struct brw_cs_prog_key *key,
-              struct brw_cs_prog_data *prog_data,
-              struct gl_shader_program *shader_prog,
-              struct gl_compute_program *cp,
+              struct gl_program *prog,
               unsigned dispatch_width);
 
    ~fs_visitor();
-   void init();
 
    fs_reg *variable_storage(ir_variable *var);
    fs_reg vgrf(const glsl_type *const type);
@@ -188,7 +172,8 @@ public:
 					   fs_inst *end,
 					   const fs_reg &reg);
 
-   fs_inst *LOAD_PAYLOAD(const fs_reg &dst, fs_reg *src, int sources);
+   fs_inst *LOAD_PAYLOAD(const fs_reg &dst, fs_reg *src, int sources,
+                         int header_size);
 
    exec_list VARYING_PULL_CONSTANT_LOAD(const fs_reg &dst,
                                         const fs_reg &surf_index,
@@ -256,6 +241,7 @@ public:
    void no16(const char *msg, ...);
    void lower_uniform_pull_constant_loads();
    bool lower_load_payload();
+   bool lower_integer_multiplication();
    bool opt_combine_constants();
 
    void emit_dummy_fs();
@@ -393,12 +379,12 @@ public:
    bool optimize_frontfacing_ternary(nir_alu_instr *instr,
                                      const fs_reg &result);
 
-   int setup_color_payload(fs_reg *dst, fs_reg color, unsigned components,
-                           bool use_2nd_half);
+   void setup_color_payload(fs_reg *dst, fs_reg color, unsigned components,
+                            unsigned exec_size, bool use_2nd_half);
    void emit_alpha_test();
    fs_inst *emit_single_fb_write(fs_reg color1, fs_reg color2,
                                  fs_reg src0_alpha, unsigned components,
-                                 bool use_2nd_half = false);
+                                 unsigned exec_size, bool use_2nd_half = false);
    void emit_fb_writes();
    void emit_urb_writes();
    void emit_cs_terminate();

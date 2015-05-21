@@ -1985,6 +1985,11 @@ dri3_create_screen(int screen, struct glx_display * priv)
       goto handle_error;
    }
 
+   if (psc->is_different_gpu && !psc->image->blitImage) {
+      ErrorMessageF("Different GPU, but blitImage not implemented for this driver\n");
+      goto handle_error;
+   }
+
    if (!psc->is_different_gpu && (
        !psc->texBuffer || psc->texBuffer->base.version < 2 ||
        !psc->texBuffer->setTexBuffer2
@@ -2035,6 +2040,8 @@ dri3_create_screen(int screen, struct glx_display * priv)
    psc->show_fps_interval = tmp ? atoi(tmp) : 0;
    if (psc->show_fps_interval < 0)
       psc->show_fps_interval = 0;
+
+   InfoMessageF("Using DRI3 for screen %d\n", screen);
 
    return &psc->base;
 

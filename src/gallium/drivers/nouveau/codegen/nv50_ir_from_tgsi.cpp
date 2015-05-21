@@ -418,6 +418,7 @@ nv50_ir::DataType Instruction::inferSrcType() const
    case TGSI_OPCODE_OR:
    case TGSI_OPCODE_XOR:
    case TGSI_OPCODE_NOT:
+   case TGSI_OPCODE_SHL:
    case TGSI_OPCODE_U2F:
    case TGSI_OPCODE_U2D:
    case TGSI_OPCODE_UADD:
@@ -1315,7 +1316,7 @@ private:
    };
 
 private:
-   const struct tgsi::Source *code;
+   const tgsi::Source *code;
    const struct nv50_ir_prog_info *info;
 
    struct {
@@ -1603,19 +1604,8 @@ Converter::storeDst(int d, int c, Value *val)
 {
    const tgsi::Instruction::DstRegister dst = tgsi.getDst(d);
 
-   switch (tgsi.getSaturate()) {
-   case TGSI_SAT_NONE:
-      break;
-   case TGSI_SAT_ZERO_ONE:
+   if (tgsi.getSaturate()) {
       mkOp1(OP_SAT, dstTy, val, val);
-      break;
-   case TGSI_SAT_MINUS_PLUS_ONE:
-      mkOp2(OP_MAX, dstTy, val, val, mkImm(-1.0f));
-      mkOp2(OP_MIN, dstTy, val, val, mkImm(+1.0f));
-      break;
-   default:
-      assert(!"invalid saturation mode");
-      break;
    }
 
    Value *ptr = NULL;
@@ -1954,13 +1944,13 @@ isResourceSpecial(const int r)
 }
 
 static inline bool
-isResourceRaw(const struct tgsi::Source *code, const int r)
+isResourceRaw(const tgsi::Source *code, const int r)
 {
    return isResourceSpecial(r) || code->resources[r].raw;
 }
 
 static inline nv50_ir::TexTarget
-getResourceTarget(const struct tgsi::Source *code, int r)
+getResourceTarget(const tgsi::Source *code, int r)
 {
    if (isResourceSpecial(r))
       return nv50_ir::TEX_TARGET_BUFFER;

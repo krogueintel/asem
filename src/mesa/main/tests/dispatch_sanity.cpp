@@ -535,12 +535,9 @@ const struct function gl_core_functions_possible[] = {
    { "glGetInteger64i_v", 32, -1 },
    { "glGetBufferParameteri64v", 32, -1 },
    { "glFramebufferTexture", 32, -1 },
-
-   /* GL_ARB_geometry_shader4 */
-   { "glProgramParameteriARB", 32, -1 },
-   { "glFramebufferTextureARB", 32, -1 },
-   { "glFramebufferTextureLayerARB", 32, -1 },
-   { "glFramebufferTextureFaceARB", 32, -1 },
+   { "glProgramParameteri", 32, -1 },
+   { "glFramebufferTexture", 32, -1 },
+   { "glFramebufferTextureLayer", 32, -1 },
 
    /* GL 3.3 */
    { "glVertexAttribDivisor", 33, -1 },
@@ -780,16 +777,16 @@ const struct function gl_core_functions_possible[] = {
    { "glProgramUniformMatrix4x3dv", 40, -1 },
    { "glValidateProgramPipeline", 43, -1 },
    { "glGetProgramPipelineInfoLog", 43, -1 },
-// { "glVertexAttribL1d", 43, -1 },                     // XXX: Add to xml
-// { "glVertexAttribL2d", 43, -1 },                     // XXX: Add to xml
-// { "glVertexAttribL3d", 43, -1 },                     // XXX: Add to xml
-// { "glVertexAttribL4d", 43, -1 },                     // XXX: Add to xml
-// { "glVertexAttribL1dv", 43, -1 },                    // XXX: Add to xml
-// { "glVertexAttribL2dv", 43, -1 },                    // XXX: Add to xml
-// { "glVertexAttribL3dv", 43, -1 },                    // XXX: Add to xml
-// { "glVertexAttribL4dv", 43, -1 },                    // XXX: Add to xml
-// { "glVertexAttribLPointer", 43, -1 },                // XXX: Add to xml
-// { "glGetVertexAttribLdv", 43, -1 },                  // XXX: Add to xml
+   { "glVertexAttribL1d", 41, -1 },
+   { "glVertexAttribL2d", 41, -1 },
+   { "glVertexAttribL3d", 41, -1 },
+   { "glVertexAttribL4d", 41, -1 },
+   { "glVertexAttribL1dv", 41, -1 },
+   { "glVertexAttribL2dv", 41, -1 },
+   { "glVertexAttribL3dv", 41, -1 },
+   { "glVertexAttribL4dv", 41, -1 },
+   { "glVertexAttribLPointer", 41, -1 },
+   { "glGetVertexAttribLdv", 41, -1 },
    { "glViewportArrayv", 43, -1 },
    { "glViewportIndexedf", 43, -1 },
    { "glViewportIndexedfv", 43, -1 },
@@ -980,6 +977,24 @@ const struct function gl_core_functions_possible[] = {
    { "glGetNamedBufferParameteri64v", 45, -1 },
    { "glGetNamedBufferPointerv", 45, -1 },
    { "glGetNamedBufferSubData", 45, -1 },
+   { "glCreateFramebuffers", 45, -1 },
+   { "glNamedFramebufferRenderbuffer", 45, -1 },
+   { "glNamedFramebufferParameteri", 45, -1 },
+   { "glNamedFramebufferTexture", 45, -1 },
+   { "glNamedFramebufferTextureLayer", 45, -1 },
+   { "glNamedFramebufferDrawBuffer", 45, -1 },
+   { "glNamedFramebufferDrawBuffers", 45, -1 },
+   { "glNamedFramebufferReadBuffer", 45, -1 },
+   { "glInvalidateNamedFramebufferSubData", 45, -1 },
+   { "glInvalidateNamedFramebufferData", 45, -1 },
+   { "glClearNamedFramebufferiv", 45, -1 },
+   { "glClearNamedFramebufferuiv", 45, -1 },
+   { "glClearNamedFramebufferfv", 45, -1 },
+   { "glClearNamedFramebufferfi", 45, -1 },
+   { "glBlitNamedFramebuffer", 45, -1 },
+   { "glCheckNamedFramebufferStatus", 45, -1 },
+   { "glGetNamedFramebufferParameteriv", 45, -1 },
+   { "glGetNamedFramebufferAttachmentParameteriv", 45, -1 },
    { "glCreateRenderbuffers", 45, -1 },
    { "glNamedRenderbufferStorage", 45, -1 },
    { "glNamedRenderbufferStorageMultisample", 45, -1 },
@@ -1017,6 +1032,20 @@ const struct function gl_core_functions_possible[] = {
    { "glTextureStorage3DMultisample", 45, -1 },
    { "glTextureBuffer", 45, -1 },
    { "glTextureBufferRange", 45, -1 },
+   { "glCreateVertexArrays", 45, -1 },
+   { "glDisableVertexArrayAttrib", 45, -1 },
+   { "glEnableVertexArrayAttrib", 45, -1 },
+   { "glVertexArrayElementBuffer", 45, -1 },
+   { "glVertexArrayVertexBuffer", 45, -1 },
+   { "glVertexArrayVertexBuffers", 45, -1 },
+   { "glVertexArrayAttribFormat", 45, -1 },
+   { "glVertexArrayAttribIFormat", 45, -1 },
+   { "glVertexArrayAttribLFormat", 45, -1 },
+   { "glVertexArrayAttribBinding", 45, -1 },
+   { "glVertexArrayBindingDivisor", 45, -1 },
+   { "glGetVertexArrayiv", 45, -1 },
+   { "glGetVertexArrayIndexediv", 45, -1 },
+   { "glGetVertexArrayIndexed64iv", 45, -1 },
    { "glCreateSamplers", 45, -1 },
    { "glCreateProgramPipelines", 45, -1 },
    { "glCreateQueries", 45, -1 },

@@ -68,14 +68,6 @@ public:
     */
    uint8_t width;
 
-   /**
-    * Returns the effective register width when used as a source in the
-    * given instruction.  Registers such as uniforms and immediates
-    * effectively take on the width of the instruction in which they are
-    * used.
-    */
-   uint8_t effective_width;
-
    /** Register region horizontal stride */
    uint8_t stride;
 };
@@ -139,14 +131,15 @@ horiz_offset(fs_reg reg, unsigned delta)
 static inline fs_reg
 offset(fs_reg reg, unsigned delta)
 {
-   assert(reg.stride > 0);
    switch (reg.file) {
    case BAD_FILE:
       break;
    case GRF:
    case MRF:
    case ATTR:
-      return byte_offset(reg, delta * reg.width * reg.stride * type_sz(reg.type));
+      return byte_offset(reg,
+                         delta * MAX2(reg.width * reg.stride, 1) *
+                         type_sz(reg.type));
    case UNIFORM:
       reg.reg_offset += delta;
       break;
@@ -163,6 +156,7 @@ component(fs_reg reg, unsigned idx)
    assert(idx < reg.width);
    reg.subreg_offset = idx * type_sz(reg.type);
    reg.width = 1;
+   reg.stride = 0;
    return reg;
 }
 
@@ -183,13 +177,24 @@ half(fs_reg reg, unsigned idx)
 {
    assert(idx < 2);
 
-   if (reg.file == UNIFORM)
+   switch (reg.file) {
+   case BAD_FILE:
+   case UNIFORM:
+   case IMM:
       return reg;
 
-   assert(idx == 0 || (reg.file != HW_REG && reg.file != IMM));
-   assert(reg.width == 16);
-   reg.width = 8;
-   return horiz_offset(reg, 8 * idx);
+   case GRF:
+   case MRF:
+      assert(reg.width == 16);
+      reg.width = 8;
+      return horiz_offset(reg, 8 * idx);
+
+   case ATTR:
+   case HW_REG:
+   default:
+      unreachable("Cannot take half of this register type");
+   }
+   return reg;
 }
 
 static const fs_reg reg_undef;
@@ -230,6 +235,7 @@ public:
    bool overwrites_reg(const fs_reg &reg) const;
    bool is_send_from_grf() const;
    bool is_partial_write() const;
+   bool is_copy_payload(const brw::simple_allocator &grf_alloc) const;
    int regs_read(int arg) const;
    bool can_do_source_mods(const struct brw_device_info *devinfo);
    bool has_side_effects() const;
@@ -254,5 +260,15 @@ public:
    bool force_sechalf:1;
    bool pi_noperspective:1;   /**< Pixel interpolator noperspective flag */
 };
+
+/**
+ * Set second-half quarter control on \p inst.
+ */
+static inline fs_inst *
+set_sechalf(fs_inst *inst)
+{
+   inst->force_sechalf = true;
+   return inst;
+}
 
 #endif

@@ -316,7 +316,7 @@ vec4_visitor::implied_mrf_writes(vec4_instruction *inst)
    case SHADER_OPCODE_TXS:
    case SHADER_OPCODE_TG4:
    case SHADER_OPCODE_TG4_OFFSET:
-      return inst->header_present ? 1 : 0;
+      return inst->header_size;
    default:
       unreachable("not reached");
    }
@@ -1895,7 +1895,8 @@ brw_vs_emit(struct brw_context *brw,
    }
 
    if (brw->scalar_vs && (prog || use_nir)) {
-      fs_visitor v(brw, mem_ctx, &c->key, prog_data, prog, &c->vp->program, 8);
+      fs_visitor v(brw, mem_ctx, MESA_SHADER_VERTEX, &c->key,
+                   &prog_data->base.base, prog, &c->vp->program.Base, 8);
       if (!v.run_vs()) {
          if (prog) {
             prog->LinkStatus = false;

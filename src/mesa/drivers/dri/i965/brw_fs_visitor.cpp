@@ -873,36 +873,7 @@ fs_visitor::visit(ir_expression *ir)
       unreachable("not reached: should be handled by ir_sub_to_add_neg");
 
    case ir_binop_mul:
-      if (devinfo->gen < 8 && ir->type->is_integer()) {
-	 /* For integer multiplication, the MUL uses the low 16 bits
-	  * of one of the operands (src0 on gen6, src1 on gen7).  The
-	  * MACH accumulates in the contribution of the upper 16 bits
-	  * of that operand.
-          */
-         if (ir->operands[0]->is_uint16_constant()) {
-            if (devinfo->gen < 7)
-               emit(MUL(this->result, op[0], op[1]));
-            else
-               emit(MUL(this->result, op[1], op[0]));
-         } else if (ir->operands[1]->is_uint16_constant()) {
-            if (devinfo->gen < 7)
-               emit(MUL(this->result, op[1], op[0]));
-            else
-               emit(MUL(this->result, op[0], op[1]));
-         } else {
-            if (devinfo->gen >= 7)
-               no16("SIMD16 explicit accumulator operands unsupported\n");
-
-            struct brw_reg acc = retype(brw_acc_reg(dispatch_width),
-                                        this->result.type);
-
-            emit(MUL(acc, op[0], op[1]));
-            emit(MACH(reg_null_d, op[0], op[1]));
-            emit(MOV(this->result, fs_reg(acc)));
-         }
-      } else {
-	 emit(MUL(this->result, op[0], op[1]));
-      }
+      emit(MUL(this->result, op[0], op[1]));
       break;
    case ir_binop_imul_high: {
       if (devinfo->gen >= 7)
@@ -1583,7 +1554,7 @@ fs_visitor::emit_texture_gen4(ir_texture_opcode op, fs_reg dst,
    fs_inst *inst = emit(opcode, dst, reg_undef, fs_reg(sampler));
    inst->base_mrf = base_mrf;
    inst->mlen = mlen;
-   inst->header_present = true;
+   inst->header_size = 1;
    inst->regs_written = simd16 ? 8 : 4;
 
    if (simd16) {
@@ -1654,7 +1625,7 @@ fs_visitor::emit_texture_gen4_simd16(ir_texture_opcode op, fs_reg dst,
    fs_inst *inst = emit(opcode, dst, reg_undef, fs_reg(sampler));
    inst->base_mrf = message.reg - 1;
    inst->mlen = msg_end.reg - inst->base_mrf;
-   inst->header_present = true;
+   inst->header_size = 1;
    inst->regs_written = 8;
 
    return inst;
@@ -1677,7 +1648,7 @@ fs_visitor::emit_texture_gen5(ir_texture_opcode op, fs_reg dst,
                               bool has_offset)
 {
    int reg_width = dispatch_width / 8;
-   bool header_present = false;
+   unsigned header_size = 0;
 
    fs_reg message(MRF, 2, BRW_REGISTER_TYPE_F, dispatch_width);
    fs_reg msg_coords = message;
@@ -1686,7 +1657,7 @@ fs_visitor::emit_texture_gen5(ir_texture_opcode op, fs_reg dst,
       /* The offsets set up by the ir_texture visitor are in the
        * m1 header, so we can't go headerless.
        */
-      header_present = true;
+      header_size = 1;
       message.reg--;
    }
 
@@ -1789,7 +1760,7 @@ fs_visitor::emit_texture_gen5(ir_texture_opcode op, fs_reg dst,
    fs_inst *inst = emit(opcode, dst, reg_undef, fs_reg(sampler));
    inst->base_mrf = message.reg;
    inst->mlen = msg_end.reg - message.reg;
-   inst->header_present = header_present;
+   inst->header_size = header_size;
    inst->regs_written = 4 * reg_width;
 
    if (inst->mlen > MAX_SAMPLER_MESSAGE_SIZE) {
@@ -1818,7 +1789,7 @@ fs_visitor::emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
                               fs_reg offset_value)
 {
    int reg_width = dispatch_width / 8;
-   bool header_present = false;
+   unsigned header_size = 0;
 
    fs_reg *sources = ralloc_array(mem_ctx, fs_reg, MAX_SAMPLER_MESSAGE_SIZE);
    for (int i = 0; i < MAX_SAMPLER_MESSAGE_SIZE; i++) {
@@ -1838,7 +1809,7 @@ fs_visitor::emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
        * The sampler index is only 4-bits, so for larger sampler numbers we
        * need to offset the Sampler State Pointer in the header.
        */
-      header_present = true;
+      header_size = 1;
       sources[0] = fs_reg(GRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
       length++;
    }
@@ -1997,13 +1968,13 @@ fs_visitor::emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
 
    int mlen;
    if (reg_width == 2)
-      mlen = length * reg_width - header_present;
+      mlen = length * reg_width - header_size;
    else
       mlen = length * reg_width;
 
    fs_reg src_payload = fs_reg(GRF, alloc.allocate(mlen),
-                               BRW_REGISTER_TYPE_F);
-   emit(LOAD_PAYLOAD(src_payload, sources, length));
+                               BRW_REGISTER_TYPE_F, dispatch_width);
+   emit(LOAD_PAYLOAD(src_payload, sources, length, header_size));
 
    /* Generate the SEND */
    enum opcode opcode;
@@ -2029,7 +2000,7 @@ fs_visitor::emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
    fs_inst *inst = emit(opcode, dst, src_payload, sampler);
    inst->base_mrf = -1;
    inst->mlen = mlen;
-   inst->header_present = header_present;
+   inst->header_size = header_size;
    inst->regs_written = 4 * reg_width;
 
    if (inst->mlen > MAX_SAMPLER_MESSAGE_SIZE) {
@@ -2159,7 +2130,7 @@ fs_visitor::emit_mcs_fetch(fs_reg coordinate, int components, fs_reg sampler)
 {
    int reg_width = dispatch_width / 8;
    fs_reg payload = fs_reg(GRF, alloc.allocate(components * reg_width),
-                           BRW_REGISTER_TYPE_F);
+                           BRW_REGISTER_TYPE_F, dispatch_width);
    fs_reg dest = vgrf(glsl_type::uvec4_type);
    fs_reg *sources = ralloc_array(mem_ctx, fs_reg, components);
 
@@ -2170,12 +2141,12 @@ fs_visitor::emit_mcs_fetch(fs_reg coordinate, int components, fs_reg sampler)
       coordinate = offset(coordinate, 1);
    }
 
-   emit(LOAD_PAYLOAD(payload, sources, components));
+   emit(LOAD_PAYLOAD(payload, sources, components, 0));
 
    fs_inst *inst = emit(SHADER_OPCODE_TXF_MCS, dest, payload, sampler);
    inst->base_mrf = -1;
    inst->mlen = components * reg_width;
-   inst->header_present = false;
+   inst->header_size = 0;
    inst->regs_written = 4 * reg_width; /* we only care about one reg of
                                         * response, but the sampler always
                                         * writes 4/8
@@ -2280,7 +2251,7 @@ fs_visitor::emit_texture(ir_texture_opcode op,
             fixed_payload[i] = offset(dst, i);
          }
       }
-      emit(LOAD_PAYLOAD(dst, fixed_payload, components));
+      emit(LOAD_PAYLOAD(dst, fixed_payload, components, 0));
    }
 
    swizzle_result(op, dest_type->vector_elements, dst, sampler);
@@ -3295,8 +3266,8 @@ fs_visitor::emit_untyped_atomic(unsigned atomic_op, unsigned surf_index,
 
    int mlen = 1 + (length - 1) * reg_width;
    fs_reg src_payload = fs_reg(GRF, alloc.allocate(mlen),
-                               BRW_REGISTER_TYPE_UD);
-   emit(LOAD_PAYLOAD(src_payload, sources, length));
+                               BRW_REGISTER_TYPE_UD, dispatch_width);
+   emit(LOAD_PAYLOAD(src_payload, sources, length, 1));
 
    /* Emit the instruction. */
    fs_inst *inst = emit(SHADER_OPCODE_UNTYPED_ATOMIC, dst, src_payload,
@@ -3343,8 +3314,8 @@ fs_visitor::emit_untyped_surface_read(unsigned surf_index, fs_reg dst,
 
    int mlen = 1 + reg_width;
    fs_reg src_payload = fs_reg(GRF, alloc.allocate(mlen),
-                               BRW_REGISTER_TYPE_UD);
-   fs_inst *inst = emit(LOAD_PAYLOAD(src_payload, sources, 2));
+                               BRW_REGISTER_TYPE_UD, dispatch_width);
+   fs_inst *inst = emit(LOAD_PAYLOAD(src_payload, sources, 2, 1));
 
    /* Emit the instruction. */
    inst = emit(SHADER_OPCODE_UNTYPED_SURFACE_READ, dst, src_payload,
@@ -3395,7 +3366,7 @@ fs_visitor::emit_dummy_fs()
       write->base_mrf = 2;
       write->mlen = 4 * reg_width;
    } else {
-      write->header_present = true;
+      write->header_size = 2;
       write->base_mrf = 0;
       write->mlen = 2 + 4 * reg_width;
    }
@@ -3558,108 +3529,30 @@ fs_visitor::emit_interpolation_setup_gen6()
    this->current_annotation = NULL;
 }
 
-int
+void
 fs_visitor::setup_color_payload(fs_reg *dst, fs_reg color, unsigned components,
-                                bool use_2nd_half)
+                                unsigned exec_size, bool use_2nd_half)
 {
    brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
    fs_inst *inst;
 
-   if (color.file == BAD_FILE) {
-      return 4 * (dispatch_width / 8);
+   if (key->clamp_fragment_color) {
+      fs_reg tmp = vgrf(glsl_type::vec4_type);
+      assert(color.type == BRW_REGISTER_TYPE_F);
+      for (unsigned i = 0; i < components; i++) {
+         inst = emit(MOV(offset(tmp, i), offset(color, i)));
+         inst->saturate = true;
+      }
+      color = tmp;
    }
 
-   uint8_t colors_enabled;
-   if (components == 0) {
-      /* We want to write one component to the alpha channel */
-      colors_enabled = 0x8;
+   if (exec_size < dispatch_width) {
+      unsigned half_idx = use_2nd_half ? 1 : 0;
+      for (unsigned i = 0; i < components; i++)
+         dst[i] = half(offset(color, i), half_idx);
    } else {
-      /* Enable the first components-many channels */
-      colors_enabled = (1 << components) - 1;
-   }
-
-   if (dispatch_width == 8 || (devinfo->gen >= 6 && !do_dual_src)) {
-      /* SIMD8 write looks like:
-       * m + 0: r0
-       * m + 1: r1
-       * m + 2: g0
-       * m + 3: g1
-       *
-       * gen6 SIMD16 DP write looks like:
-       * m + 0: r0
-       * m + 1: r1
-       * m + 2: g0
-       * m + 3: g1
-       * m + 4: b0
-       * m + 5: b1
-       * m + 6: a0
-       * m + 7: a1
-       */
-      int len = 0;
-      for (unsigned i = 0; i < 4; ++i) {
-         if (colors_enabled & (1 << i)) {
-            dst[len] = fs_reg(GRF, alloc.allocate(color.width / 8),
-                              color.type, color.width);
-            inst = emit(MOV(dst[len], offset(color, i)));
-            inst->saturate = key->clamp_fragment_color;
-         } else if (color.width == 16) {
-            /* We need two BAD_FILE slots for a 16-wide color */
-            len++;
-         }
-         len++;
-      }
-      return len;
-   } else if (devinfo->gen >= 6 && do_dual_src) {
-      /* SIMD16 dual source blending for gen6+.
-       *
-       * From the SNB PRM, volume 4, part 1, page 193:
-       *
-       * "The dual source render target messages only have SIMD8 forms due to
-       *  maximum message length limitations. SIMD16 pixel shaders must send two
-       *  of these messages to cover all of the pixels. Each message contains
-       *  two colors (4 channels each) for each pixel in the message payload."
-       *
-       * So in SIMD16 dual source blending we will send 2 SIMD8 messages,
-       * each one will call this function twice (one for each color involved),
-       * so in each pass we only write 4 registers. Notice that the second
-       * SIMD8 message needs to read color data from the 2nd half of the color
-       * registers, so it needs to call this with use_2nd_half = true.
-       */
-      for (unsigned i = 0; i < 4; ++i) {
-         if (colors_enabled & (1 << i)) {
-            dst[i] = fs_reg(GRF, alloc.allocate(1), color.type);
-            inst = emit(MOV(dst[i], half(offset(color, i),
-                                         use_2nd_half ? 1 : 0)));
-            inst->saturate = key->clamp_fragment_color;
-            if (use_2nd_half)
-               inst->force_sechalf = true;
-         }
-      }
-      return 4;
-   } else {
-      /* pre-gen6 SIMD16 single source DP write looks like:
-       * m + 0: r0
-       * m + 1: g0
-       * m + 2: b0
-       * m + 3: a0
-       * m + 4: r1
-       * m + 5: g1
-       * m + 6: b1
-       * m + 7: a1
-       */
-      for (unsigned i = 0; i < 4; ++i) {
-         if (colors_enabled & (1 << i)) {
-            dst[i] = fs_reg(GRF, alloc.allocate(1), color.type);
-            inst = emit(MOV(dst[i], half(offset(color, i), 0)));
-            inst->saturate = key->clamp_fragment_color;
-
-            dst[i + 4] = fs_reg(GRF, alloc.allocate(1), color.type);
-            inst = emit(MOV(dst[i + 4], half(offset(color, i), 1)));
-            inst->saturate = key->clamp_fragment_color;
-            inst->force_sechalf = true;
-         }
-      }
-      return 8;
+      for (unsigned i = 0; i < components; i++)
+         dst[i] = offset(color, i);
    }
 }
 
@@ -3720,15 +3613,14 @@ fs_visitor::emit_alpha_test()
 fs_inst *
 fs_visitor::emit_single_fb_write(fs_reg color0, fs_reg color1,
                                  fs_reg src0_alpha, unsigned components,
-                                 bool use_2nd_half)
+                                 unsigned exec_size, bool use_2nd_half)
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
    brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
 
    this->current_annotation = "FB write header";
-   bool header_present = true;
-   int reg_size = dispatch_width / 8;
+   int header_size = 2, payload_header_size;
 
    /* We can potentially have a message length of up to 15, so we have to set
     * base_mrf to either 0 or 1 in order to fit in m0..m15.
@@ -3747,12 +3639,14 @@ fs_visitor::emit_single_fb_write(fs_reg color0, fs_reg color1,
        (devinfo->is_haswell || devinfo->gen >= 8 || !prog_data->uses_kill) &&
        color1.file == BAD_FILE &&
        key->nr_color_regions == 1) {
-      header_present = false;
+      header_size = 0;
    }
 
-   if (header_present)
+   if (header_size != 0) {
+      assert(header_size == 2);
       /* Allocate 2 registers for a header */
       length += 2;
+   }
 
    if (payload.aa_dest_stencil_reg) {
       sources[length] = fs_reg(GRF, alloc.allocate(1));
@@ -3775,29 +3669,33 @@ fs_visitor::emit_single_fb_write(fs_reg color0, fs_reg color1,
       length++;
    }
 
+   payload_header_size = length;
+
    if (color0.file == BAD_FILE) {
       /* Even if there's no color buffers enabled, we still need to send
        * alpha out the pipeline to our null renderbuffer to support
        * alpha-testing, alpha-to-coverage, and so on.
        */
-      length += setup_color_payload(sources + length, this->outputs[0], 0,
-                                    false);
+      if (this->outputs[0].file != BAD_FILE)
+         setup_color_payload(&sources[length + 3], offset(this->outputs[0], 3),
+                             1, exec_size, false);
+      length += 4;
    } else if (color1.file == BAD_FILE) {
       if (src0_alpha.file != BAD_FILE) {
-         sources[length] = fs_reg(GRF, alloc.allocate(reg_size),
-                                  src0_alpha.type, src0_alpha.width);
-         fs_inst *inst = emit(MOV(sources[length], src0_alpha));
-         inst->saturate = key->clamp_fragment_color;
+         setup_color_payload(&sources[length], src0_alpha, 1, exec_size, false);
          length++;
       }
 
-      length += setup_color_payload(sources + length, color0, components,
-                                    false);
+      setup_color_payload(&sources[length], color0, components,
+                          exec_size, use_2nd_half);
+      length += 4;
    } else {
-      length += setup_color_payload(sources + length, color0, components,
-                                    use_2nd_half);
-      length += setup_color_payload(sources + length, color1, components,
-                                    use_2nd_half);
+      setup_color_payload(&sources[length], color0, components,
+                          exec_size, use_2nd_half);
+      length += 4;
+      setup_color_payload(&sources[length], color1, components,
+                          exec_size, use_2nd_half);
+      length += 4;
    }
 
    if (source_depth_to_render_target) {
@@ -3810,48 +3708,48 @@ fs_visitor::emit_single_fb_write(fs_reg color0, fs_reg color1,
 	 no16("Missing support for simd16 depth writes on gen6\n");
       }
 
-      sources[length] = vgrf(glsl_type::float_type);
       if (prog->OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH)) {
 	 /* Hand over gl_FragDepth. */
 	 assert(this->frag_depth.file != BAD_FILE);
-	 emit(MOV(sources[length], this->frag_depth));
+         sources[length] = this->frag_depth;
       } else {
 	 /* Pass through the payload depth. */
-	 emit(MOV(sources[length],
-                  fs_reg(brw_vec8_grf(payload.source_depth_reg, 0))));
+         sources[length] = fs_reg(brw_vec8_grf(payload.source_depth_reg, 0));
       }
       length++;
    }
 
-   if (payload.dest_depth_reg) {
-      sources[length] = vgrf(glsl_type::float_type);
-      emit(MOV(sources[length],
-               fs_reg(brw_vec8_grf(payload.dest_depth_reg, 0))));
-      length++;
-   }
+   if (payload.dest_depth_reg)
+      sources[length++] = fs_reg(brw_vec8_grf(payload.dest_depth_reg, 0));
 
    fs_inst *load;
    fs_inst *write;
    if (devinfo->gen >= 7) {
       /* Send from the GRF */
-      fs_reg payload = fs_reg(GRF, -1, BRW_REGISTER_TYPE_F);
-      load = emit(LOAD_PAYLOAD(payload, sources, length));
+      fs_reg payload = fs_reg(GRF, -1, BRW_REGISTER_TYPE_F, exec_size);
+      load = emit(LOAD_PAYLOAD(payload, sources, length, payload_header_size));
       payload.reg = alloc.allocate(load->regs_written);
-      payload.width = dispatch_width;
       load->dst = payload;
       write = emit(FS_OPCODE_FB_WRITE, reg_undef, payload);
       write->base_mrf = -1;
    } else {
       /* Send from the MRF */
-      load = emit(LOAD_PAYLOAD(fs_reg(MRF, 1, BRW_REGISTER_TYPE_F),
-                               sources, length));
+      load = emit(LOAD_PAYLOAD(fs_reg(MRF, 1, BRW_REGISTER_TYPE_F, exec_size),
+                               sources, length, payload_header_size));
+
+      /* On pre-SNB, we have to interlace the color values.  LOAD_PAYLOAD
+       * will do this for us if we just give it a COMPR4 destination.
+       */
+      if (brw->gen < 6 && exec_size == 16)
+         load->dst.reg |= BRW_MRF_COMPR4;
+
       write = emit(FS_OPCODE_FB_WRITE);
-      write->exec_size = dispatch_width;
+      write->exec_size = exec_size;
       write->base_mrf = 1;
    }
 
    write->mlen = load->regs_written;
-   write->header_present = header_present;
+   write->header_size = header_size;
    if (prog_data->uses_kill) {
       write->predicate = BRW_PREDICATE_NORMAL;
       write->flag_subreg = 1;
@@ -3871,7 +3769,7 @@ fs_visitor::emit_fb_writes()
       this->current_annotation = ralloc_asprintf(this->mem_ctx,
 						 "FB dual-source write");
       inst = emit_single_fb_write(this->outputs[0], this->dual_src_output,
-                                  reg_undef, 4);
+                                  reg_undef, 4, 8);
       inst->target = 0;
 
       /* SIMD16 dual source blending requires to send two SIMD8 dual source
@@ -3893,7 +3791,7 @@ fs_visitor::emit_fb_writes()
        */
       if (dispatch_width == 16) {
          inst = emit_single_fb_write(this->outputs[0], this->dual_src_output,
-                                     reg_undef, 4, true);
+                                     reg_undef, 4, 8, true);
          inst->target = 0;
       }
 
@@ -3913,7 +3811,8 @@ fs_visitor::emit_fb_writes()
 
          inst = emit_single_fb_write(this->outputs[target], reg_undef,
                                      src0_alpha,
-                                     this->output_components[target]);
+                                     this->output_components[target],
+                                     dispatch_width);
          inst->target = target;
       }
    }
@@ -3923,7 +3822,8 @@ fs_visitor::emit_fb_writes()
        * alpha out the pipeline to our null renderbuffer to support
        * alpha-testing, alpha-to-coverage, and so on.
        */
-      inst = emit_single_fb_write(reg_undef, reg_undef, reg_undef, 0);
+      inst = emit_single_fb_write(reg_undef, reg_undef, reg_undef, 0,
+                                  dispatch_width);
       inst->target = 0;
    }
 
@@ -4131,7 +4031,7 @@ fs_visitor::emit_urb_writes()
       if (flush) {
          fs_reg *payload_sources = ralloc_array(mem_ctx, fs_reg, length + 1);
          fs_reg payload = fs_reg(GRF, alloc.allocate(length + 1),
-                                 BRW_REGISTER_TYPE_F);
+                                 BRW_REGISTER_TYPE_F, dispatch_width);
 
          /* We need WE_all on the MOV for the message header (the URB handles)
           * so do a MOV to a dummy register and set force_writemask_all on the
@@ -4145,7 +4045,7 @@ fs_visitor::emit_urb_writes()
          payload_sources[0] = dummy;
 
          memcpy(&payload_sources[1], sources, length * sizeof sources[0]);
-         emit(LOAD_PAYLOAD(payload, payload_sources, length + 1));
+         emit(LOAD_PAYLOAD(payload, payload_sources, length + 1, 1));
 
          inst = emit(SHADER_OPCODE_URB_WRITE_SIMD8, reg_undef, payload);
          inst->eot = last;
@@ -4215,64 +4115,21 @@ fs_visitor::resolve_bool_comparison(ir_rvalue *rvalue, fs_reg *reg)
 
 fs_visitor::fs_visitor(struct brw_context *brw,
                        void *mem_ctx,
-                       const struct brw_wm_prog_key *key,
-                       struct brw_wm_prog_data *prog_data,
+                       gl_shader_stage stage,
+                       const void *key,
+                       struct brw_stage_prog_data *prog_data,
                        struct gl_shader_program *shader_prog,
-                       struct gl_fragment_program *fp,
+                       struct gl_program *prog,
                        unsigned dispatch_width)
-   : backend_visitor(brw, shader_prog, &fp->Base, &prog_data->base,
-                     MESA_SHADER_FRAGMENT),
+   : backend_visitor(brw, shader_prog, prog, prog_data, stage),
      reg_null_f(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_F)),
      reg_null_d(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_D)),
      reg_null_ud(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_UD)),
-     key(key), prog_data(&prog_data->base),
+     key(key), prog_data(prog_data),
      dispatch_width(dispatch_width), promoted_constants(0)
 {
    this->mem_ctx = mem_ctx;
-   init();
-}
 
-fs_visitor::fs_visitor(struct brw_context *brw,
-                       void *mem_ctx,
-                       const struct brw_vs_prog_key *key,
-                       struct brw_vs_prog_data *prog_data,
-                       struct gl_shader_program *shader_prog,
-                       struct gl_vertex_program *cp,
-                       unsigned dispatch_width)
-   : backend_visitor(brw, shader_prog, &cp->Base, &prog_data->base.base,
-                     MESA_SHADER_VERTEX),
-     reg_null_f(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_F)),
-     reg_null_d(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_D)),
-     reg_null_ud(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_UD)),
-     key(key), prog_data(&prog_data->base.base),
-     dispatch_width(dispatch_width), promoted_constants(0)
-{
-   this->mem_ctx = mem_ctx;
-   init();
-}
-
-fs_visitor::fs_visitor(struct brw_context *brw,
-                       void *mem_ctx,
-                       const struct brw_cs_prog_key *key,
-                       struct brw_cs_prog_data *prog_data,
-                       struct gl_shader_program *shader_prog,
-                       struct gl_compute_program *cp,
-                       unsigned dispatch_width)
-   : backend_visitor(brw, shader_prog, &cp->Base, &prog_data->base,
-                     MESA_SHADER_COMPUTE),
-     reg_null_f(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_F)),
-     reg_null_d(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_D)),
-     reg_null_ud(retype(brw_null_vec(dispatch_width), BRW_REGISTER_TYPE_UD)),
-     key(key), prog_data(&prog_data->base),
-     dispatch_width(dispatch_width)
-{
-   this->mem_ctx = mem_ctx;
-   init();
-}
-
-void
-fs_visitor::init()
-{
    switch (stage) {
    case MESA_SHADER_FRAGMENT:
       key_tex = &((const brw_wm_prog_key *) key)->tex;
