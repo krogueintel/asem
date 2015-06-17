@@ -631,6 +631,8 @@ brw_instruction_name(enum opcode op)
       return "gs_ff_sync_set_primitives";
    case CS_OPCODE_CS_TERMINATE:
       return "cs_terminate";
+   case SHADER_OPCODE_BARRIER:
+      return "barrier";
    }
 
    unreachable("not reached");
@@ -754,11 +756,11 @@ brw_abs_immediate(enum brw_reg_type type, struct brw_reg *reg)
    return false;
 }
 
-backend_visitor::backend_visitor(struct brw_context *brw,
-                                 struct gl_shader_program *shader_prog,
-                                 struct gl_program *prog,
-                                 struct brw_stage_prog_data *stage_prog_data,
-                                 gl_shader_stage stage)
+backend_shader::backend_shader(struct brw_context *brw,
+                               struct gl_shader_program *shader_prog,
+                               struct gl_program *prog,
+                               struct brw_stage_prog_data *stage_prog_data,
+                               gl_shader_stage stage)
    : brw(brw),
      devinfo(brw->intelScreen->devinfo),
      ctx(&brw->ctx),
@@ -949,7 +951,6 @@ backend_instruction::can_do_saturate() const
    case BRW_OPCODE_LINE:
    case BRW_OPCODE_LRP:
    case BRW_OPCODE_MAC:
-   case BRW_OPCODE_MACH:
    case BRW_OPCODE_MAD:
    case BRW_OPCODE_MATH:
    case BRW_OPCODE_MOV:
@@ -1059,6 +1060,7 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_MEMORY_FENCE:
    case SHADER_OPCODE_URB_WRITE_SIMD8:
    case FS_OPCODE_FB_WRITE:
+   case SHADER_OPCODE_BARRIER:
       return true;
    default:
       return false;
@@ -1147,13 +1149,13 @@ backend_instruction::remove(bblock_t *block)
 }
 
 void
-backend_visitor::dump_instructions()
+backend_shader::dump_instructions()
 {
    dump_instructions(NULL);
 }
 
 void
-backend_visitor::dump_instructions(const char *name)
+backend_shader::dump_instructions(const char *name)
 {
    FILE *file = stderr;
    if (name && geteuid() != 0) {
@@ -1182,7 +1184,7 @@ backend_visitor::dump_instructions(const char *name)
 }
 
 void
-backend_visitor::calculate_cfg()
+backend_shader::calculate_cfg()
 {
    if (this->cfg)
       return;
@@ -1190,7 +1192,7 @@ backend_visitor::calculate_cfg()
 }
 
 void
-backend_visitor::invalidate_cfg()
+backend_shader::invalidate_cfg()
 {
    ralloc_free(this->cfg);
    this->cfg = NULL;
@@ -1205,7 +1207,7 @@ backend_visitor::invalidate_cfg()
  * trigger some of our asserts that surface indices are < BRW_MAX_SURFACES.
  */
 void
-backend_visitor::assign_common_binding_table_offsets(uint32_t next_binding_table_offset)
+backend_shader::assign_common_binding_table_offsets(uint32_t next_binding_table_offset)
 {
    int num_textures = _mesa_fls(prog->SamplersUsed);
 

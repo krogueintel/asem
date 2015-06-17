@@ -256,7 +256,6 @@ public:
    uint8_t exec_size;
 
    bool eot:1;
-   bool force_uncompressed:1;
    bool force_sechalf:1;
    bool pi_noperspective:1;   /**< Pixel interpolator noperspective flag */
 };
@@ -268,6 +267,50 @@ static inline fs_inst *
 set_sechalf(fs_inst *inst)
 {
    inst->force_sechalf = true;
+   return inst;
+}
+
+/**
+ * Make the execution of \p inst dependent on the evaluation of a possibly
+ * inverted predicate.
+ */
+static inline fs_inst *
+set_predicate_inv(enum brw_predicate pred, bool inverse,
+                  fs_inst *inst)
+{
+   inst->predicate = pred;
+   inst->predicate_inverse = inverse;
+   return inst;
+}
+
+/**
+ * Make the execution of \p inst dependent on the evaluation of a predicate.
+ */
+static inline fs_inst *
+set_predicate(enum brw_predicate pred, fs_inst *inst)
+{
+   return set_predicate_inv(pred, false, inst);
+}
+
+/**
+ * Write the result of evaluating the condition given by \p mod to a flag
+ * register.
+ */
+static inline fs_inst *
+set_condmod(enum brw_conditional_mod mod, fs_inst *inst)
+{
+   inst->conditional_mod = mod;
+   return inst;
+}
+
+/**
+ * Clamp the result of \p inst to the saturation range of its destination
+ * datatype.
+ */
+static inline fs_inst *
+set_saturate(bool saturate, fs_inst *inst)
+{
+   inst->saturate = saturate;
    return inst;
 }
 

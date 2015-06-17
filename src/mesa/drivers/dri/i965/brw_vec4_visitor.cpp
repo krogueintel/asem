@@ -683,8 +683,11 @@ vec4_visitor::setup_uniform_values(ir_variable *ir)
     * order we'd walk the type, so walk the list of storage and find anything
     * with our name, or the prefix of a component that starts with our name.
     */
-   for (unsigned u = 0; u < shader_prog->NumUserUniformStorage; u++) {
+   for (unsigned u = 0; u < shader_prog->NumUniformStorage; u++) {
       struct gl_uniform_storage *storage = &shader_prog->UniformStorage[u];
+
+      if (storage->builtin)
+         continue;
 
       if (strncmp(ir->name, storage->name, namelen) != 0 ||
           (storage->name[namelen] != 0 &&
@@ -2460,11 +2463,27 @@ vec4_visitor::emit_mcs_fetch(ir_texture *ir, src_reg coordinate, src_reg sampler
       new(mem_ctx) vec4_instruction(SHADER_OPCODE_TXF_MCS,
                                     dst_reg(this, glsl_type::uvec4_type));
    inst->base_mrf = 2;
-   inst->mlen = 1;
    inst->src[1] = sampler;
 
+   int param_base;
+
+   if (devinfo->gen >= 9) {
+      /* Gen9+ needs a message header in order to use SIMD4x2 mode */
+      vec4_instruction *header_inst = new(mem_ctx)
+         vec4_instruction(VS_OPCODE_SET_SIMD4X2_HEADER_GEN9,
+                          dst_reg(MRF, inst->base_mrf));
+
+      emit(header_inst);
+
+      inst->mlen = 2;
+      inst->header_size = 1;
+      param_base = inst->base_mrf + 1;
+   } else {
+      inst->mlen = 1;
+      param_base = inst->base_mrf;
+   }
+
    /* parameters are: u, v, r, lod; lod will always be zero due to api restrictions */
-   int param_base = inst->base_mrf;
    int coord_mask = (1 << ir->coordinate->type->vector_elements) - 1;
    int zero_mask = 0xf & ~coord_mask;
 
@@ -2943,6 +2962,12 @@ vec4_visitor::visit(ir_emit_vertex *)
 
 void
 vec4_visitor::visit(ir_end_primitive *)
+{
+   unreachable("not reached");
+}
+
+void
+vec4_visitor::visit(ir_barrier *)
 {
    unreachable("not reached");
 }
@@ -3666,7 +3691,7 @@ vec4_visitor::vec4_visitor(struct brw_context *brw,
                            shader_time_shader_type st_base,
                            shader_time_shader_type st_written,
                            shader_time_shader_type st_reset)
-   : backend_visitor(brw, shader_prog, prog, &prog_data->base, stage),
+   : backend_shader(brw, shader_prog, prog, &prog_data->base, stage),
      c(c),
      key(key),
      prog_data(prog_data),

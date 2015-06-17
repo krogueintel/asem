@@ -1768,7 +1768,7 @@ vec4_visitor::run()
          snprintf(filename, 64, "%s-%04d-%02d-%02d-" #pass,            \
                   stage_abbrev, shader_prog ? shader_prog->Name : 0, iteration, pass_num); \
                                                                        \
-         backend_visitor::dump_instructions(filename);                 \
+         backend_shader::dump_instructions(filename);                  \
       }                                                                \
                                                                        \
       progress = progress || this_progress;                            \
@@ -1781,7 +1781,7 @@ vec4_visitor::run()
       snprintf(filename, 64, "%s-%04d-00-start",
                stage_abbrev, shader_prog ? shader_prog->Name : 0);
 
-      backend_visitor::dump_instructions(filename);
+      backend_shader::dump_instructions(filename);
    }
 
    bool progress;
@@ -1868,8 +1868,6 @@ brw_vs_emit(struct brw_context *brw,
    bool start_busy = false;
    double start_time = 0;
    const unsigned *assembly = NULL;
-   bool use_nir =
-      brw->ctx.Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions != NULL;
 
    if (unlikely(brw->perf_debug)) {
       start_busy = (brw->batch.last_bo &&
@@ -1884,17 +1882,20 @@ brw_vs_emit(struct brw_context *brw,
    if (unlikely(INTEL_DEBUG & DEBUG_VS))
       brw_dump_ir("vertex", prog, &shader->base, &c->vp->program.Base);
 
-   if (use_nir && !c->vp->program.Base.nir) {
-      /* Normally we generate NIR in LinkShader() or ProgramStringNotify(), but
-       * Mesa's fixed-function vertex program handling doesn't notify the driver
-       * at all.  Just do it here, at the last minute, even though it's lame.
-       */
-      assert(c->vp->program.Base.Id == 0 && prog == NULL);
-      c->vp->program.Base.nir =
-         brw_create_nir(brw, NULL, &c->vp->program.Base, MESA_SHADER_VERTEX);
-   }
+   if (brw->scalar_vs) {
+      if (!c->vp->program.Base.nir) {
+         /* Normally we generate NIR in LinkShader() or
+          * ProgramStringNotify(), but Mesa's fixed-function vertex program
+          * handling doesn't notify the driver at all.  Just do it here, at
+          * the last minute, even though it's lame.
+          */
+         assert(c->vp->program.Base.Id == 0 && prog == NULL);
+         c->vp->program.Base.nir =
+            brw_create_nir(brw, NULL, &c->vp->program.Base, MESA_SHADER_VERTEX);
+      }
 
-   if (brw->scalar_vs && (prog || use_nir)) {
+      prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
+
       fs_visitor v(brw, mem_ctx, MESA_SHADER_VERTEX, &c->key,
                    &prog_data->base.base, prog, &c->vp->program.Base, 8);
       if (!v.run_vs()) {
@@ -1927,11 +1928,12 @@ brw_vs_emit(struct brw_context *brw,
       g.generate_code(v.cfg, 8);
       assembly = g.get_assembly(final_assembly_size);
 
-      prog_data->base.simd8 = true;
       c->base.last_scratch = v.last_scratch;
    }
 
    if (!assembly) {
+      prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
+
       vec4_vs_visitor v(brw, c, prog_data, prog, mem_ctx);
       if (!v.run()) {
          if (prog) {

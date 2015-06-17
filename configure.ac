@@ -714,15 +714,15 @@ AC_ARG_ENABLE([opengl],
     [enable_opengl="$enableval"],
     [enable_opengl=yes])
 AC_ARG_ENABLE([gles1],
-    [AS_HELP_STRING([--enable-gles1],
-        [enable support for OpenGL ES 1.x API @<:@default=disabled@:>@])],
+    [AS_HELP_STRING([--disable-gles1],
+        [disable support for OpenGL ES 1.x API @<:@default=enabled@:>@])],
     [enable_gles1="$enableval"],
-    [enable_gles1=no])
+    [enable_gles1=yes])
 AC_ARG_ENABLE([gles2],
-    [AS_HELP_STRING([--enable-gles2],
-        [enable support for OpenGL ES 2.x API @<:@default=disabled@:>@])],
+    [AS_HELP_STRING([--disable-gles2],
+        [disable support for OpenGL ES 2.x API @<:@default=enabled@:>@])],
     [enable_gles2="$enableval"],
-    [enable_gles2=no])
+    [enable_gles2=yes])
 
 AC_ARG_ENABLE([dri],
     [AS_HELP_STRING([--enable-dri],
@@ -1777,6 +1777,11 @@ for plat in $egl_platforms; do
 			AC_MSG_ERROR([EGL platform drm requires libdrm >= $LIBDRM_REQUIRED])
 		;;
 
+	surfaceless)
+		test "x$have_libdrm" != xyes &&
+			AC_MSG_ERROR([EGL platform surfaceless requires libdrm >= $LIBDRM_REQUIRED])
+		;;
+
 	android|gdi|null)
 		;;
 
@@ -1806,6 +1811,7 @@ fi
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_X11, echo "$egl_platforms" | grep -q 'x11')
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_WAYLAND, echo "$egl_platforms" | grep -q 'wayland')
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_DRM, echo "$egl_platforms" | grep -q 'drm')
+AM_CONDITIONAL(HAVE_EGL_PLATFORM_SURFACELESS, echo "$egl_platforms" | grep -q 'surfaceless')
 AM_CONDITIONAL(HAVE_EGL_PLATFORM_NULL, echo "$egl_platforms" | grep -q 'null')
 
 AM_CONDITIONAL(HAVE_EGL_DRIVER_DRI2, test "x$HAVE_EGL_DRIVER_DRI2" != "x")
@@ -1921,10 +1927,7 @@ if test "x$enable_gallium_llvm" = xyes; then
             AC_MSG_ERROR([LLVM $LLVM_REQUIRED_VERSION_MAJOR.$LLVM_REQUIRED_VERSION_MINOR or newer is required])
         fi
 
-        LLVM_COMPONENTS="engine bitwriter"
-        if $LLVM_CONFIG --components | grep -qw 'mcjit'; then
-            LLVM_COMPONENTS="${LLVM_COMPONENTS} mcjit"
-        fi
+        LLVM_COMPONENTS="engine bitwriter mcjit mcdisassembler"
 
         if test "x$enable_opencl" = xyes; then
             llvm_check_version_for "3" "5" "0" "opencl"
@@ -1932,7 +1935,7 @@ if test "x$enable_gallium_llvm" = xyes; then
             LLVM_COMPONENTS="${LLVM_COMPONENTS} all-targets ipo linker instrumentation"
             LLVM_COMPONENTS="${LLVM_COMPONENTS} irreader option objcarcopts profiledata"
         fi
-        DEFINES="${DEFINES} -DHAVE_LLVM=0x0$LLVM_VERSION_INT -DLLVM_VERSION_PATCH=$LLVM_VERSION_PATCH"
+        DEFINES="${DEFINES} -DHAVE_LLVM=0x0$LLVM_VERSION_INT -DMESA_LLVM_VERSION_PATCH=$LLVM_VERSION_PATCH"
         MESA_LLVM=1
 
         dnl Check for Clang internal headers
@@ -2051,16 +2054,19 @@ require_egl_drm() {
 }
 
 radeon_llvm_check() {
+    if test ${LLVM_VERSION_INT} -lt 307; then
+        amdgpu_llvm_target_name='r600'
+    else
+        amdgpu_llvm_target_name='amdgpu'
+    fi
     if test "x$enable_gallium_llvm" != "xyes"; then
         AC_MSG_ERROR([--enable-gallium-llvm is required when building $1])
     fi
     llvm_check_version_for "3" "4" "2" $1 
-    if test true && $LLVM_CONFIG --targets-built | grep -qvw 'R600' ; then
-        AC_MSG_ERROR([LLVM R600 Target not enabled.  You can enable it when building the LLVM
-                      sources with the --enable-experimental-targets=R600
-                      configure flag])
+    if test true && $LLVM_CONFIG --targets-built | grep -iqvw $amdgpu_llvm_target_name ; then
+        AC_MSG_ERROR([LLVM $amdgpu_llvm_target_name not enabled in your LLVM build.])
     fi
-    LLVM_COMPONENTS="${LLVM_COMPONENTS} r600 bitreader ipo"
+    LLVM_COMPONENTS="${LLVM_COMPONENTS} $amdgpu_llvm_target_name bitreader ipo"
     NEED_RADEON_LLVM=yes
     if test "x$have_libelf" != xyes; then
        AC_MSG_ERROR([$1 requires libelf when using llvm])
@@ -2353,7 +2359,6 @@ AC_CONFIG_FILES([Makefile
 		src/gallium/drivers/svga/Makefile
 		src/gallium/drivers/trace/Makefile
 		src/gallium/drivers/vc4/Makefile
-		src/gallium/drivers/vc4/kernel/Makefile
 		src/gallium/state_trackers/clover/Makefile
 		src/gallium/state_trackers/dri/Makefile
 		src/gallium/state_trackers/glx/xlib/Makefile

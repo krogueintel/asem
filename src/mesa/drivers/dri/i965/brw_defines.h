@@ -592,6 +592,15 @@
 #define GEN7_SURFACE_MOCS_SHIFT                 16
 #define GEN7_SURFACE_MOCS_MASK                  INTEL_MASK(19, 16)
 
+#define GEN9_SURFACE_TRMODE_SHIFT          18
+#define GEN9_SURFACE_TRMODE_MASK           INTEL_MASK(19, 18)
+#define GEN9_SURFACE_TRMODE_NONE           0
+#define GEN9_SURFACE_TRMODE_TILEYF         1
+#define GEN9_SURFACE_TRMODE_TILEYS         2
+
+#define GEN9_SURFACE_MIP_TAIL_START_LOD_SHIFT      8
+#define GEN9_SURFACE_MIP_TAIL_START_LOD_MASK       INTEL_MASK(11, 8)
+
 /* Surface state DW6 */
 #define GEN7_SURFACE_MCS_ENABLE                 (1 << 0)
 #define GEN7_SURFACE_MCS_PITCH_SHIFT            3
@@ -1135,6 +1144,11 @@ enum opcode {
     * Terminate the compute shader.
     */
    CS_OPCODE_CS_TERMINATE,
+
+   /**
+    * GLSL barrier()
+    */
+   SHADER_OPCODE_BARRIER,
 };
 
 enum brw_urb_write_flags {
@@ -1596,6 +1610,14 @@ enum brw_message_target {
 #define BRW_SCRATCH_SPACE_SIZE_1M     10
 #define BRW_SCRATCH_SPACE_SIZE_2M     11
 
+#define BRW_MESSAGE_GATEWAY_SFID_OPEN_GATEWAY         0
+#define BRW_MESSAGE_GATEWAY_SFID_CLOSE_GATEWAY        1
+#define BRW_MESSAGE_GATEWAY_SFID_FORWARD_MSG          2
+#define BRW_MESSAGE_GATEWAY_SFID_GET_TIMESTAMP        3
+#define BRW_MESSAGE_GATEWAY_SFID_BARRIER_MSG          4
+#define BRW_MESSAGE_GATEWAY_SFID_UPDATE_GATEWAY_STATE 5
+#define BRW_MESSAGE_GATEWAY_SFID_MMIO_READ_WRITE      6
+
 
 #define CMD_URB_FENCE                 0x6000
 #define CMD_CS_URB_STATE              0x6001
@@ -1773,9 +1795,8 @@ enum brw_message_target {
 # define GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_SID		1
 # define GEN7_GS_CONTROL_DATA_HEADER_SIZE_SHIFT		20
 # define GEN7_GS_INSTANCE_CONTROL_SHIFT			15
-# define GEN7_GS_DISPATCH_MODE_SINGLE			(0 << 11)
-# define GEN7_GS_DISPATCH_MODE_DUAL_INSTANCE		(1 << 11)
-# define GEN7_GS_DISPATCH_MODE_DUAL_OBJECT		(2 << 11)
+# define GEN7_GS_DISPATCH_MODE_SHIFT                    11
+# define GEN7_GS_DISPATCH_MODE_MASK                     INTEL_MASK(12, 11)
 # define GEN6_GS_STATISTICS_ENABLE			(1 << 10)
 # define GEN6_GS_SO_STATISTICS_ENABLE			(1 << 9)
 # define GEN6_GS_RENDERING_ENABLE			(1 << 8)

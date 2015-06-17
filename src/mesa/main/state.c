@@ -225,7 +225,7 @@ update_program(struct gl_context *ctx)
    if (ctx->GeometryProgram._Current != prevGP) {
       new_state |= _NEW_PROGRAM;
       if (ctx->Driver.BindProgram) {
-         ctx->Driver.BindProgram(ctx, MESA_GEOMETRY_PROGRAM,
+         ctx->Driver.BindProgram(ctx, GL_GEOMETRY_PROGRAM_NV,
                             (struct gl_program *) ctx->GeometryProgram._Current);
       }
    }
@@ -266,15 +266,9 @@ update_program_constants(struct gl_context *ctx)
       }
    }
 
-   if (ctx->GeometryProgram._Current) {
-      const struct gl_program_parameter_list *params =
-         ctx->GeometryProgram._Current->Base.Parameters;
-      /*FIXME: StateFlags is always 0 because we have unnamed constant
-       *       not state changes */
-      if (params /*&& params->StateFlags & ctx->NewState*/) {
-         new_state |= _NEW_PROGRAM_CONSTANTS;
-      }
-   }
+   /* Don't handle geometry shaders here. They don't use any state
+    * constants.
+    */
 
    if (ctx->VertexProgram._Current) {
       const struct gl_program_parameter_list *params =

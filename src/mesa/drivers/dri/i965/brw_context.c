@@ -428,11 +428,7 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    ctx->Const.MinLineWidth = 1.0;
    ctx->Const.MinLineWidthAA = 1.0;
-   if (brw->gen >= 9 || brw->is_cherryview) {
-      ctx->Const.MaxLineWidth = 40.0;
-      ctx->Const.MaxLineWidthAA = 40.0;
-      ctx->Const.LineWidthGranularity = 0.125;
-   } else if (brw->gen >= 6) {
+   if (brw->gen >= 6) {
       ctx->Const.MaxLineWidth = 7.375;
       ctx->Const.MaxLineWidthAA = 7.375;
       ctx->Const.LineWidthGranularity = 0.125;
@@ -441,6 +437,13 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.MaxLineWidthAA = 7.0;
       ctx->Const.LineWidthGranularity = 0.5;
    }
+
+   /* For non-antialiased lines, we have to round the line width to the
+    * nearest whole number. Make sure that we don't advertise a line
+    * width that, when rounded, will be beyond the actual hardware
+    * maximum.
+    */
+   assert(roundf(ctx->Const.MaxLineWidth) <= ctx->Const.MaxLineWidth);
 
    ctx->Const.MinPointSize = 1.0;
    ctx->Const.MinPointSizeAA = 1.0;
@@ -545,6 +548,7 @@ brw_initialize_context_constants(struct brw_context *brw)
     */
    ctx->Const.UniformBufferOffsetAlignment = 16;
    ctx->Const.TextureBufferOffsetAlignment = 16;
+   ctx->Const.MaxTextureBufferSize = 128 * 1024 * 1024;
 
    if (brw->gen >= 6) {
       ctx->Const.MaxVarying = 32;
@@ -590,13 +594,10 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectTemp = true;
       ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = false;
 
-      if (brw_env_var_as_boolean("INTEL_USE_NIR", true))
-         ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions = &nir_options;
+      ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions = &nir_options;
    }
 
-   if (brw_env_var_as_boolean("INTEL_USE_NIR", true))
-      ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions = &nir_options;
-
+   ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions = &nir_options;
    ctx->Const.ShaderCompilerOptions[MESA_SHADER_COMPUTE].NirOptions = &nir_options;
 
    /* ARB_viewport_array */

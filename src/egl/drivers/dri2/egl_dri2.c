@@ -397,7 +397,7 @@ dri2_open_driver(_EGLDisplay *disp)
 
    dri2_dpy->driver = NULL;
    end = search_paths + strlen(search_paths);
-   for (p = search_paths; p < end && dri2_dpy->driver == NULL; p = next + 1) {
+   for (p = search_paths; p < end; p = next + 1) {
       int len;
       next = strchr(p, ':');
       if (next == NULL)
@@ -419,6 +419,15 @@ dri2_open_driver(_EGLDisplay *disp)
       /* not need continue to loop all paths once the driver is found */
       if (dri2_dpy->driver != NULL)
          break;
+
+#ifdef ANDROID
+      snprintf(path, sizeof path, "%.*s/gallium_dri.so", len, p);
+      dri2_dpy->driver = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+      if (dri2_dpy->driver == NULL)
+         _eglLog(_EGL_DEBUG, "failed to open %s: %s\n", path, dlerror());
+      else
+         break;
+#endif
    }
 
    if (dri2_dpy->driver == NULL) {
@@ -658,6 +667,13 @@ dri2_initialize(_EGLDriver *drv, _EGLDisplay *disp)
       return EGL_FALSE;
 
    switch (disp->Platform) {
+#ifdef HAVE_SURFACELESS_PLATFORM
+   case _EGL_PLATFORM_SURFACELESS:
+      if (disp->Options.TestOnly)
+         return EGL_TRUE;
+      return dri2_initialize_surfaceless(drv, disp);
+#endif
+
 #ifdef HAVE_X11_PLATFORM
    case _EGL_PLATFORM_X11:
       if (disp->Options.TestOnly)
@@ -1256,7 +1272,8 @@ dri2_bind_tex_image(_EGLDriver *drv,
       format = __DRI_TEXTURE_FORMAT_RGBA;
       break;
    default:
-      assert(0);
+      assert(!"Unexpected texture format in dri2_bind_tex_image()");
+      format = __DRI_TEXTURE_FORMAT_RGBA;
    }
 
    switch (dri2_surf->base.TextureTarget) {
@@ -1264,7 +1281,8 @@ dri2_bind_tex_image(_EGLDriver *drv,
       target = GL_TEXTURE_2D;
       break;
    default:
-      assert(0);
+      target = GL_TEXTURE_2D;
+      assert(!"Unexpected texture target in dri2_bind_tex_image()");
    }
 
    (*dri2_dpy->tex_buffer->setTexBuffer2)(dri2_ctx->dri_context,
@@ -2214,7 +2232,7 @@ dri2_egl_unref_sync(struct dri2_egl_display *dri2_dpy,
 static _EGLSync *
 dri2_create_sync(_EGLDriver *drv, _EGLDisplay *dpy,
                  EGLenum type, const EGLint *attrib_list,
-                 const EGLAttribKHR *attrib_list64)
+                 const EGLAttrib *attrib_list64)
 {
    _EGLContext *ctx = _eglGetCurrentContext();
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
@@ -2280,7 +2298,7 @@ dri2_destroy_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync)
 
 static EGLint
 dri2_client_wait_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
-                      EGLint flags, EGLTimeKHR timeout)
+                      EGLint flags, EGLTime timeout)
 {
    _EGLContext *ctx = _eglGetCurrentContext();
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);

@@ -36,6 +36,7 @@
 extern "C" {
 #endif
    
+struct pipe_screen;
 struct ureg_program;
 struct pipe_stream_output_info;
 
@@ -98,7 +99,10 @@ struct ureg_dst
 struct pipe_context;
 
 struct ureg_program *
-ureg_create( unsigned processor );
+ureg_create(unsigned processor);
+
+struct ureg_program *
+ureg_create_with_screen(unsigned processor, struct pipe_screen *screen);
 
 const struct tgsi_token *
 ureg_finalize( struct ureg_program * );
@@ -172,7 +176,9 @@ ureg_DECL_fs_input_cyl_centroid(struct ureg_program *,
                        unsigned semantic_index,
                        unsigned interp_mode,
                        unsigned cylindrical_wrap,
-                       unsigned interp_location);
+                       unsigned interp_location,
+                       unsigned array_id,
+                       unsigned array_size);
 
 static INLINE struct ureg_src
 ureg_DECL_fs_input_cyl(struct ureg_program *ureg,
@@ -186,7 +192,7 @@ ureg_DECL_fs_input_cyl(struct ureg_program *ureg,
                                  semantic_index,
                                  interp_mode,
                                  cylindrical_wrap,
-                                 0);
+                                 0, 0, 1);
 }
 
 static INLINE struct ureg_src
@@ -199,7 +205,7 @@ ureg_DECL_fs_input(struct ureg_program *ureg,
                                  semantic_name,
                                  semantic_index,
                                  interp_mode,
-                                 0, 0);
+                                 0, 0, 0, 1);
 }
 
 struct ureg_src
@@ -207,10 +213,11 @@ ureg_DECL_vs_input( struct ureg_program *,
                     unsigned index );
 
 struct ureg_src
-ureg_DECL_gs_input(struct ureg_program *,
-                   unsigned index,
-                   unsigned semantic_name,
-                   unsigned semantic_index);
+ureg_DECL_input(struct ureg_program *,
+                unsigned semantic_name,
+                unsigned semantic_index,
+                unsigned array_id,
+                unsigned array_size);
 
 struct ureg_src
 ureg_DECL_system_value(struct ureg_program *,
@@ -219,15 +226,24 @@ ureg_DECL_system_value(struct ureg_program *,
                        unsigned semantic_index);
 
 struct ureg_dst
-ureg_DECL_output_masked( struct ureg_program *,
-                         unsigned semantic_name,
-                         unsigned semantic_index,
-                         unsigned usage_mask );
+ureg_DECL_output_masked(struct ureg_program *,
+                        unsigned semantic_name,
+                        unsigned semantic_index,
+                        unsigned usage_mask,
+                        unsigned array_id,
+                        unsigned array_size);
 
 struct ureg_dst
-ureg_DECL_output( struct ureg_program *,
-                  unsigned semantic_name,
-                  unsigned semantic_index );
+ureg_DECL_output(struct ureg_program *,
+                 unsigned semantic_name,
+                 unsigned semantic_index);
+
+struct ureg_dst
+ureg_DECL_output_array(struct ureg_program *ureg,
+                       unsigned semantic_name,
+                       unsigned semantic_index,
+                       unsigned array_id,
+                       unsigned array_size);
 
 struct ureg_src
 ureg_DECL_immediate( struct ureg_program *,
@@ -1162,17 +1178,24 @@ ureg_src_dimension_indirect( struct ureg_src reg, struct ureg_src addr,
    return reg;
 }
 
-static INLINE struct ureg_dst
-ureg_dst_array_offset( struct ureg_dst reg, int offset )
+static INLINE struct ureg_src
+ureg_src_array_offset(struct ureg_src reg, int offset)
 {
-   assert(reg.File == TGSI_FILE_TEMPORARY);
    reg.Index += offset;
    return reg;
 }
 
 static INLINE struct ureg_dst
-ureg_dst_register( unsigned file,
-                   unsigned index )
+ureg_dst_array_offset( struct ureg_dst reg, int offset )
+{
+   reg.Index += offset;
+   return reg;
+}
+
+static INLINE struct ureg_dst
+ureg_dst_array_register(unsigned file,
+                        unsigned index,
+                        unsigned array_id)
 {
    struct ureg_dst dst;
 
@@ -1196,9 +1219,16 @@ ureg_dst_register( unsigned file,
    dst.DimIndFile = TGSI_FILE_NULL;
    dst.DimIndIndex = 0;
    dst.DimIndSwizzle = 0;
-   dst.ArrayID = 0;
+   dst.ArrayID = array_id;
 
    return dst;
+}
+
+static INLINE struct ureg_dst
+ureg_dst_register(unsigned file,
+                  unsigned index)
+{
+   return ureg_dst_array_register(file, index, 0);
 }
 
 static INLINE struct ureg_dst
@@ -1236,8 +1266,9 @@ ureg_dst( struct ureg_src src )
 }
 
 static INLINE struct ureg_src
-ureg_src_register(unsigned file,
-                  unsigned index)
+ureg_src_array_register(unsigned file,
+                        unsigned index,
+                        unsigned array_id)
 {
    struct ureg_src src;
 
@@ -1259,9 +1290,16 @@ ureg_src_register(unsigned file,
    src.DimIndFile = TGSI_FILE_NULL;
    src.DimIndIndex = 0;
    src.DimIndSwizzle = 0;
-   src.ArrayID = 0;
+   src.ArrayID = array_id;
 
    return src;
+}
+
+static INLINE struct ureg_src
+ureg_src_register(unsigned file,
+                  unsigned index)
+{
+   return ureg_src_array_register(file, index, 0);
 }
 
 static INLINE struct ureg_src

@@ -27,7 +27,7 @@
 #include "pipe/p_screen.h"
 #include "os/os_thread.h"
 #include "state_tracker/drm_driver.h"
-#include "vc4_qir.h"
+#include "util/list.h"
 
 struct vc4_bo;
 
@@ -61,9 +61,9 @@ struct vc4_screen {
 
         struct vc4_bo_cache {
                 /** List of struct vc4_bo freed, by age. */
-                struct simple_node time_list;
+                struct list_head time_list;
                 /** List of struct vc4_bo freed, per size, by age. */
-                struct simple_node *size_list;
+                struct list_head *size_list;
                 uint32_t size_list_size;
 
                 pipe_mutex lock;

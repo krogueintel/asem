@@ -1,4 +1,4 @@
-# Copyright © 2014 Broadcom
+# Copyright (C) 2014 Emil Velikov <emil.l.velikov@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -7,34 +7,28 @@
 # and/or sell copies of the Software, and to permit persons to whom the
 # Software is furnished to do so, subject to the following conditions:
 #
-# The above copyright notice and this permission notice (including the next
-# paragraph) shall be included in all copies or substantial portions of the
-# Software.
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
 #
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
 
-include Makefile.sources
-include $(top_srcdir)/src/gallium/Automake.inc
+LOCAL_PATH := $(call my-dir)
 
-if USE_VC4_SIMULATOR
-SIM_CFLAGS = -DUSE_VC4_SIMULATOR=1
-endif
+# get C_SOURCES
+include $(LOCAL_PATH)/Makefile.sources
 
-AM_CFLAGS = \
-	$(LIBDRM_CFLAGS) \
-	$(GALLIUM_DRIVER_CFLAGS) \
-	$(SIM_CFLAGS) \
-	-I$(top_srcdir)/src/mesa/ \
-	-I$(srcdir)/../ \
-	$()
+include $(CLEAR_VARS)
 
-noinst_LTLIBRARIES = libvc4_kernel.la
+LOCAL_SRC_FILES := $(C_SOURCES)
 
-libvc4_kernel_la_SOURCES = $(C_SOURCES)
-libvc4_kernel_la_LDFLAGS = $(SIM_LDFLAGS)
+LOCAL_SHARED_LIBRARIES := libdrm
+LOCAL_MODULE := libmesa_winsys_vc4
+
+include $(GALLIUM_COMMON_MK)
+include $(BUILD_STATIC_LIBRARY)

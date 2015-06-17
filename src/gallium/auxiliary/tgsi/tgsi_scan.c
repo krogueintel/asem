@@ -74,8 +74,8 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
    assert(procType == TGSI_PROCESSOR_FRAGMENT ||
           procType == TGSI_PROCESSOR_VERTEX ||
           procType == TGSI_PROCESSOR_GEOMETRY ||
-          procType == TGSI_PROCESSOR_TESSCTRL ||
-          procType == TGSI_PROCESSOR_TESSEVAL ||
+          procType == TGSI_PROCESSOR_TESS_CTRL ||
+          procType == TGSI_PROCESSOR_TESS_EVAL ||
           procType == TGSI_PROCESSOR_COMPUTE);
    info->processor = procType;
 
@@ -167,13 +167,31 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                = &parse.FullToken.FullDeclaration;
             const uint file = fulldecl->Declaration.File;
             uint reg;
-            if (fulldecl->Declaration.Array)
-               info->array_max[file] = MAX2(info->array_max[file], fulldecl->Array.ArrayID);
+
+            if (fulldecl->Declaration.Array) {
+               unsigned array_id = fulldecl->Array.ArrayID;
+
+               switch (file) {
+               case TGSI_FILE_INPUT:
+                  assert(array_id < ARRAY_SIZE(info->input_array_first));
+                  info->input_array_first[array_id] = fulldecl->Range.First;
+                  info->input_array_last[array_id] = fulldecl->Range.Last;
+                  break;
+               case TGSI_FILE_OUTPUT:
+                  assert(array_id < ARRAY_SIZE(info->output_array_first));
+                  info->output_array_first[array_id] = fulldecl->Range.First;
+                  info->output_array_last[array_id] = fulldecl->Range.Last;
+                  break;
+               }
+               info->array_max[file] = MAX2(info->array_max[file], array_id);
+            }
+
             for (reg = fulldecl->Range.First;
                  reg <= fulldecl->Range.Last;
                  reg++) {
                unsigned semName = fulldecl->Semantic.Name;
-               unsigned semIndex = fulldecl->Semantic.Index;
+               unsigned semIndex =
+                  fulldecl->Semantic.Index + (reg - fulldecl->Range.First);
 
                /* only first 32 regs will appear in this bitfield */
                info->file_mask[file] |= (1 << reg);
@@ -239,8 +257,8 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
 
                   if (procType == TGSI_PROCESSOR_VERTEX ||
                       procType == TGSI_PROCESSOR_GEOMETRY ||
-                      procType == TGSI_PROCESSOR_TESSCTRL ||
-                      procType == TGSI_PROCESSOR_TESSEVAL) {
+                      procType == TGSI_PROCESSOR_TESS_CTRL ||
+                      procType == TGSI_PROCESSOR_TESS_EVAL) {
                      if (semName == TGSI_SEMANTIC_CLIPDIST) {
                         info->num_written_clipdistance +=
                            util_bitcount(fulldecl->Declaration.UsageMask);

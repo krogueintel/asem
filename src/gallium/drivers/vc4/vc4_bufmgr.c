@@ -34,9 +34,6 @@
 #include "vc4_context.h"
 #include "vc4_screen.h"
 
-#define container_of(ptr, type, field) \
-   (type*)((char*)ptr - offsetof(type, field))
-
 static struct vc4_bo *
 vc4_bo_from_cache(struct vc4_screen *screen, uint32_t size, const char *name)
 {
@@ -48,12 +45,23 @@ vc4_bo_from_cache(struct vc4_screen *screen, uint32_t size, const char *name)
 
         struct vc4_bo *bo = NULL;
         pipe_mutex_lock(cache->lock);
-        if (!is_empty_list(&cache->size_list[page_index])) {
-                struct simple_node *node = last_elem(&cache->size_list[page_index]);
-                bo = container_of(node, struct vc4_bo, size_list);
+        if (!list_empty(&cache->size_list[page_index])) {
+                struct vc4_bo *bo = LIST_ENTRY(struct vc4_bo,
+                                               cache->size_list[page_index].next,
+                                               size_list);
+
+                /* Check that the BO has gone idle.  If not, then we want to
+                 * allocate something new instead, since we assume that the
+                 * user will proceed to CPU map it and fill it with stuff.
+                 */
+                if (!vc4_bo_wait(bo, 0)) {
+                        pipe_mutex_unlock(cache->lock);
+                        return NULL;
+                }
+
                 pipe_reference_init(&bo->reference, 1);
-                remove_from_list(&bo->time_list);
-                remove_from_list(&bo->size_list);
+                list_del(&bo->time_list);
+                list_del(&bo->size_list);
 
                 bo->name = name;
         }
@@ -151,15 +159,14 @@ vc4_bo_free(struct vc4_bo *bo)
 static void
 free_stale_bos(struct vc4_screen *screen, time_t time)
 {
-        while (!is_empty_list(&screen->bo_cache.time_list)) {
-                struct simple_node *node =
-                        first_elem(&screen->bo_cache.time_list);
-                struct vc4_bo *bo = container_of(node, struct vc4_bo, time_list);
+        struct vc4_bo_cache *cache = &screen->bo_cache;
 
+        list_for_each_entry_safe(struct vc4_bo, bo, &cache->time_list,
+                                 time_list) {
                 /* If it's more than a second old, free it. */
                 if (time - bo->free_time > 2) {
-                        remove_from_list(&bo->time_list);
-                        remove_from_list(&bo->size_list);
+                        list_del(&bo->time_list);
+                        list_del(&bo->size_list);
                         vc4_bo_free(bo);
                 } else {
                         break;
@@ -180,16 +187,16 @@ vc4_bo_last_unreference_locked_timed(struct vc4_bo *bo, time_t time)
         }
 
         if (cache->size_list_size <= page_index) {
-                struct simple_node *new_list =
-                        ralloc_array(screen, struct simple_node, page_index + 1);
+                struct list_head *new_list =
+                        ralloc_array(screen, struct list_head, page_index + 1);
 
                 /* Move old list contents over (since the array has moved, and
-                 * therefore the pointers to the list heads have to change.
+                 * therefore the pointers to the list heads have to change).
                  */
                 for (int i = 0; i < cache->size_list_size; i++) {
-                        struct simple_node *old_head = &cache->size_list[i];
-                        if (is_empty_list(old_head))
-                                make_empty_list(&new_list[i]);
+                        struct list_head *old_head = &cache->size_list[i];
+                        if (list_empty(old_head))
+                                list_inithead(&new_list[i]);
                         else {
                                 new_list[i].next = old_head->next;
                                 new_list[i].prev = old_head->prev;
@@ -198,15 +205,15 @@ vc4_bo_last_unreference_locked_timed(struct vc4_bo *bo, time_t time)
                         }
                 }
                 for (int i = cache->size_list_size; i < page_index + 1; i++)
-                        make_empty_list(&new_list[i]);
+                        list_inithead(&new_list[i]);
 
                 cache->size_list = new_list;
                 cache->size_list_size = page_index + 1;
         }
 
         bo->free_time = time;
-        insert_at_tail(&cache->size_list[page_index], &bo->size_list);
-        insert_at_tail(&cache->time_list, &bo->time_list);
+        list_addtail(&bo->size_list, &cache->size_list[page_index]);
+        list_addtail(&bo->time_list, &cache->time_list);
 
         free_stale_bos(screen, time);
 }
@@ -286,6 +293,7 @@ vc4_bo_get_dmabuf(struct vc4_bo *bo)
                         bo->handle);
                 return -1;
         }
+        bo->private = false;
 
         return fd;
 }
@@ -342,15 +350,17 @@ vc4_wait_seqno(struct vc4_screen *screen, uint64_t seqno, uint64_t timeout_ns)
                 ret = 0;
         }
 
-        if (ret == -ETIME) {
-                return false;
-        } else if (ret != 0) {
-                fprintf(stderr, "wait failed\n");
-                abort();
-        } else {
+        if (ret == 0) {
                 screen->finished_seqno = wait.seqno;
                 return true;
         }
+
+        if (errno != ETIME) {
+                fprintf(stderr, "wait failed: %d\n", ret);
+                abort();
+        }
+
+        return false;
 }
 
 bool
@@ -369,14 +379,15 @@ vc4_bo_wait(struct vc4_bo *bo, uint64_t timeout_ns)
         else
                 ret = 0;
 
-        if (ret == -ETIME) {
-                return false;
-        } else if (ret != 0) {
-                fprintf(stderr, "wait failed\n");
-                abort();
-        } else {
+        if (ret == 0)
                 return true;
+
+        if (errno != ETIME) {
+                fprintf(stderr, "wait failed: %d\n", ret);
+                abort();
         }
+
+        return false;
 }
 
 void *
@@ -437,12 +448,10 @@ vc4_bufmgr_destroy(struct pipe_screen *pscreen)
         struct vc4_screen *screen = vc4_screen(pscreen);
         struct vc4_bo_cache *cache = &screen->bo_cache;
 
-        while (!is_empty_list(&cache->time_list)) {
-                struct simple_node *node = first_elem(&cache->time_list);
-                struct vc4_bo *bo = container_of(node, struct vc4_bo, time_list);
-
-                remove_from_list(&bo->time_list);
-                remove_from_list(&bo->size_list);
+        list_for_each_entry_safe(struct vc4_bo, bo, &cache->time_list,
+                                 time_list) {
+                list_del(&bo->time_list);
+                list_del(&bo->size_list);
                 vc4_bo_free(bo);
         }
 }

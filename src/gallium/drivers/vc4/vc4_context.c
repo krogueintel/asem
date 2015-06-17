@@ -29,6 +29,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_blitter.h"
+#include "util/u_upload_mgr.h"
 #include "indices/u_primconvert.h"
 #include "pipe/p_screen.h"
 
@@ -49,10 +50,12 @@ vc4_store_before_load(struct vc4_context *vc4, bool *coords_emitted)
                 return;
 
         cl_u8(&vc4->rcl, VC4_PACKET_STORE_TILE_BUFFER_GENERAL);
-        cl_u8(&vc4->rcl, VC4_LOADSTORE_TILE_BUFFER_NONE);
-        cl_u8(&vc4->rcl, (VC4_STORE_TILE_BUFFER_DISABLE_COLOR_CLEAR |
-                          VC4_STORE_TILE_BUFFER_DISABLE_ZS_CLEAR |
-                          VC4_STORE_TILE_BUFFER_DISABLE_VG_MASK_CLEAR));
+        cl_u16(&vc4->rcl,
+               VC4_SET_FIELD(VC4_LOADSTORE_TILE_BUFFER_NONE,
+                             VC4_LOADSTORE_TILE_BUFFER_BUFFER) |
+               VC4_STORE_TILE_BUFFER_DISABLE_COLOR_CLEAR |
+               VC4_STORE_TILE_BUFFER_DISABLE_ZS_CLEAR |
+               VC4_STORE_TILE_BUFFER_DISABLE_VG_MASK_CLEAR);
         cl_u32(&vc4->rcl, 0); /* no address, since we're in None mode */
 
         *coords_emitted = false;
@@ -111,23 +114,19 @@ vc4_setup_rcl(struct vc4_context *vc4)
                 resolve_uncleared);
 #endif
 
-        uint32_t reloc_size = 9;
-        uint32_t clear_size = 14;
-        uint32_t config_size = 11 + reloc_size;
-        uint32_t loadstore_size = 7 + reloc_size;
-        uint32_t tilecoords_size = 3;
-        uint32_t branch_size = 5 + reloc_size;
-        uint32_t color_store_size = 1;
-        uint32_t semaphore_size = 1;
         cl_ensure_space(&vc4->rcl,
-                        clear_size +
-                        config_size +
-                        loadstore_size +
-                        semaphore_size +
-                        xtiles * ytiles * (loadstore_size * 4 +
-                                           tilecoords_size * 3 +
-                                           branch_size +
-                                           color_store_size));
+                        VC4_PACKET_CLEAR_COLORS_SIZE +
+                        (VC4_PACKET_TILE_RENDERING_MODE_CONFIG_SIZE +
+                         VC4_PACKET_GEM_HANDLES_SIZE) +
+                        (VC4_PACKET_STORE_TILE_BUFFER_GENERAL_SIZE +
+                         VC4_PACKET_TILE_RENDERING_MODE_CONFIG_SIZE) +
+                        VC4_PACKET_WAIT_ON_SEMAPHORE_SIZE +
+                        xtiles * ytiles * ((VC4_PACKET_STORE_TILE_BUFFER_GENERAL_SIZE +
+                                            VC4_PACKET_GEM_HANDLES_SIZE) * 4 +
+                                           VC4_PACKET_TILE_COORDINATES_SIZE * 3 +
+                                           (VC4_PACKET_BRANCH_TO_SUB_LIST_SIZE +
+                                            VC4_PACKET_GEM_HANDLES_SIZE) +
+                                           VC4_PACKET_STORE_MS_TILE_BUFFER_SIZE));
 
         if (vc4->cleared) {
                 cl_u8(&vc4->rcl, VC4_PACKET_CLEAR_COLORS);
@@ -151,11 +150,13 @@ vc4_setup_rcl(struct vc4_context *vc4)
         cl_reloc(vc4, &vc4->rcl, render_tex->bo, render_surf->offset);
         cl_u16(&vc4->rcl, width);
         cl_u16(&vc4->rcl, height);
-        cl_u16(&vc4->rcl, ((render_surf->tiling <<
-                            VC4_RENDER_CONFIG_MEMORY_FORMAT_SHIFT) |
-                           (vc4_rt_format_is_565(render_surf->base.format) ?
-                            VC4_RENDER_CONFIG_FORMAT_BGR565 :
-                            VC4_RENDER_CONFIG_FORMAT_RGBA8888)));
+        cl_u16(&vc4->rcl,
+               VC4_SET_FIELD(render_surf->tiling,
+                             VC4_RENDER_CONFIG_MEMORY_FORMAT) |
+               VC4_SET_FIELD((vc4_rt_format_is_565(render_surf->base.format) ?
+                              VC4_RENDER_CONFIG_FORMAT_BGR565 :
+                              VC4_RENDER_CONFIG_FORMAT_RGBA8888),
+                             VC4_RENDER_CONFIG_FORMAT));
 
         /* The tile buffer normally gets cleared when the previous tile is
          * stored.  If the clear values changed between frames, then the tile
@@ -196,14 +197,15 @@ vc4_setup_rcl(struct vc4_context *vc4)
 
                                 cl_start_reloc(&vc4->rcl, 1);
                                 cl_u8(&vc4->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL);
-                                cl_u8(&vc4->rcl,
-                                      VC4_LOADSTORE_TILE_BUFFER_COLOR |
-                                      (csurf->tiling <<
-                                       VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT));
-                                cl_u8(&vc4->rcl,
-                                      vc4_rt_format_is_565(csurf->base.format) ?
-                                      VC4_LOADSTORE_TILE_BUFFER_BGR565 :
-                                      VC4_LOADSTORE_TILE_BUFFER_RGBA8888);
+                                cl_u16(&vc4->rcl,
+                                       VC4_SET_FIELD(VC4_LOADSTORE_TILE_BUFFER_COLOR,
+                                                     VC4_LOADSTORE_TILE_BUFFER_BUFFER) |
+                                       VC4_SET_FIELD(csurf->tiling,
+                                                     VC4_LOADSTORE_TILE_BUFFER_TILING) |
+                                       VC4_SET_FIELD(vc4_rt_format_is_565(csurf->base.format) ?
+                                                     VC4_LOADSTORE_TILE_BUFFER_BGR565 :
+                                                     VC4_LOADSTORE_TILE_BUFFER_RGBA8888,
+                                                     VC4_LOADSTORE_TILE_BUFFER_FORMAT));
                                 cl_reloc_hindex(&vc4->rcl, color_hindex,
                                                 csurf->offset);
 
@@ -215,11 +217,11 @@ vc4_setup_rcl(struct vc4_context *vc4)
 
                                 cl_start_reloc(&vc4->rcl, 1);
                                 cl_u8(&vc4->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL);
-                                cl_u8(&vc4->rcl,
-                                      VC4_LOADSTORE_TILE_BUFFER_ZS |
-                                      (zsurf->tiling <<
-                                       VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT));
-                                cl_u8(&vc4->rcl, 0);
+                                cl_u16(&vc4->rcl,
+                                      VC4_SET_FIELD(VC4_LOADSTORE_TILE_BUFFER_ZS,
+                                                    VC4_LOADSTORE_TILE_BUFFER_BUFFER) |
+                                      VC4_SET_FIELD(zsurf->tiling,
+                                                    VC4_LOADSTORE_TILE_BUFFER_TILING));
                                 cl_reloc_hindex(&vc4->rcl, depth_hindex,
                                                 zsurf->offset);
 
@@ -248,12 +250,12 @@ vc4_setup_rcl(struct vc4_context *vc4)
 
                                 cl_start_reloc(&vc4->rcl, 1);
                                 cl_u8(&vc4->rcl, VC4_PACKET_STORE_TILE_BUFFER_GENERAL);
-                                cl_u8(&vc4->rcl,
-                                      VC4_LOADSTORE_TILE_BUFFER_ZS |
-                                      (zsurf->tiling <<
-                                       VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT));
-                                cl_u8(&vc4->rcl,
-                                      VC4_STORE_TILE_BUFFER_DISABLE_COLOR_CLEAR);
+                                cl_u16(&vc4->rcl,
+                                       VC4_SET_FIELD(VC4_LOADSTORE_TILE_BUFFER_ZS,
+                                                     VC4_LOADSTORE_TILE_BUFFER_BUFFER) |
+                                       VC4_SET_FIELD(zsurf->tiling,
+                                                     VC4_LOADSTORE_TILE_BUFFER_TILING) |
+                                       VC4_STORE_TILE_BUFFER_DISABLE_COLOR_CLEAR);
                                 cl_reloc_hindex(&vc4->rcl, depth_hindex,
                                                 zsurf->offset |
                                                 ((end_of_frame &&
@@ -410,6 +412,9 @@ vc4_context_destroy(struct pipe_context *pctx)
         if (vc4->primconvert)
                 util_primconvert_destroy(vc4->primconvert);
 
+        if (vc4->uploader)
+                u_upload_destroy(vc4->uploader);
+
         util_slab_destroy(&vc4->transfer_pool);
 
         pipe_surface_reference(&vc4->framebuffer.cbufs[0], NULL);
@@ -465,6 +470,9 @@ vc4_context_create(struct pipe_screen *pscreen, void *priv)
                                                    (1 << PIPE_PRIM_QUADS) - 1);
         if (!vc4->primconvert)
                 goto fail;
+
+        vc4->uploader = u_upload_create(pctx, 16 * 1024, 4,
+                                        PIPE_BIND_INDEX_BUFFER);
 
         vc4_debug |= saved_shaderdb_flag;
 

@@ -1,7 +1,7 @@
 # Mesa 3-D graphics library
 #
-# Copyright (C) 2010-2011 Chia-I Wu <olvaffe@gmail.com>
-# Copyright (C) 2010-2011 LunarG Inc.
+# Copyright (C) 2015 Chih-Wei Huang <cwhuang@linux.org.tw>
+# Copyright (C) 2015 Android-x86 Open Source Project
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -23,12 +23,42 @@
 
 LOCAL_PATH := $(call my-dir)
 
+include $(LOCAL_PATH)/Makefile.sources
+
 include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES := \
-	android_sw_winsys.cpp
+LOCAL_SRC_FILES := $(common_SOURCES)
 
-LOCAL_MODULE := libmesa_winsys_sw_android
+LOCAL_CFLAGS := \
+	-DGALLIUM_STATIC_TARGETS=1 \
+
+LOCAL_C_INCLUDES := \
+	$(MESA_TOP)/src/mapi \
+	$(MESA_TOP)/src/mesa \
+
+LOCAL_EXPORT_C_INCLUDE_DIRS := \
+	$(LOCAL_PATH) \
+	$(LOCAL_C_INCLUDES) \
+
+LOCAL_STATIC_LIBRARIES := \
+	libmesa_dri_common \
+
+ifneq ($(filter swrast,$(MESA_GPU_DRIVERS)),)
+LOCAL_CFLAGS += -DGALLIUM_SOFTPIPE
+LOCAL_SRC_FILES += $(drisw_SOURCES)
+endif
+
+# swrast only?
+ifeq ($(MESA_GPU_DRIVERS),swrast)
+LOCAL_CFLAGS += -D__NOT_HAVE_DRM_H
+else
+LOCAL_SRC_FILES += $(dri2_SOURCES)
+LOCAL_SHARED_LIBRARIES := libdrm
+endif
+
+LOCAL_MODULE := libmesa_st_dri
+
+LOCAL_GENERATED_SOURCES := $(MESA_DRI_OPTIONS_H)
 
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

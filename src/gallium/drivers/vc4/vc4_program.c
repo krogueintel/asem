@@ -147,6 +147,9 @@ indirect_uniform_load(struct vc4_compile *c,
         indirect_offset = qir_ADD(c, indirect_offset,
                                   qir_uniform_ui(c, (range->dst_offset +
                                                      offset)));
+
+        /* Clamp to [0, array size).  Note that MIN/MAX are signed. */
+        indirect_offset = qir_MAX(c, indirect_offset, qir_uniform_ui(c, 0));
         indirect_offset = qir_MIN(c, indirect_offset,
                                   qir_uniform_ui(c, (range->dst_offset +
                                                      range->size - 4)));
@@ -2209,11 +2212,9 @@ vc4_get_compiled_shader(struct vc4_context *vc4, enum qstage stage,
         shader->program_id = vc4->next_compiled_program_id++;
         if (stage == QSTAGE_FRAG) {
                 bool input_live[c->num_input_semantics];
-                struct simple_node *node;
 
                 memset(input_live, 0, sizeof(input_live));
-                foreach(node, &c->instructions) {
-                        struct qinst *inst = (struct qinst *)node;
+                list_for_each_entry(struct qinst, inst, &c->instructions, link) {
                         for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
                                 if (inst->src[i].file == QFILE_VARY)
                                         input_live[inst->src[i].index] = true;

@@ -31,6 +31,7 @@
 #include "core/ilo_builder.h"
 #include "core/ilo_builder_3d.h"
 #include "core/ilo_builder_render.h"
+#include "core/ilo_state_raster.h"
 
 #include "ilo_common.h"
 #include "ilo_state.h"
@@ -50,11 +51,7 @@ struct ilo_render {
 
    struct intel_bo *workaround_bo;
 
-   uint32_t sample_pattern_1x;
-   uint32_t sample_pattern_2x;
-   uint32_t sample_pattern_4x;
-   uint32_t sample_pattern_8x[2];
-   uint32_t sample_pattern_16x[4];
+   struct ilo_state_sample_pattern sample_pattern;
 
    bool hw_ctx_changed;
 
@@ -88,6 +85,10 @@ struct ilo_render {
       bool primitive_restart;
       int reduced_prim;
       int so_max_vertices;
+
+      struct ilo_state_urb urb;
+      struct ilo_state_raster rs;
+      struct ilo_state_cc cc;
 
       uint32_t SF_VIEWPORT;
       uint32_t CLIP_VIEWPORT;
@@ -143,6 +144,12 @@ struct ilo_render_draw_session {
 
    bool prim_changed;
    bool primitive_restart_changed;
+
+   struct ilo_state_urb_delta urb_delta;
+   struct ilo_state_vf_delta vf_delta;
+   struct ilo_state_raster_delta rs_delta;
+   struct ilo_state_viewport_delta vp_delta;
+   struct ilo_state_cc_delta cc_delta;
 
    /* dynamic states */
    bool viewport_changed;

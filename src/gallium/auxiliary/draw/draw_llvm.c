@@ -97,6 +97,7 @@ create_jit_dvbuffer_type(struct gallivm_state *gallivm,
    dvbuffer_type = LLVMStructTypeInContext(gallivm->context, elem_types,
                                            Elements(elem_types), 0);
 
+   (void) target; /* silence unused var warning for non-debug build */
    LP_CHECK_MEMBER_OFFSET(struct draw_vertex_buffer, map,
                           target, dvbuffer_type,
                           DRAW_JIT_DVBUFFER_MAP);
@@ -133,6 +134,7 @@ create_jit_texture_type(struct gallivm_state *gallivm, const char *struct_name)
    texture_type = LLVMStructTypeInContext(gallivm->context, elem_types,
                                           Elements(elem_types), 0);
 
+   (void) target; /* silence unused var warning for non-debug build */
    LP_CHECK_MEMBER_OFFSET(struct draw_jit_texture, width,
                           target, texture_type,
                           DRAW_JIT_TEXTURE_WIDTH);
@@ -290,6 +292,7 @@ create_gs_jit_context_type(struct gallivm_state *gallivm,
    context_type = LLVMStructTypeInContext(gallivm->context, elem_types,
                                           Elements(elem_types), 0);
 
+   (void) target; /* silence unused var warning for non-debug build */
    LP_CHECK_MEMBER_OFFSET(struct draw_gs_jit_context, constants,
                           target, context_type, DRAW_GS_JIT_CTX_CONSTANTS);
    LP_CHECK_MEMBER_OFFSET(struct draw_gs_jit_context, num_constants,
@@ -353,6 +356,7 @@ create_jit_vertex_buffer_type(struct gallivm_state *gallivm,
    vb_type = LLVMStructTypeInContext(gallivm->context, elem_types,
                                      Elements(elem_types), 0);
 
+   (void) target; /* silence unused var warning for non-debug build */
    LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, stride,
                           target, vb_type, 0);
    LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, buffer_offset,
@@ -1965,7 +1969,7 @@ draw_llvm_set_sampler_state(struct draw_context *draw,
       for (i = 0; i < draw->num_samplers[PIPE_SHADER_VERTEX]; i++) {
          struct draw_jit_sampler *jit_sam = &draw->llvm->jit_context.samplers[i];
 
-         if (draw->samplers[i]) {
+         if (draw->samplers[PIPE_SHADER_VERTEX][i]) {
             const struct pipe_sampler_state *s
                = draw->samplers[PIPE_SHADER_VERTEX][i];
             jit_sam->min_lod = s->min_lod;
@@ -1978,7 +1982,7 @@ draw_llvm_set_sampler_state(struct draw_context *draw,
       for (i = 0; i < draw->num_samplers[PIPE_SHADER_GEOMETRY]; i++) {
          struct draw_jit_sampler *jit_sam = &draw->llvm->gs_jit_context.samplers[i];
 
-         if (draw->samplers[i]) {
+         if (draw->samplers[PIPE_SHADER_GEOMETRY][i]) {
             const struct pipe_sampler_state *s
                = draw->samplers[PIPE_SHADER_GEOMETRY][i];
             jit_sam->min_lod = s->min_lod;

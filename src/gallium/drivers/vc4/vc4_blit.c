@@ -40,14 +40,12 @@ vc4_tile_blit_color_rcl(struct vc4_context *vc4,
         uint32_t max_y_tile = (dst_surf->base.height - 1) / 64;
         uint32_t xtiles = max_x_tile - min_x_tile + 1;
         uint32_t ytiles = max_y_tile - min_y_tile + 1;
-        uint32_t reloc_size = 9;
-        uint32_t config_size = 11 + reloc_size;
-        uint32_t loadstore_size = 7 + reloc_size;
-        uint32_t tilecoords_size = 3;
         cl_ensure_space(&vc4->rcl,
-                        config_size +
-                        xtiles * ytiles * (loadstore_size * 2 +
-                                           tilecoords_size * 1));
+                        (VC4_PACKET_TILE_RENDERING_MODE_CONFIG_SIZE +
+                         VC4_PACKET_GEM_HANDLES_SIZE) +
+                        xtiles * ytiles * ((VC4_PACKET_LOAD_TILE_BUFFER_GENERAL_SIZE +
+                                            VC4_PACKET_GEM_HANDLES_SIZE) * 2 +
+                                           VC4_PACKET_TILE_COORDINATES_SIZE));
         cl_ensure_space(&vc4->bo_handles, 2 * sizeof(uint32_t));
         cl_ensure_space(&vc4->bo_pointers, 2 * sizeof(struct vc4_bo *));
 
@@ -56,11 +54,13 @@ vc4_tile_blit_color_rcl(struct vc4_context *vc4,
         cl_reloc(vc4, &vc4->rcl, dst->bo, dst_surf->offset);
         cl_u16(&vc4->rcl, dst_surf->base.width);
         cl_u16(&vc4->rcl, dst_surf->base.height);
-        cl_u16(&vc4->rcl, ((dst_surf->tiling <<
-                            VC4_RENDER_CONFIG_MEMORY_FORMAT_SHIFT) |
-                           (vc4_rt_format_is_565(dst_surf->base.format) ?
-                            VC4_RENDER_CONFIG_FORMAT_BGR565 :
-                            VC4_RENDER_CONFIG_FORMAT_RGBA8888)));
+        cl_u16(&vc4->rcl,
+               VC4_SET_FIELD(dst_surf->tiling,
+                             VC4_RENDER_CONFIG_MEMORY_FORMAT) |
+               VC4_SET_FIELD(vc4_rt_format_is_565(dst_surf->base.format) ?
+                             VC4_RENDER_CONFIG_FORMAT_BGR565 :
+                             VC4_RENDER_CONFIG_FORMAT_RGBA8888,
+                             VC4_RENDER_CONFIG_FORMAT));
 
         uint32_t src_hindex = vc4_gem_hindex(vc4, src->bo);
 
@@ -71,14 +71,15 @@ vc4_tile_blit_color_rcl(struct vc4_context *vc4,
 
                         cl_start_reloc(&vc4->rcl, 1);
                         cl_u8(&vc4->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL);
-                        cl_u8(&vc4->rcl,
-                              VC4_LOADSTORE_TILE_BUFFER_COLOR |
-                              (src_surf->tiling <<
-                               VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT));
-                        cl_u8(&vc4->rcl,
-                              vc4_rt_format_is_565(src_surf->base.format) ?
-                              VC4_LOADSTORE_TILE_BUFFER_BGR565 :
-                              VC4_LOADSTORE_TILE_BUFFER_RGBA8888);
+                        cl_u16(&vc4->rcl,
+                               VC4_SET_FIELD(VC4_LOADSTORE_TILE_BUFFER_COLOR,
+                                             VC4_LOADSTORE_TILE_BUFFER_BUFFER) |
+                               VC4_SET_FIELD(src_surf->tiling,
+                                             VC4_LOADSTORE_TILE_BUFFER_TILING) |
+                               VC4_SET_FIELD(vc4_rt_format_is_565(src_surf->base.format) ?
+                                             VC4_LOADSTORE_TILE_BUFFER_BGR565 :
+                                             VC4_LOADSTORE_TILE_BUFFER_RGBA8888,
+                                             VC4_LOADSTORE_TILE_BUFFER_FORMAT));
                         cl_reloc_hindex(&vc4->rcl, src_hindex,
                                         src_surf->offset);
 
