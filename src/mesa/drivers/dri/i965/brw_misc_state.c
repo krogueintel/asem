@@ -44,7 +44,8 @@
 #include "main/glformats.h"
 
 /* Constant single cliprect for framebuffer object or DRI2 drawing */
-static void upload_drawing_rect(struct brw_context *brw)
+static void
+upload_drawing_rect(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    const struct gl_framebuffer *fb = ctx->DrawBuffer;
@@ -73,7 +74,8 @@ const struct brw_tracked_state brw_drawing_rect = {
  * The state pointers in this packet are all relative to the general state
  * base address set by CMD_STATE_BASE_ADDRESS, which is 0.
  */
-static void upload_pipelined_state_pointers(struct brw_context *brw )
+static void
+upload_pipelined_state_pointers(struct brw_context *brw)
 {
    if (brw->gen == 5) {
       /* Need to flush before changing clip max threads for errata. */
@@ -104,7 +106,8 @@ static void upload_pipelined_state_pointers(struct brw_context *brw )
    brw->ctx.NewDriverState |= BRW_NEW_PSP;
 }
 
-static void upload_psp_urb_cbs(struct brw_context *brw )
+static void
+upload_psp_urb_cbs(struct brw_context *brw)
 {
    upload_pipelined_state_pointers(brw);
    brw_upload_urb_fence(brw);
@@ -171,13 +174,17 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
    uint32_t tile_mask_x = 0, tile_mask_y = 0;
 
    if (depth_mt) {
-      intel_miptree_get_tile_masks(depth_mt, &tile_mask_x, &tile_mask_y, false);
+      intel_get_tile_masks(depth_mt->tiling, depth_mt->tr_mode,
+                           depth_mt->cpp, false,
+                           &tile_mask_x, &tile_mask_y);
 
       if (intel_miptree_level_has_hiz(depth_mt, depth_level)) {
          uint32_t hiz_tile_mask_x, hiz_tile_mask_y;
-         intel_miptree_get_tile_masks(depth_mt->hiz_buf->mt,
-                                      &hiz_tile_mask_x, &hiz_tile_mask_y,
-                                      false);
+         intel_get_tile_masks(depth_mt->hiz_buf->mt->tiling,
+                              depth_mt->hiz_buf->mt->tr_mode,
+                              depth_mt->hiz_buf->mt->cpp,
+                              false, &hiz_tile_mask_x,
+                              &hiz_tile_mask_y);
 
          /* Each HiZ row represents 2 rows of pixels */
          hiz_tile_mask_y = hiz_tile_mask_y << 1 | 1;
@@ -197,9 +204,11 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
          tile_mask_y |= 63;
       } else {
          uint32_t stencil_tile_mask_x, stencil_tile_mask_y;
-         intel_miptree_get_tile_masks(stencil_mt,
-                                      &stencil_tile_mask_x,
-                                      &stencil_tile_mask_y, false);
+         intel_get_tile_masks(stencil_mt->tiling,
+                              stencil_mt->tr_mode,
+                              stencil_mt->cpp,
+                              false, &stencil_tile_mask_x,
+                              &stencil_tile_mask_y);
 
          tile_mask_x |= stencil_tile_mask_x;
          tile_mask_y |= stencil_tile_mask_y;
@@ -580,7 +589,7 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
     * non-pipelined state that will need the PIPE_CONTROL workaround.
     */
    if (brw->gen == 6) {
-      intel_emit_depth_stall_flushes(brw);
+      brw_emit_depth_stall_flushes(brw);
    }
 
    unsigned int len;
@@ -700,13 +709,11 @@ const struct brw_tracked_state brw_depthbuffer = {
    .emit = brw_emit_depthbuffer,
 };
 
-
-
-/***********************************************************************
+/**
  * Polygon stipple packet
  */
-
-static void upload_polygon_stipple(struct brw_context *brw)
+static void
+upload_polygon_stipple(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    GLuint i;
@@ -728,8 +735,7 @@ static void upload_polygon_stipple(struct brw_context *brw)
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
       for (i = 0; i < 32; i++)
 	  OUT_BATCH(ctx->PolygonStipple[31 - i]); /* invert */
-   }
-   else {
+   } else {
       for (i = 0; i < 32; i++)
 	 OUT_BATCH(ctx->PolygonStipple[i]);
    }
@@ -745,12 +751,11 @@ const struct brw_tracked_state brw_polygon_stipple = {
    .emit = upload_polygon_stipple
 };
 
-
-/***********************************************************************
+/**
  * Polygon stipple offset packet
  */
-
-static void upload_polygon_stipple_offset(struct brw_context *brw)
+static void
+upload_polygon_stipple_offset(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
 
@@ -785,10 +790,11 @@ const struct brw_tracked_state brw_polygon_stipple_offset = {
    .emit = upload_polygon_stipple_offset
 };
 
-/**********************************************************************
+/**
  * AA Line parameters
  */
-static void upload_aa_line_parameters(struct brw_context *brw)
+static void
+upload_aa_line_parameters(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
 
@@ -815,11 +821,11 @@ const struct brw_tracked_state brw_aa_line_parameters = {
    .emit = upload_aa_line_parameters
 };
 
-/***********************************************************************
+/**
  * Line stipple packet
  */
-
-static void upload_line_stipple(struct brw_context *brw)
+static void
+upload_line_stipple(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    GLfloat tmp;
@@ -834,13 +840,12 @@ static void upload_line_stipple(struct brw_context *brw)
 
    if (brw->gen >= 7) {
       /* in U1.16 */
-      tmp = 1.0 / (GLfloat) ctx->Line.StippleFactor;
+      tmp = 1.0f / ctx->Line.StippleFactor;
       tmpi = tmp * (1<<16);
       OUT_BATCH(tmpi << 15 | ctx->Line.StippleFactor);
-   }
-   else {
+   } else {
       /* in U1.13 */
-      tmp = 1.0 / (GLfloat) ctx->Line.StippleFactor;
+      tmp = 1.0f / ctx->Line.StippleFactor;
       tmpi = tmp * (1<<13);
       OUT_BATCH(tmpi << 16 | ctx->Line.StippleFactor);
    }
@@ -855,7 +860,6 @@ const struct brw_tracked_state brw_line_stipple = {
    },
    .emit = upload_line_stipple
 };
-
 
 void
 brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
@@ -872,17 +876,16 @@ brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
    ADVANCE_BATCH();
 }
 
-
-/***********************************************************************
+/**
  * Misc invariant state packets
  */
-
 void
 brw_upload_invariant_state(struct brw_context *brw)
 {
    const bool is_965 = brw->gen == 4 && !brw->is_g4x;
 
-   brw_select_pipeline(brw, BRW_RENDER_PIPELINE);
+   brw_emit_select_pipeline(brw, BRW_RENDER_PIPELINE);
+   brw->last_pipeline = BRW_RENDER_PIPELINE;
 
    if (brw->gen < 6) {
       /* Disable depth offset clamping. */
@@ -930,7 +933,8 @@ const struct brw_tracked_state brw_invariant_state = {
  * surface state objects, but not the surfaces that the surface state
  * objects point to.
  */
-static void upload_state_base_address( struct brw_context *brw )
+static void
+upload_state_base_address(struct brw_context *brw)
 {
    /* FINISHME: According to section 3.6.1 "STATE_BASE_ADDRESS" of
     * vol1a of the G45 PRM, MI_FLUSH with the ISC invalidate should be

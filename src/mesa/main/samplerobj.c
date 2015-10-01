@@ -88,15 +88,11 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
       GLboolean deleteFlag = GL_FALSE;
       struct gl_sampler_object *oldSamp = *ptr;
 
-      /*mtx_lock(&oldSamp->Mutex);*/
+      mtx_lock(&oldSamp->Mutex);
       assert(oldSamp->RefCount > 0);
       oldSamp->RefCount--;
-#if 0
-      printf("SamplerObj %p %d DECR to %d\n",
-             (void *) oldSamp, oldSamp->Name, oldSamp->RefCount);
-#endif
       deleteFlag = (oldSamp->RefCount == 0);
-      /*mtx_unlock(&oldSamp->Mutex);*/
+      mtx_unlock(&oldSamp->Mutex);
 
       if (deleteFlag) {
 	 assert(ctx->Driver.DeleteSamplerObject);
@@ -109,7 +105,7 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
 
    if (samp) {
       /* reference new sampler */
-      /*mtx_lock(&samp->Mutex);*/
+      mtx_lock(&samp->Mutex);
       if (samp->RefCount == 0) {
          /* this sampler's being deleted (look just above) */
          /* Not sure this can every really happen.  Warn if it does. */
@@ -118,13 +114,9 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
       }
       else {
          samp->RefCount++;
-#if 0
-         printf("SamplerObj %p %d INCR to %d\n",
-                (void *) samp, samp->Name, samp->RefCount);
-#endif
          *ptr = samp;
       }
-      /*mtx_unlock(&samp->Mutex);*/
+      mtx_unlock(&samp->Mutex);
    }
 }
 
@@ -135,6 +127,7 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
 static void
 _mesa_init_sampler_object(struct gl_sampler_object *sampObj, GLuint name)
 {
+   mtx_init(&sampObj->Mutex, mtx_plain);
    sampObj->Name = name;
    sampObj->RefCount = 1;
    sampObj->WrapS = GL_REPEAT;
@@ -177,6 +170,7 @@ static void
 _mesa_delete_sampler_object(struct gl_context *ctx,
                             struct gl_sampler_object *sampObj)
 {
+   mtx_destroy(&sampObj->Mutex);
    free(sampObj->Label);
    free(sampObj);
 }
@@ -689,7 +683,7 @@ set_sampler_max_anisotropy(struct gl_context *ctx,
    if (samp->MaxAnisotropy == param)
       return GL_FALSE;
 
-   if (param < 1.0)
+   if (param < 1.0F)
       return INVALID_VALUE;
 
    flush(ctx);
@@ -813,7 +807,7 @@ _mesa_SamplerParameteri(GLuint sampler, GLenum pname, GLint param)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameteri(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameteri(param=%d)\n",
@@ -906,7 +900,7 @@ _mesa_SamplerParameterf(GLuint sampler, GLenum pname, GLfloat param)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterf(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterf(param=%f)\n",
@@ -1006,7 +1000,7 @@ _mesa_SamplerParameteriv(GLuint sampler, GLenum pname, const GLint *params)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameteriv(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameteriv(param=%d)\n",
@@ -1099,7 +1093,7 @@ _mesa_SamplerParameterfv(GLuint sampler, GLenum pname, const GLfloat *params)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterfv(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterfv(param=%f)\n",
@@ -1184,7 +1178,7 @@ _mesa_SamplerParameterIiv(GLuint sampler, GLenum pname, const GLint *params)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterIiv(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterIiv(param=%d)\n",
@@ -1270,7 +1264,7 @@ _mesa_SamplerParameterIuiv(GLuint sampler, GLenum pname, const GLuint *params)
       break;
    case INVALID_PNAME:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterIuiv(pname=%s)\n",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       break;
    case INVALID_PARAM:
       _mesa_error(ctx, GL_INVALID_ENUM, "glSamplerParameterIuiv(param=%u)\n",
@@ -1380,7 +1374,7 @@ _mesa_GetSamplerParameteriv(GLuint sampler, GLenum pname, GLint *params)
 
 invalid_pname:
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetSamplerParameteriv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 
@@ -1466,7 +1460,7 @@ _mesa_GetSamplerParameterfv(GLuint sampler, GLenum pname, GLfloat *params)
 
 invalid_pname:
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetSamplerParameterfv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 
@@ -1545,7 +1539,7 @@ _mesa_GetSamplerParameterIiv(GLuint sampler, GLenum pname, GLint *params)
 
 invalid_pname:
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetSamplerParameterIiv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 
@@ -1624,7 +1618,7 @@ _mesa_GetSamplerParameterIuiv(GLuint sampler, GLenum pname, GLuint *params)
 
 invalid_pname:
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetSamplerParameterIuiv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 

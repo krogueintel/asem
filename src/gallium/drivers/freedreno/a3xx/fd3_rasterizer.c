@@ -65,7 +65,8 @@ fd3_rasterizer_state_create(struct pipe_context *pctx,
 	if (cso->multisample)
 		TODO
 */
-	so->gras_cl_clip_cntl = A3XX_GRAS_CL_CLIP_CNTL_IJ_PERSP_CENTER; /* ??? */
+	so->gras_cl_clip_cntl = A3XX_GRAS_CL_CLIP_CNTL_IJ_PERSP_CENTER /* ??? */ |
+		COND(cso->clip_halfz, A3XX_GRAS_CL_CLIP_CNTL_ZERO_GB_SCALE_Z);
 	so->gras_su_point_minmax =
 			A3XX_GRAS_SU_POINT_MINMAX_MIN(psize_min) |
 			A3XX_GRAS_SU_POINT_MINMAX_MAX(psize_max);
@@ -73,7 +74,7 @@ fd3_rasterizer_state_create(struct pipe_context *pctx,
 	so->gras_su_poly_offset_scale =
 			A3XX_GRAS_SU_POLY_OFFSET_SCALE_VAL(cso->offset_scale);
 	so->gras_su_poly_offset_offset =
-			A3XX_GRAS_SU_POLY_OFFSET_OFFSET(cso->offset_units);
+			A3XX_GRAS_SU_POLY_OFFSET_OFFSET(cso->offset_units * 2.0f);
 
 	so->gras_su_mode_control =
 			A3XX_GRAS_SU_MODE_CONTROL_LINEHALFWIDTH(cso->line_width/2.0);

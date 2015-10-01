@@ -54,6 +54,7 @@ pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = d3d.pc
 
 d3dadapter9_la_SOURCES = \
+	description.c \
 	getproc.c \
 	drm.c
 
@@ -118,8 +119,7 @@ else # HAVE_GALLIUM_STATIC_TARGETS
 
 d3dadapter9_la_LIBADD += \
 	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader.la \
-	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
-	$(GALLIUM_PIPE_LOADER_LIBS)
+	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS)
 
 endif # HAVE_GALLIUM_STATIC_TARGETS
 

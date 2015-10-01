@@ -66,13 +66,13 @@ struct wrapper_sw_displaytarget
    void *ptr;
 };
 
-static INLINE struct wrapper_sw_winsys *
+static inline struct wrapper_sw_winsys *
 wrapper_sw_winsys(struct sw_winsys *ws)
 {
    return (struct wrapper_sw_winsys *)ws;
 }
 
-static INLINE struct wrapper_sw_displaytarget *
+static inline struct wrapper_sw_displaytarget *
 wrapper_sw_displaytarget(struct sw_displaytarget *dt)
 {
    return (struct wrapper_sw_displaytarget *)dt;
@@ -299,7 +299,7 @@ wrapper_sw_winsys_wrap_pipe_screen(struct pipe_screen *screen)
    wsw->base.destroy = wsw_destroy;
 
    wsw->screen = screen;
-   wsw->pipe = screen->context_create(screen, NULL);
+   wsw->pipe = screen->context_create(screen, NULL, 0);
    if (!wsw->pipe)
       goto err_free;
 

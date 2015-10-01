@@ -74,6 +74,7 @@ struct radeon_drm_winsys {
     enum radeon_generation gen;
     struct radeon_info info;
     uint32_t va_start;
+    uint32_t va_unmap_working;
     uint32_t accel_working2;
 
     struct pb_manager *kman;
@@ -96,7 +97,7 @@ struct radeon_drm_winsys {
     struct radeon_drm_cs *cs_stack[RING_LAST];
 };
 
-static INLINE struct radeon_drm_winsys *
+static inline struct radeon_drm_winsys *
 radeon_drm_winsys(struct radeon_winsys *base)
 {
     return (struct radeon_drm_winsys*)base;

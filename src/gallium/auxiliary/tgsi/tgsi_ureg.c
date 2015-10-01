@@ -1069,6 +1069,12 @@ ureg_emit_insn(struct ureg_program *ureg,
 }
 
 
+/**
+ * Emit a label token.
+ * \param label_token returns a token number indicating where the label
+ * needs to be patched later.  Later, this value should be passed to the
+ * ureg_fixup_label() function.
+ */
 void
 ureg_emit_label(struct ureg_program *ureg,
                 unsigned extended_token,
@@ -1824,7 +1830,7 @@ void ureg_free_tokens( const struct tgsi_token *tokens )
 }
 
 
-static INLINE unsigned
+static inline unsigned
 pipe_shader_from_tgsi_processor(unsigned processor)
 {
    switch (processor) {

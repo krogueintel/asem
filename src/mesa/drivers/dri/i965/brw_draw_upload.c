@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,13 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #include "main/glheader.h"
 #include "main/bufferobj.h"
@@ -40,7 +38,7 @@
 #include "intel_batchbuffer.h"
 #include "intel_buffer_objects.h"
 
-static GLuint double_types[5] = {
+static const GLuint double_types[5] = {
    0,
    BRW_SURFACEFORMAT_R64_FLOAT,
    BRW_SURFACEFORMAT_R64G64_FLOAT,
@@ -48,7 +46,7 @@ static GLuint double_types[5] = {
    BRW_SURFACEFORMAT_R64G64B64A64_FLOAT
 };
 
-static GLuint float_types[5] = {
+static const GLuint float_types[5] = {
    0,
    BRW_SURFACEFORMAT_R32_FLOAT,
    BRW_SURFACEFORMAT_R32G32_FLOAT,
@@ -56,7 +54,7 @@ static GLuint float_types[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_FLOAT
 };
 
-static GLuint half_float_types[5] = {
+static const GLuint half_float_types[5] = {
    0,
    BRW_SURFACEFORMAT_R16_FLOAT,
    BRW_SURFACEFORMAT_R16G16_FLOAT,
@@ -64,7 +62,7 @@ static GLuint half_float_types[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_FLOAT
 };
 
-static GLuint fixed_point_types[5] = {
+static const GLuint fixed_point_types[5] = {
    0,
    BRW_SURFACEFORMAT_R32_SFIXED,
    BRW_SURFACEFORMAT_R32G32_SFIXED,
@@ -72,7 +70,7 @@ static GLuint fixed_point_types[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_SFIXED,
 };
 
-static GLuint uint_types_direct[5] = {
+static const GLuint uint_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R32_UINT,
    BRW_SURFACEFORMAT_R32G32_UINT,
@@ -80,7 +78,7 @@ static GLuint uint_types_direct[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_UINT
 };
 
-static GLuint uint_types_norm[5] = {
+static const GLuint uint_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R32_UNORM,
    BRW_SURFACEFORMAT_R32G32_UNORM,
@@ -88,7 +86,7 @@ static GLuint uint_types_norm[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_UNORM
 };
 
-static GLuint uint_types_scale[5] = {
+static const GLuint uint_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R32_USCALED,
    BRW_SURFACEFORMAT_R32G32_USCALED,
@@ -96,7 +94,7 @@ static GLuint uint_types_scale[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_USCALED
 };
 
-static GLuint int_types_direct[5] = {
+static const GLuint int_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R32_SINT,
    BRW_SURFACEFORMAT_R32G32_SINT,
@@ -104,7 +102,7 @@ static GLuint int_types_direct[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_SINT
 };
 
-static GLuint int_types_norm[5] = {
+static const GLuint int_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R32_SNORM,
    BRW_SURFACEFORMAT_R32G32_SNORM,
@@ -112,7 +110,7 @@ static GLuint int_types_norm[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_SNORM
 };
 
-static GLuint int_types_scale[5] = {
+static const GLuint int_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R32_SSCALED,
    BRW_SURFACEFORMAT_R32G32_SSCALED,
@@ -120,7 +118,7 @@ static GLuint int_types_scale[5] = {
    BRW_SURFACEFORMAT_R32G32B32A32_SSCALED
 };
 
-static GLuint ushort_types_direct[5] = {
+static const GLuint ushort_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R16_UINT,
    BRW_SURFACEFORMAT_R16G16_UINT,
@@ -128,7 +126,7 @@ static GLuint ushort_types_direct[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_UINT
 };
 
-static GLuint ushort_types_norm[5] = {
+static const GLuint ushort_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R16_UNORM,
    BRW_SURFACEFORMAT_R16G16_UNORM,
@@ -136,7 +134,7 @@ static GLuint ushort_types_norm[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_UNORM
 };
 
-static GLuint ushort_types_scale[5] = {
+static const GLuint ushort_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R16_USCALED,
    BRW_SURFACEFORMAT_R16G16_USCALED,
@@ -144,7 +142,7 @@ static GLuint ushort_types_scale[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_USCALED
 };
 
-static GLuint short_types_direct[5] = {
+static const GLuint short_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R16_SINT,
    BRW_SURFACEFORMAT_R16G16_SINT,
@@ -152,7 +150,7 @@ static GLuint short_types_direct[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_SINT
 };
 
-static GLuint short_types_norm[5] = {
+static const GLuint short_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R16_SNORM,
    BRW_SURFACEFORMAT_R16G16_SNORM,
@@ -160,7 +158,7 @@ static GLuint short_types_norm[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_SNORM
 };
 
-static GLuint short_types_scale[5] = {
+static const GLuint short_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R16_SSCALED,
    BRW_SURFACEFORMAT_R16G16_SSCALED,
@@ -168,7 +166,7 @@ static GLuint short_types_scale[5] = {
    BRW_SURFACEFORMAT_R16G16B16A16_SSCALED
 };
 
-static GLuint ubyte_types_direct[5] = {
+static const GLuint ubyte_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R8_UINT,
    BRW_SURFACEFORMAT_R8G8_UINT,
@@ -176,7 +174,7 @@ static GLuint ubyte_types_direct[5] = {
    BRW_SURFACEFORMAT_R8G8B8A8_UINT
 };
 
-static GLuint ubyte_types_norm[5] = {
+static const GLuint ubyte_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R8_UNORM,
    BRW_SURFACEFORMAT_R8G8_UNORM,
@@ -184,7 +182,7 @@ static GLuint ubyte_types_norm[5] = {
    BRW_SURFACEFORMAT_R8G8B8A8_UNORM
 };
 
-static GLuint ubyte_types_scale[5] = {
+static const GLuint ubyte_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R8_USCALED,
    BRW_SURFACEFORMAT_R8G8_USCALED,
@@ -192,7 +190,7 @@ static GLuint ubyte_types_scale[5] = {
    BRW_SURFACEFORMAT_R8G8B8A8_USCALED
 };
 
-static GLuint byte_types_direct[5] = {
+static const GLuint byte_types_direct[5] = {
    0,
    BRW_SURFACEFORMAT_R8_SINT,
    BRW_SURFACEFORMAT_R8G8_SINT,
@@ -200,7 +198,7 @@ static GLuint byte_types_direct[5] = {
    BRW_SURFACEFORMAT_R8G8B8A8_SINT
 };
 
-static GLuint byte_types_norm[5] = {
+static const GLuint byte_types_norm[5] = {
    0,
    BRW_SURFACEFORMAT_R8_SNORM,
    BRW_SURFACEFORMAT_R8G8_SNORM,
@@ -208,7 +206,7 @@ static GLuint byte_types_norm[5] = {
    BRW_SURFACEFORMAT_R8G8B8A8_SNORM
 };
 
-static GLuint byte_types_scale[5] = {
+static const GLuint byte_types_scale[5] = {
    0,
    BRW_SURFACEFORMAT_R8_SSCALED,
    BRW_SURFACEFORMAT_R8G8_SSCALED,
@@ -230,7 +228,7 @@ brw_get_vertex_surface_type(struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_VERTS))
       fprintf(stderr, "type %s size %d normalized %d\n",
-              _mesa_lookup_enum_by_nr(glarray->Type),
+              _mesa_enum_to_string(glarray->Type),
               glarray->Size, glarray->Normalized);
 
    if (glarray->Integer) {
@@ -395,7 +393,8 @@ brw_prepare_vertices(struct brw_context *brw)
    GLuint interleaved = 0;
    unsigned int min_index = brw->vb.min_index + brw->basevertex;
    unsigned int max_index = brw->vb.max_index + brw->basevertex;
-   int delta, i, j;
+   unsigned i;
+   int delta, j;
 
    struct brw_vertex_element *upload[VERT_ATTRIB_MAX];
    GLuint nr_uploads = 0;
@@ -418,10 +417,10 @@ brw_prepare_vertices(struct brw_context *brw)
    /* Accumulate the list of enabled arrays. */
    brw->vb.nr_enabled = 0;
    while (vs_inputs) {
-      GLuint i = ffsll(vs_inputs) - 1;
-      struct brw_vertex_element *input = &brw->vb.inputs[i];
+      GLuint index = ffsll(vs_inputs) - 1;
+      struct brw_vertex_element *input = &brw->vb.inputs[index];
 
-      vs_inputs &= ~BITFIELD64_BIT(i);
+      vs_inputs &= ~BITFIELD64_BIT(index);
       brw->vb.enabled[brw->vb.nr_enabled++] = input;
    }
 
@@ -438,7 +437,7 @@ brw_prepare_vertices(struct brw_context *brw)
       if (_mesa_is_bufferobj(glarray->BufferObj)) {
 	 struct intel_buffer_object *intel_buffer =
 	    intel_buffer_object(glarray->BufferObj);
-	 int k;
+	 unsigned k;
 
 	 /* If we have a VB set to be uploaded for this buffer object
 	  * already, reuse that VB state so that we emit fewer
@@ -604,14 +603,15 @@ brw_prepare_shader_draw_parameters(struct brw_context *brw)
 /**
  * Emit a VERTEX_BUFFER_STATE entry (part of 3DSTATE_VERTEX_BUFFERS).
  */
-static void
+static uint32_t *
 emit_vertex_buffer_state(struct brw_context *brw,
                          unsigned buffer_nr,
                          drm_intel_bo *bo,
                          unsigned bo_ending_address,
                          unsigned bo_offset,
                          unsigned stride,
-                         unsigned step_rate)
+                         unsigned step_rate,
+                         uint32_t *__map)
 {
    struct gl_context *ctx = &brw->ctx;
    uint32_t dw0;
@@ -643,9 +643,13 @@ emit_vertex_buffer_state(struct brw_context *brw,
       OUT_BATCH(0);
    }
    OUT_BATCH(step_rate);
-}
 
-static void brw_emit_vertices(struct brw_context *brw)
+   return __map;
+}
+#define EMIT_VERTEX_BUFFER_STATE(...) __map = emit_vertex_buffer_state(__VA_ARGS__, __map)
+
+static void
+brw_emit_vertices(struct brw_context *brw)
 {
    GLuint i;
 
@@ -704,14 +708,14 @@ static void brw_emit_vertices(struct brw_context *brw)
       OUT_BATCH((_3DSTATE_VERTEX_BUFFERS << 16) | (4 * nr_buffers - 1));
       for (i = 0; i < brw->vb.nr_buffers; i++) {
 	 struct brw_vertex_buffer *buffer = &brw->vb.buffers[i];
-         emit_vertex_buffer_state(brw, i, buffer->bo, buffer->bo->size - 1,
+         EMIT_VERTEX_BUFFER_STATE(brw, i, buffer->bo, buffer->bo->size - 1,
                                   buffer->offset, buffer->stride,
                                   buffer->step_rate);
 
       }
 
       if (brw->vs.prog_data->uses_vertexid) {
-         emit_vertex_buffer_state(brw, brw->vb.nr_buffers,
+         EMIT_VERTEX_BUFFER_STATE(brw, brw->vb.nr_buffers,
                                   brw->draw.draw_params_bo,
                                   brw->draw.draw_params_bo->size - 1,
                                   brw->draw.draw_params_offset,
@@ -787,21 +791,6 @@ static void brw_emit_vertices(struct brw_context *brw)
                     ((i * 4) << BRW_VE1_DST_OFFSET_SHIFT));
    }
 
-   if (brw->gen >= 6 && gen6_edgeflag_input) {
-      uint32_t format =
-         brw_get_vertex_surface_type(brw, gen6_edgeflag_input->glarray);
-
-      OUT_BATCH((gen6_edgeflag_input->buffer << GEN6_VE0_INDEX_SHIFT) |
-                GEN6_VE0_VALID |
-                GEN6_VE0_EDGE_FLAG_ENABLE |
-                (format << BRW_VE0_FORMAT_SHIFT) |
-                (gen6_edgeflag_input->offset << BRW_VE0_SRC_OFFSET_SHIFT));
-      OUT_BATCH((BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_0_SHIFT) |
-                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_1_SHIFT) |
-                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_2_SHIFT) |
-                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_3_SHIFT));
-   }
-
    if (brw->vs.prog_data->uses_vertexid || brw->vs.prog_data->uses_instanceid) {
       uint32_t dw0 = 0, dw1 = 0;
       uint32_t comp0 = BRW_VE1_COMPONENT_STORE_0;
@@ -842,6 +831,21 @@ static void brw_emit_vertices(struct brw_context *brw)
       OUT_BATCH(dw1);
    }
 
+   if (brw->gen >= 6 && gen6_edgeflag_input) {
+      uint32_t format =
+         brw_get_vertex_surface_type(brw, gen6_edgeflag_input->glarray);
+
+      OUT_BATCH((gen6_edgeflag_input->buffer << GEN6_VE0_INDEX_SHIFT) |
+                GEN6_VE0_VALID |
+                GEN6_VE0_EDGE_FLAG_ENABLE |
+                (format << BRW_VE0_FORMAT_SHIFT) |
+                (gen6_edgeflag_input->offset << BRW_VE0_SRC_OFFSET_SHIFT));
+      OUT_BATCH((BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_0_SHIFT) |
+                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_1_SHIFT) |
+                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_2_SHIFT) |
+                (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_3_SHIFT));
+   }
+
    ADVANCE_BATCH();
 }
 
@@ -855,7 +859,8 @@ const struct brw_tracked_state brw_vertices = {
    .emit = brw_emit_vertices,
 };
 
-static void brw_upload_indices(struct brw_context *brw)
+static void
+brw_upload_indices(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    const struct _mesa_index_buffer *index_buffer = brw->ib.ib;
@@ -935,7 +940,8 @@ const struct brw_tracked_state brw_indices = {
    .emit = brw_upload_indices,
 };
 
-static void brw_emit_index_buffer(struct brw_context *brw)
+static void
+brw_emit_index_buffer(struct brw_context *brw)
 {
    const struct _mesa_index_buffer *index_buffer = brw->ib.ib;
    GLuint cut_index_setting;

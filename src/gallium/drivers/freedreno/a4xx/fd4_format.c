@@ -79,15 +79,24 @@ struct fd4_format {
 static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 	/* 8-bit */
 	VT(R8_UNORM,   8_UNORM, R8_UNORM, WZYX),
-	V_(R8_SNORM,   8_SNORM, NONE,     WZYX),
-	V_(R8_UINT,    8_UINT,  NONE,     WZYX),
-	V_(R8_SINT,    8_SINT,  NONE,     WZYX),
+	VT(R8_SNORM,   8_SNORM, NONE,     WZYX),
+	VT(R8_UINT,    8_UINT,  NONE,     WZYX),
+	VT(R8_SINT,    8_SINT,  NONE,     WZYX),
 	V_(R8_USCALED, 8_UINT,  NONE,     WZYX),
 	V_(R8_SSCALED, 8_UINT,  NONE,     WZYX),
 
 	_T(A8_UNORM,   8_UNORM, A8_UNORM, WZYX),
 	_T(L8_UNORM,   8_UNORM, R8_UNORM, WZYX),
 	_T(I8_UNORM,   8_UNORM, NONE,     WZYX),
+
+	_T(A8_UINT,    8_UINT,  NONE,     WZYX),
+	_T(A8_SINT,    8_SINT,  NONE,     WZYX),
+	_T(L8_UINT,    8_UINT,  NONE,     WZYX),
+	_T(L8_SINT,    8_SINT,  NONE,     WZYX),
+	_T(I8_UINT,    8_UINT,  NONE,     WZYX),
+	_T(I8_SINT,    8_SINT,  NONE,     WZYX),
+
+	_T(S8_UINT,    8_UINT,  R8_UNORM, WZYX),
 
 	/* 16-bit */
 	V_(R16_UNORM,   16_UNORM, NONE,     WZYX),
@@ -96,7 +105,7 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R16_SINT,    16_SINT,  R16_SINT, WZYX),
 	V_(R16_USCALED, 16_UINT,  NONE,     WZYX),
 	V_(R16_SSCALED, 16_UINT,  NONE,     WZYX),
-	VT(R16_FLOAT,   16_FLOAT, NONE,     WZYX),
+	VT(R16_FLOAT,   16_FLOAT, R16_FLOAT,WZYX),
 
 	_T(A16_UINT,    16_UINT,  NONE,     WZYX),
 	_T(A16_SINT,    16_SINT,  NONE,     WZYX),
@@ -107,8 +116,8 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 
 	VT(R8G8_UNORM,   8_8_UNORM, R8G8_UNORM, WZYX),
 	VT(R8G8_SNORM,   8_8_SNORM, R8G8_SNORM, WZYX),
-	VT(R8G8_UINT,    8_8_UINT,  NONE,       WZYX),
-	VT(R8G8_SINT,    8_8_SINT,  NONE,       WZYX),
+	VT(R8G8_UINT,    8_8_UINT,  R8G8_UINT,  WZYX),
+	VT(R8G8_SINT,    8_8_SINT,  R8G8_SINT,  WZYX),
 	V_(R8G8_USCALED, 8_8_UINT,  NONE,       WZYX),
 	V_(R8G8_SSCALED, 8_8_SINT,  NONE,       WZYX),
 
@@ -132,7 +141,7 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R32_SINT,    32_SINT,  R32_SINT, WZYX),
 	V_(R32_USCALED, 32_UINT,  NONE,     WZYX),
 	V_(R32_SSCALED, 32_UINT,  NONE,     WZYX),
-	VT(R32_FLOAT,   32_FLOAT, NONE,     WZYX),
+	VT(R32_FLOAT,   32_FLOAT, R32_FLOAT,WZYX),
 	V_(R32_FIXED,   32_FIXED, NONE,     WZYX),
 
 	_T(A32_UINT,    32_UINT,  NONE,     WZYX),
@@ -148,7 +157,7 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R16G16_SINT,    16_16_SINT,  R16G16_SINT, WZYX),
 	V_(R16G16_USCALED, 16_16_UINT,  NONE,        WZYX),
 	V_(R16G16_SSCALED, 16_16_SINT,  NONE,        WZYX),
-	VT(R16G16_FLOAT,   16_16_FLOAT, NONE,        WZYX),
+	VT(R16G16_FLOAT,   16_16_FLOAT, R16G16_FLOAT,WZYX),
 
 	_T(L16A16_UINT,    16_16_UINT,  NONE,        WZYX),
 	_T(L16A16_SINT,    16_16_SINT,  NONE,        WZYX),
@@ -191,7 +200,8 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 
 	_T(Z24X8_UNORM,       X8Z24_UNORM, R8G8B8A8_UNORM, WZYX),
 	_T(Z24_UNORM_S8_UINT, X8Z24_UNORM, R8G8B8A8_UNORM, WZYX),
-	/*_T(Z32_FLOAT,         Z32_FLOAT,   R8G8B8A8_UNORM, WZYX),*/
+	_T(Z32_FLOAT,         32_FLOAT,   R8G8B8A8_UNORM, WZYX),
+	_T(Z32_FLOAT_S8X24_UINT, 32_FLOAT,R8G8B8A8_UNORM, WZYX),
 
 	/* 48-bit */
 	V_(R16G16B16_UNORM,   16_16_16_UNORM, NONE, WZYX),
@@ -218,7 +228,7 @@ static struct fd4_format formats[PIPE_FORMAT_COUNT] = {
 	VT(R32G32_SINT,    32_32_SINT,  R32G32_SINT, WZYX),
 	V_(R32G32_USCALED, 32_32_UINT,  NONE,        WZYX),
 	V_(R32G32_SSCALED, 32_32_SINT,  NONE,        WZYX),
-	VT(R32G32_FLOAT,   32_32_FLOAT, NONE,        WZYX),
+	VT(R32G32_FLOAT,   32_32_FLOAT, R32G32_FLOAT,WZYX),
 	V_(R32G32_FIXED,   32_32_FIXED, NONE,        WZYX),
 
 	_T(L32A32_UINT,    32_32_UINT,  NONE,        WZYX),
@@ -282,6 +292,9 @@ fd4_pipe2swap(enum pipe_format format)
 enum a4xx_tex_fetchsize
 fd4_pipe2fetchsize(enum pipe_format format)
 {
+	if (format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)
+		format = PIPE_FORMAT_Z32_FLOAT;
+
 	switch (util_format_get_blocksizebits(format)) {
 	case 8:   return TFETCH4_1_BYTE;
 	case 16:  return TFETCH4_2_BYTE;
@@ -312,6 +325,8 @@ fd4_gmem_restore_format(enum pipe_format format)
 		return PIPE_FORMAT_R8G8B8A8_UNORM;
 	case PIPE_FORMAT_Z16_UNORM:
 		return PIPE_FORMAT_R8G8_UNORM;
+	case PIPE_FORMAT_S8_UINT:
+		return PIPE_FORMAT_R8_UNORM;
 	default:
 		return format;
 	}
@@ -328,6 +343,9 @@ fd4_pipe2depth(enum pipe_format format)
 	case PIPE_FORMAT_X8Z24_UNORM:
 	case PIPE_FORMAT_S8_UINT_Z24_UNORM:
 		return DEPTH4_24_8;
+	case PIPE_FORMAT_Z32_FLOAT:
+	case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+		return DEPTH4_32;
 	default:
 		return ~0;
 	}

@@ -75,6 +75,9 @@ typedef struct {
    /* the current if statement being validated */
    nir_if *if_stmt;
 
+   /* the current loop being visited */
+   nir_loop *loop;
+
    /* the parent of the current cf node being visited */
    nir_cf_node *parent_node;
 
@@ -400,11 +403,13 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
       break;
    case nir_intrinsic_store_var:
       assert(instr->variables[0]->var->data.mode != nir_var_shader_in &&
-             instr->variables[0]->var->data.mode != nir_var_uniform);
+             instr->variables[0]->var->data.mode != nir_var_uniform &&
+             instr->variables[0]->var->data.mode != nir_var_shader_storage);
       break;
    case nir_intrinsic_copy_var:
       assert(instr->variables[0]->var->data.mode != nir_var_shader_in &&
-             instr->variables[0]->var->data.mode != nir_var_uniform);
+             instr->variables[0]->var->data.mode != nir_var_uniform &&
+             instr->variables[0]->var->data.mode != nir_var_shader_storage);
       assert(instr->variables[1]->var->data.mode != nir_var_shader_out);
       break;
    default:
@@ -581,6 +586,7 @@ validate_block(nir_block *block, validate_state *state)
    }
 
    assert(block->successors[0] != NULL);
+   assert(block->successors[0] != block->successors[1]);
 
    for (unsigned i = 0; i < 2; i++) {
       if (block->successors[i] != NULL) {
@@ -592,9 +598,85 @@ validate_block(nir_block *block, validate_state *state)
       }
    }
 
+   struct set_entry *entry;
+   set_foreach(block->predecessors, entry) {
+      const nir_block *pred = entry->key;
+      assert(pred->successors[0] == block ||
+             pred->successors[1] == block);
+   }
+
    if (!exec_list_is_empty(&block->instr_list) &&
-       nir_block_last_instr(block)->type == nir_instr_type_jump)
+       nir_block_last_instr(block)->type == nir_instr_type_jump) {
       assert(block->successors[1] == NULL);
+      nir_jump_instr *jump = nir_instr_as_jump(nir_block_last_instr(block));
+      switch (jump->type) {
+      case nir_jump_break: {
+         nir_block *after =
+            nir_cf_node_as_block(nir_cf_node_next(&state->loop->cf_node));
+         assert(block->successors[0] == after);
+         break;
+      }
+
+      case nir_jump_continue: {
+         nir_block *first =
+            nir_cf_node_as_block(nir_loop_first_cf_node(state->loop));
+         assert(block->successors[0] == first);
+         break;
+      }
+
+      case nir_jump_return:
+         assert(block->successors[0] == state->impl->end_block);
+         break;
+
+      default:
+         unreachable("bad jump type");
+      }
+   } else {
+      nir_cf_node *next = nir_cf_node_next(&block->cf_node);
+      if (next == NULL) {
+         switch (state->parent_node->type) {
+         case nir_cf_node_loop: {
+            nir_block *first =
+               nir_cf_node_as_block(nir_loop_first_cf_node(state->loop));
+            assert(block->successors[0] == first);
+            /* due to the hack for infinite loops, block->successors[1] may
+             * point to the block after the loop.
+             */
+            break;
+         }
+
+         case nir_cf_node_if: {
+            nir_block *after =
+               nir_cf_node_as_block(nir_cf_node_next(state->parent_node));
+            assert(block->successors[0] == after);
+            assert(block->successors[1] == NULL);
+            break;
+         }
+
+         case nir_cf_node_function:
+            assert(block->successors[0] == state->impl->end_block);
+            assert(block->successors[1] == NULL);
+            break;
+
+         default:
+            unreachable("unknown control flow node type");
+         }
+      } else {
+         if (next->type == nir_cf_node_if) {
+            nir_if *if_stmt = nir_cf_node_as_if(next);
+            assert(&block->successors[0]->cf_node ==
+                   nir_if_first_then_node(if_stmt));
+            assert(&block->successors[1]->cf_node ==
+                   nir_if_first_else_node(if_stmt));
+         } else {
+            assert(next->type == nir_cf_node_loop);
+            nir_loop *loop = nir_cf_node_as_loop(next);
+            assert(&block->successors[0]->cf_node ==
+                   nir_loop_first_cf_node(loop));
+            assert(block->successors[1] == NULL);
+         }
+      }
+   }
 }
 
 static void
@@ -605,12 +687,6 @@ validate_if(nir_if *if_stmt, validate_state *state)
    assert(!exec_node_is_head_sentinel(if_stmt->cf_node.node.prev));
    nir_cf_node *prev_node = nir_cf_node_prev(&if_stmt->cf_node);
    assert(prev_node->type == nir_cf_node_block);
-
-   nir_block *prev_block = nir_cf_node_as_block(prev_node);
-   assert(&prev_block->successors[0]->cf_node ==
-          nir_if_first_then_node(if_stmt));
-   assert(&prev_block->successors[1]->cf_node ==
-          nir_if_first_else_node(if_stmt));
 
    assert(!exec_node_is_tail_sentinel(if_stmt->cf_node.node.next));
    nir_cf_node *next_node = nir_cf_node_next(&if_stmt->cf_node);
@@ -645,10 +721,6 @@ validate_loop(nir_loop *loop, validate_state *state)
    nir_cf_node *prev_node = nir_cf_node_prev(&loop->cf_node);
    assert(prev_node->type == nir_cf_node_block);
 
-   nir_block *prev_block = nir_cf_node_as_block(prev_node);
-   assert(&prev_block->successors[0]->cf_node == nir_loop_first_cf_node(loop));
-   assert(prev_block->successors[1] == NULL);
-
    assert(!exec_node_is_tail_sentinel(loop->cf_node.node.next));
    nir_cf_node *next_node = nir_cf_node_next(&loop->cf_node);
    assert(next_node->type == nir_cf_node_block);
@@ -657,6 +729,8 @@ validate_loop(nir_loop *loop, validate_state *state)
 
    nir_cf_node *old_parent = state->parent_node;
    state->parent_node = &loop->cf_node;
+   nir_loop *old_loop = state->loop;
+   state->loop = loop;
 
    exec_list_validate(&loop->body);
    foreach_list_typed(nir_cf_node, cf_node, node, &loop->body) {
@@ -664,6 +738,7 @@ validate_loop(nir_loop *loop, validate_state *state)
    }
 
    state->parent_node = old_parent;
+   state->loop = old_loop;
 }
 
 static void
@@ -919,6 +994,7 @@ init_validate_state(validate_state *state)
    state->regs_found = NULL;
    state->var_defs = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                                              _mesa_key_pointer_equal);
+   state->loop = NULL;
 }
 
 static void

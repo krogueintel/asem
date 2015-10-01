@@ -762,7 +762,7 @@ fs_instruction_scheduler::calculate_deps()
     * GRF registers.
     */
    schedule_node *last_grf_write[grf_count * 16];
-   schedule_node *last_mrf_write[BRW_MAX_MRF];
+   schedule_node *last_mrf_write[BRW_MAX_MRF(v->devinfo->gen)];
    schedule_node *last_conditional_mod[2] = { NULL, NULL };
    schedule_node *last_accumulator_write = NULL;
    /* Fixed HW registers are assumed to be separate from the virtual
@@ -1035,7 +1035,7 @@ void
 vec4_instruction_scheduler::calculate_deps()
 {
    schedule_node *last_grf_write[grf_count];
-   schedule_node *last_mrf_write[BRW_MAX_MRF];
+   schedule_node *last_mrf_write[BRW_MAX_MRF(v->devinfo->gen)];
    schedule_node *last_conditional_mod = NULL;
    schedule_node *last_accumulator_write = NULL;
    /* Fixed HW registers are assumed to be separate from the virtual
@@ -1314,8 +1314,8 @@ fs_instruction_scheduler::choose_instruction_to_schedule()
                 * single-result send is probably actually reducing register
                 * pressure.
                 */
-               if (inst->regs_written <= inst->dst.width / 8 &&
-                   chosen_inst->regs_written > chosen_inst->dst.width / 8) {
+               if (inst->regs_written <= inst->exec_size / 8 &&
+                   chosen_inst->regs_written > chosen_inst->exec_size / 8) {
                   chosen = n;
                   continue;
                } else if (inst->regs_written > chosen_inst->regs_written) {

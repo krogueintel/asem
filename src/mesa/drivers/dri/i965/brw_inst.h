@@ -39,6 +39,9 @@
 extern "C" {
 #endif
 
+/** Maximum SEND message length */
+#define BRW_MAX_MSG_LENGTH 15
+
 /* brw_context.h has a forward declaration of brw_inst, so name the struct. */
 typedef struct brw_inst {
    uint64_t data[2];
@@ -683,9 +686,9 @@ brw_inst_bits(const brw_inst *inst, unsigned high, unsigned low)
    high %= 64;
    low %= 64;
 
-   const uint64_t mask = (((1ull << (high - low + 1)) - 1) << low);
+   const uint64_t mask = (1ull << (high - low + 1)) - 1;
 
-   return (inst->data[word] & mask) >> low;
+   return (inst->data[word] >> low) & mask;
 }
 
 /**
@@ -702,12 +705,12 @@ brw_inst_set_bits(brw_inst *inst, unsigned high, unsigned low, uint64_t value)
    high %= 64;
    low %= 64;
 
-   const uint64_t mask = (((1ull << (high - low + 1)) - 1) << low);
+   const uint64_t mask = ((1ull << (high - low + 1)) - 1) << low;
 
    /* Make sure the supplied value actually fits in the given bitfield. */
    assert((value & (mask >> low)) == value);
 
-   inst->data[word] = (inst->data[word] & ~mask) | ((value << low) & mask);
+   inst->data[word] = (inst->data[word] & ~mask) | (value << low);
 }
 
 #undef BRW_IA16_ADDR_IMM
@@ -731,9 +734,9 @@ typedef struct {
 static inline unsigned
 brw_compact_inst_bits(brw_compact_inst *inst, unsigned high, unsigned low)
 {
-   const uint64_t mask = (((1ull << (high - low + 1)) - 1) << low);
+   const uint64_t mask = (1ull << (high - low + 1)) - 1;
 
-   return (inst->data & mask) >> low;
+   return (inst->data >> low) & mask;
 }
 
 /**
@@ -745,12 +748,12 @@ static inline void
 brw_compact_inst_set_bits(brw_compact_inst *inst, unsigned high, unsigned low,
                           uint64_t value)
 {
-   const uint64_t mask = (((1ull << (high - low + 1)) - 1) << low);
+   const uint64_t mask = ((1ull << (high - low + 1)) - 1) << low;
 
    /* Make sure the supplied value actually fits in the given bitfield. */
    assert((value & (mask >> low)) == value);
 
-   inst->data = (inst->data & ~mask) | ((value << low) & mask);
+   inst->data = (inst->data & ~mask) | (value << low);
 }
 
 #define F(name, high, low)                                      \

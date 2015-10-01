@@ -1,8 +1,10 @@
 
+#include "util/u_format.h"
+
 #include "nv50/nv50_context.h"
 #include "nv50/nv50_defs.xml.h"
 
-static INLINE void
+static inline void
 nv50_fb_set_null_rt(struct nouveau_pushbuf *push, unsigned i)
 {
    BEGIN_NV04(push, NV50_3D(RT_ADDRESS_HIGH(i)), 4);
@@ -82,7 +84,7 @@ nv50_validate_fb(struct nv50_context *nv50)
       ms_mode = mt->ms_mode;
 
       if (mt->base.status & NOUVEAU_BUFFER_STATUS_GPU_READING)
-         nv50->state.rt_serialize = TRUE;
+         nv50->state.rt_serialize = true;
       mt->base.status |= NOUVEAU_BUFFER_STATUS_GPU_WRITING;
       mt->base.status &= ~NOUVEAU_BUFFER_STATUS_GPU_READING;
 
@@ -111,7 +113,7 @@ nv50_validate_fb(struct nv50_context *nv50)
       ms_mode = mt->ms_mode;
 
       if (mt->base.status & NOUVEAU_BUFFER_STATUS_GPU_READING)
-         nv50->state.rt_serialize = TRUE;
+         nv50->state.rt_serialize = true;
       mt->base.status |= NOUVEAU_BUFFER_STATUS_GPU_WRITING;
       mt->base.status &= ~NOUVEAU_BUFFER_STATUS_GPU_READING;
 
@@ -275,7 +277,7 @@ nv50_validate_viewport(struct nv50_context *nv50)
    nv50->viewports_dirty = 0;
 }
 
-static INLINE void
+static inline void
 nv50_check_program_ucps(struct nv50_context *nv50,
                         struct nv50_program *vp, uint8_t mask)
 {
@@ -294,6 +296,42 @@ nv50_check_program_ucps(struct nv50_context *nv50,
       nv50_gmtyprog_validate(nv50);
    }
    nv50_fp_linkage_validate(nv50);
+}
+
+/* alpha test is disabled if there are no color RTs, so make sure we have at
+ * least one if alpha test is enabled. Note that this must run after
+ * nv50_validate_fb, otherwise that will override the RT count setting.
+ */
+static void
+nv50_validate_derived_2(struct nv50_context *nv50)
+{
+   struct nouveau_pushbuf *push = nv50->base.pushbuf;
+
+   if (nv50->zsa && nv50->zsa->pipe.alpha.enabled &&
+       nv50->framebuffer.nr_cbufs == 0) {
+      nv50_fb_set_null_rt(push, 0);
+      BEGIN_NV04(push, NV50_3D(RT_CONTROL), 1);
+      PUSH_DATA (push, (076543210 << 4) | 1);
+   }
+}
+
+static void
+nv50_validate_derived_3(struct nv50_context *nv50)
+{
+   struct nouveau_pushbuf *push = nv50->base.pushbuf;
+   struct pipe_framebuffer_state *fb = &nv50->framebuffer;
+   uint32_t ms = 0;
+
+   if ((!fb->nr_cbufs || !fb->cbufs[0] ||
+        !util_format_is_pure_integer(fb->cbufs[0]->format)) && nv50->blend) {
+      if (nv50->blend->pipe.alpha_to_coverage)
+         ms |= NV50_3D_MULTISAMPLE_CTRL_ALPHA_TO_COVERAGE;
+      if (nv50->blend->pipe.alpha_to_one)
+         ms |= NV50_3D_MULTISAMPLE_CTRL_ALPHA_TO_ONE;
+   }
+
+   BEGIN_NV04(push, NV50_3D(MULTISAMPLE_CTRL), 1);
+   PUSH_DATA (push, ms);
 }
 
 static void
@@ -456,6 +494,8 @@ static struct state_validate {
     { nv50_gp_linkage_validate,    NV50_NEW_GMTYPROG | NV50_NEW_VERTPROG },
     { nv50_validate_derived_rs,    NV50_NEW_FRAGPROG | NV50_NEW_RASTERIZER |
                                    NV50_NEW_VERTPROG | NV50_NEW_GMTYPROG },
+    { nv50_validate_derived_2,     NV50_NEW_ZSA | NV50_NEW_FRAMEBUFFER },
+    { nv50_validate_derived_3,     NV50_NEW_BLEND | NV50_NEW_FRAMEBUFFER },
     { nv50_validate_clip,          NV50_NEW_CLIP | NV50_NEW_RASTERIZER |
                                    NV50_NEW_VERTPROG | NV50_NEW_GMTYPROG },
     { nv50_constbufs_validate,     NV50_NEW_CONSTBUF },
@@ -463,12 +503,13 @@ static struct state_validate {
     { nv50_validate_samplers,      NV50_NEW_SAMPLERS },
     { nv50_stream_output_validate, NV50_NEW_STRMOUT |
                                    NV50_NEW_VERTPROG | NV50_NEW_GMTYPROG },
-    { nv50_vertex_arrays_validate, NV50_NEW_VERTEX | NV50_NEW_ARRAYS },
+    { nv50_vertex_arrays_validate, NV50_NEW_VERTEX | NV50_NEW_ARRAYS |
+                                   NV50_NEW_VERTPROG },
     { nv50_validate_min_samples,   NV50_NEW_MIN_SAMPLES },
 };
 #define validate_list_len (sizeof(validate_list) / sizeof(validate_list[0]))
 
-boolean
+bool
 nv50_state_validate(struct nv50_context *nv50, uint32_t mask, unsigned words)
 {
    uint32_t state_mask;
@@ -490,19 +531,19 @@ nv50_state_validate(struct nv50_context *nv50, uint32_t mask, unsigned words)
       nv50->dirty &= ~state_mask;
 
       if (nv50->state.rt_serialize) {
-         nv50->state.rt_serialize = FALSE;
+         nv50->state.rt_serialize = false;
          BEGIN_NV04(nv50->base.pushbuf, SUBC_3D(NV50_GRAPH_SERIALIZE), 1);
          PUSH_DATA (nv50->base.pushbuf, 0);
       }
 
-      nv50_bufctx_fence(nv50->bufctx_3d, FALSE);
+      nv50_bufctx_fence(nv50->bufctx_3d, false);
    }
    nouveau_pushbuf_bufctx(nv50->base.pushbuf, nv50->bufctx_3d);
    ret = nouveau_pushbuf_validate(nv50->base.pushbuf);
 
    if (unlikely(nv50->state.flushed)) {
-      nv50->state.flushed = FALSE;
-      nv50_bufctx_fence(nv50->bufctx_3d, TRUE);
+      nv50->state.flushed = false;
+      nv50_bufctx_fence(nv50->bufctx_3d, true);
    }
    return !ret;
 }

@@ -48,6 +48,10 @@
 enum ilo_state_vf_dirty_bits {
    ILO_STATE_VF_3DSTATE_VERTEX_ELEMENTS            = (1 << 0),
    ILO_STATE_VF_3DSTATE_VF_SGVS                    = (1 << 1),
+   ILO_STATE_VF_3DSTATE_VF_INSTANCING              = (1 << 2),
+   ILO_STATE_VF_3DSTATE_VERTEX_BUFFERS             = (1 << 3),
+   ILO_STATE_VF_3DSTATE_VF                         = (1 << 4),
+   ILO_STATE_VF_3DSTATE_INDEX_BUFFER               = (1 << 5),
 };
 
 /**
@@ -61,14 +65,17 @@ struct ilo_state_vf_element_info {
    uint8_t format_size;
    uint8_t component_count;
    bool is_integer;
-   bool is_double;
+
+   /* must be the same for those share the same buffer before Gen8 */
+   bool instancing_enable;
+   uint32_t instancing_step_rate;
 };
 
 /**
  * VF parameters.
  */
 struct ilo_state_vf_params_info {
-   bool cv_is_quad;
+   enum gen_3dprim_type cv_topology;
 
    /* prepend an attribute of zeros */
    bool prepend_zeros;
@@ -78,8 +85,15 @@ struct ilo_state_vf_params_info {
    bool prepend_instanceid;
 
    bool last_element_edge_flag;
+
+   enum gen_index_format cv_index_format;
+   bool cut_index_enable;
+   uint32_t cut_index;
 };
 
+/**
+ * Vertex fetch.
+ */
 struct ilo_state_vf_info {
    void *data;
    size_t data_size;
@@ -91,28 +105,72 @@ struct ilo_state_vf_info {
 };
 
 struct ilo_state_vf {
+   uint32_t (*user_ve)[2];
+   uint32_t (*user_instancing)[2];
+   int8_t vb_to_first_elem[ILO_STATE_VF_MAX_BUFFER_COUNT];
+   uint8_t user_ve_count;
+
+   bool edge_flag_supported;
+   uint32_t last_user_ve[2][2];
+
    /* two VEs are reserved for internal use */
    uint32_t internal_ve[2][2];
-   uint32_t (*user_ve)[2];
    uint8_t internal_ve_count;
-   uint8_t user_ve_count;
 
    uint32_t sgvs[1];
 
-   uint32_t last_user_ve[2][2];
-   bool edge_flag_supported;
+   uint32_t cut[2];
 };
 
 struct ilo_state_vf_delta {
    uint32_t dirty;
 };
 
+struct ilo_vma;
+
+struct ilo_state_vertex_buffer_info {
+   const struct ilo_vma *vma;
+   uint32_t offset;
+   uint32_t size;
+
+   uint16_t stride;
+
+   /* doubles must be at 64-bit aligned addresses */
+   bool cv_has_double;
+   uint8_t cv_double_vertex_offset_mod_8;
+};
+
+struct ilo_state_vertex_buffer {
+   uint32_t vb[3];
+
+   const struct ilo_vma *vma;
+};
+
+struct ilo_state_index_buffer_info {
+   const struct ilo_vma *vma;
+   uint32_t offset;
+   uint32_t size;
+
+   enum gen_index_format format;
+};
+
+struct ilo_state_index_buffer {
+   uint32_t ib[3];
+
+   const struct ilo_vma *vma;
+};
+
 static inline size_t
 ilo_state_vf_data_size(const struct ilo_dev *dev, uint8_t element_count)
 {
    const struct ilo_state_vf *vf = NULL;
-   return sizeof(vf->user_ve[0]) * element_count;
+   return (sizeof(vf->user_ve[0]) +
+           sizeof(vf->user_instancing[0])) * element_count;
 }
+
+bool
+ilo_state_vf_valid_element_format(const struct ilo_dev *dev,
+                                  enum gen_surface_format format);
 
 bool
 ilo_state_vf_init(struct ilo_state_vf *vf,
@@ -150,5 +208,23 @@ ilo_state_vf_get_delta(const struct ilo_state_vf *vf,
                        const struct ilo_dev *dev,
                        const struct ilo_state_vf *old,
                        struct ilo_state_vf_delta *delta);
+
+uint32_t
+ilo_state_vertex_buffer_size(const struct ilo_dev *dev, uint32_t size,
+                             uint32_t *alignment);
+
+bool
+ilo_state_vertex_buffer_set_info(struct ilo_state_vertex_buffer *vb,
+                                 const struct ilo_dev *dev,
+                                 const struct ilo_state_vertex_buffer_info *info);
+
+uint32_t
+ilo_state_index_buffer_size(const struct ilo_dev *dev, uint32_t size,
+                            uint32_t *alignment);
+
+bool
+ilo_state_index_buffer_set_info(struct ilo_state_index_buffer *ib,
+                                const struct ilo_dev *dev,
+                                const struct ilo_state_index_buffer_info *info);
 
 #endif /* ILO_STATE_VF_H */

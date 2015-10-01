@@ -33,14 +33,11 @@
 #include "sid.h"
 
 #define MAX_GLOBAL_BUFFERS 20
-#if HAVE_LLVM < 0x0305
-#define NUM_USER_SGPRS 2
-#else
+
 /* XXX: Even though we don't pass the scratch buffer via user sgprs any more
  * LLVM still expects that we specify 4 USER_SGPRS so it can remain compatible
  * with older mesa. */
 #define NUM_USER_SGPRS 4
-#endif
 
 struct si_compute {
 	struct si_context *ctx;
@@ -137,14 +134,14 @@ static void *si_create_compute_state(
 	}
 #else
 
-	radeon_elf_read(code, header->num_bytes, &program->shader.binary, true);
+	radeon_elf_read(code, header->num_bytes, &program->shader.binary);
 
 	/* init_scratch_buffer patches the shader code with the scratch address,
 	 * so we need to call it before si_shader_binary_read() which uploads
 	 * the shader code to the GPU.
 	 */
 	init_scratch_buffer(sctx, program);
-	si_shader_binary_read(sctx->screen, &program->shader, &program->shader.binary);
+	si_shader_binary_read(sctx->screen, &program->shader);
 
 #endif
 	program->input_buffer =	si_resource_create_custom(sctx->b.b.screen,
@@ -262,7 +259,7 @@ static void si_launch_grid(
 			 SI_CONTEXT_INV_KCACHE |
 			 SI_CONTEXT_FLUSH_WITH_INV_L2 |
 			 SI_CONTEXT_FLAG_COMPUTE;
-	si_emit_cache_flush(&sctx->b, NULL);
+	si_emit_cache_flush(sctx, NULL);
 
 	pm4->compute_pkt = true;
 
@@ -297,9 +294,10 @@ static void si_launch_grid(
 			    shader->scratch_bytes_per_wave *
 			    num_waves_for_scratch);
 
-		si_pm4_add_bo(pm4, shader->scratch_bo,
-				RADEON_USAGE_READWRITE,
-				RADEON_PRIO_SHADER_RESOURCE_RW);
+		radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx,
+					  shader->scratch_bo,
+					  RADEON_USAGE_READWRITE,
+					  RADEON_PRIO_SHADER_RESOURCE_RW);
 
 		scratch_buffer_va = shader->scratch_bo->gpu_address;
 	}
@@ -309,13 +307,11 @@ static void si_launch_grid(
 			kernel_args[i]);
 	}
 
-	sctx->b.ws->buffer_unmap(input_buffer->cs_buf);
-
 	kernel_args_va = input_buffer->gpu_address;
 	kernel_args_va += kernel_args_offset;
 
-	si_pm4_add_bo(pm4, input_buffer, RADEON_USAGE_READ,
-		RADEON_PRIO_SHADER_DATA);
+	radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, input_buffer,
+				  RADEON_USAGE_READ, RADEON_PRIO_SHADER_DATA);
 
 	si_pm4_set_reg(pm4, R_00B900_COMPUTE_USER_DATA_0, kernel_args_va);
 	si_pm4_set_reg(pm4, R_00B900_COMPUTE_USER_DATA_0 + 4, S_008F04_BASE_ADDRESS_HI (kernel_args_va >> 32) | S_008F04_STRIDE(0));
@@ -342,7 +338,9 @@ static void si_launch_grid(
 		if (!buffer) {
 			continue;
 		}
-		si_pm4_add_bo(pm4, buffer, RADEON_USAGE_READWRITE, RADEON_PRIO_SHADER_RESOURCE_RW);
+		radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, buffer,
+					  RADEON_USAGE_READWRITE,
+					  RADEON_PRIO_SHADER_RESOURCE_RW);
 	}
 
 	/* This register has been moved to R_00CD20_COMPUTE_MAX_WAVE_ID
@@ -363,8 +361,9 @@ static void si_launch_grid(
 #if HAVE_LLVM >= 0x0306
 	shader_va += pc;
 #endif
-	si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_DATA);
-	si_pm4_set_reg(pm4, R_00B830_COMPUTE_PGM_LO, (shader_va >> 8) & 0xffffffff);
+	radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, shader->bo,
+				  RADEON_USAGE_READ, RADEON_PRIO_SHADER_DATA);
+	si_pm4_set_reg(pm4, R_00B830_COMPUTE_PGM_LO, shader_va >> 8);
 	si_pm4_set_reg(pm4, R_00B834_COMPUTE_PGM_HI, shader_va >> 40);
 
 	si_pm4_set_reg(pm4, R_00B848_COMPUTE_PGM_RSRC1,
@@ -455,7 +454,7 @@ static void si_launch_grid(
 			 SI_CONTEXT_INV_ICACHE |
 			 SI_CONTEXT_INV_KCACHE |
 			 SI_CONTEXT_FLAG_COMPUTE;
-	si_emit_cache_flush(&sctx->b, NULL);
+	si_emit_cache_flush(sctx, NULL);
 }
 
 

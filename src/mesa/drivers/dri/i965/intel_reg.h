@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,13 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #define CMD_MI				(0x0 << 29)
 #define CMD_2D				(0x2 << 29)
@@ -47,6 +45,9 @@
 /* Load a value from memory into a register.  Only available on Gen7+. */
 #define GEN7_MI_LOAD_REGISTER_MEM	(CMD_MI | (0x29 << 23))
 # define MI_LOAD_REGISTER_MEM_USE_GGTT		(1 << 22)
+/* Haswell RS control */
+#define MI_RS_CONTROL                   (CMD_MI | (0x6 << 23))
+#define MI_RS_STORE_DATA_IMM            (CMD_MI | (0x2b << 23))
 
 /* Manipulate the predicate bit based on some register values. Only on Gen7+ */
 #define GEN7_MI_PREDICATE		(CMD_MI | (0xC << 23))
@@ -102,6 +103,8 @@
 
 #define XY_SRC_COPY_BLT_CMD             (CMD_2D | (0x53 << 22))
 
+#define XY_FAST_COPY_BLT_CMD             (CMD_2D | (0x42 << 22))
+
 #define XY_TEXT_IMMEDIATE_BLIT_CMD	(CMD_2D | (0x31 << 22))
 # define XY_TEXT_BYTE_PACKED		(1 << 16)
 
@@ -111,10 +114,24 @@
 #define XY_SRC_TILED		(1 << 15)
 #define XY_DST_TILED		(1 << 11)
 
+/* BR00 */
+#define XY_FAST_SRC_TILED_64K        (3 << 20)
+#define XY_FAST_SRC_TILED_Y          (2 << 20)
+#define XY_FAST_SRC_TILED_X          (1 << 20)
+
+#define XY_FAST_DST_TILED_64K        (3 << 13)
+#define XY_FAST_DST_TILED_Y          (2 << 13)
+#define XY_FAST_DST_TILED_X          (1 << 13)
+
 /* BR13 */
 #define BR13_8			(0x0 << 24)
 #define BR13_565		(0x1 << 24)
 #define BR13_8888		(0x3 << 24)
+#define BR13_16161616		(0x4 << 24)
+#define BR13_32323232		(0x5 << 24)
+
+#define XY_FAST_SRC_TRMODE_YF        (1 << 31)
+#define XY_FAST_DST_TRMODE_YF        (1 << 30)
 
 /* Pipeline Statistics Counter Registers */
 #define IA_VERTICES_COUNT               0x2310
@@ -155,6 +172,11 @@
 #define GEN7_3DPRIM_INSTANCE_COUNT      0x2438
 #define GEN7_3DPRIM_START_INSTANCE      0x243C
 #define GEN7_3DPRIM_BASE_VERTEX         0x2440
+
+/* Auto-Compute / Indirect Registers */
+#define GEN7_GPGPU_DISPATCHDIMX         0x2500
+#define GEN7_GPGPU_DISPATCHDIMY         0x2504
+#define GEN7_GPGPU_DISPATCHDIMZ         0x2508
 
 #define GEN7_CACHE_MODE_1               0x7004
 # define GEN8_HIZ_NP_PMA_FIX_ENABLE        (1 << 11)

@@ -388,17 +388,6 @@ st_new_renderbuffer_fb(enum pipe_format format, int samples, boolean sw)
 
 
 /**
- * Called via ctx->Driver.BindFramebufferEXT().
- */
-static void
-st_bind_framebuffer(struct gl_context *ctx, GLenum target,
-                    struct gl_framebuffer *fb, struct gl_framebuffer *fbread)
-{
-   /* no-op */
-}
-
-
-/**
  * Create or update the pipe_surface of a FBO renderbuffer.
  * This is usually called after st_finalize_texture.
  */
@@ -510,8 +499,6 @@ st_render_texture(struct gl_context *ctx,
    strb->rtt_slice = att->Zoffset;
    strb->rtt_layered = att->Layered;
    pipe_resource_reference(&strb->texture, pt);
-
-   pipe_surface_release(pipe, &strb->surface);
 
    st_update_renderbuffer_surface(st, strb);
 
@@ -841,7 +828,6 @@ void st_init_fbo_functions(struct dd_function_table *functions)
 {
    functions->NewFramebuffer = st_new_framebuffer;
    functions->NewRenderbuffer = st_new_renderbuffer;
-   functions->BindFramebuffer = st_bind_framebuffer;
    functions->FramebufferRenderbuffer = _mesa_FramebufferRenderbuffer_sw;
    functions->RenderTexture = st_render_texture;
    functions->FinishRenderTexture = st_finish_render_texture;

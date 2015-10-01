@@ -145,7 +145,7 @@ intel_alloc_texture_storage(struct gl_context *ctx,
                                               0, levels - 1,
                                               width, height, depth,
                                               num_samples,
-                                              INTEL_MIPTREE_TILING_ANY, 0);
+                                              MIPTREE_LAYOUT_TILING_ANY);
 
       if (intel_texobj->mt == NULL) {
          return false;
@@ -357,6 +357,14 @@ intel_set_texture_storage_for_buffer_object(struct gl_context *ctx,
    return true;
 }
 
+static void
+intel_texture_barrier(struct gl_context *ctx)
+{
+   struct brw_context *brw = brw_context(ctx);
+
+   brw_emit_mi_flush(brw);
+}
+
 void
 intelInitTextureFuncs(struct dd_function_table *functions)
 {
@@ -372,4 +380,5 @@ intelInitTextureFuncs(struct dd_function_table *functions)
    functions->TextureView = intel_texture_view;
    functions->SetTextureStorageForBufferObject =
       intel_set_texture_storage_for_buffer_object;
+   functions->TextureBarrier = intel_texture_barrier;
 }

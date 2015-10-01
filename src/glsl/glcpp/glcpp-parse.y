@@ -1074,9 +1074,9 @@ _token_list_equal_ignoring_space (token_list_t *a, token_list_t *b)
 		 */
 		if (node_a->token->type == SPACE
 		    && node_b->token->type == SPACE) {
-			while (node_a->token->type == SPACE)
+			while (node_a && node_a->token->type == SPACE)
 				node_a = node_a->next;
-			while (node_b->token->type == SPACE)
+			while (node_b && node_b->token->type == SPACE)
 				node_b = node_b->next;
 			continue;
 		}
@@ -2382,6 +2382,8 @@ _glcpp_parser_handle_version_declaration(glcpp_parser_t *parser, intmax_t versio
 	         add_builtin_define(parser, "GL_OES_EGL_image_external", 1);
               if (extensions->OES_standard_derivatives)
                  add_builtin_define(parser, "GL_OES_standard_derivatives", 1);
+              if (extensions->ARB_texture_multisample)
+                 add_builtin_define(parser, "GL_OES_texture_storage_multisample_2d_array", 1);
 	   }
 	} else {
 	   add_builtin_define(parser, "GL_ARB_draw_buffers", 1);
@@ -2478,11 +2480,26 @@ _glcpp_parser_handle_version_declaration(glcpp_parser_t *parser, intmax_t versio
 	      if (extensions->ARB_shader_image_load_store)
 	         add_builtin_define(parser, "GL_ARB_shader_image_load_store", 1);
 
+              if (extensions->ARB_shader_image_size)
+                 add_builtin_define(parser, "GL_ARB_shader_image_size", 1);
+
+              if (extensions->ARB_shader_texture_image_samples)
+                 add_builtin_define(parser, "GL_ARB_shader_texture_image_samples", 1);
+
               if (extensions->ARB_derivative_control)
                  add_builtin_define(parser, "GL_ARB_derivative_control", 1);
 
               if (extensions->ARB_shader_precision)
                  add_builtin_define(parser, "GL_ARB_shader_precision", 1);
+
+	      if (extensions->ARB_shader_storage_buffer_object)
+	         add_builtin_define(parser, "GL_ARB_shader_storage_buffer_object", 1);
+
+	      if (extensions->ARB_tessellation_shader)
+	         add_builtin_define(parser, "GL_ARB_tessellation_shader", 1);
+
+              if (extensions->ARB_shader_subroutine)
+                 add_builtin_define(parser, "GL_ARB_shader_subroutine", 1);
 	   }
 	}
 

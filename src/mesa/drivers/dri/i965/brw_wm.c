@@ -1,37 +1,32 @@
 /*
- Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics to
- develop this 3D driver.
-
- Permission is hereby granted, free of charge, to any person obtaining
- a copy of this software and associated documentation files (the
- "Software"), to deal in the Software without restriction, including
- without limitation the rights to use, copy, modify, merge, publish,
- distribute, sublicense, and/or sell copies of the Software, and to
- permit persons to whom the Software is furnished to do so, subject to
- the following conditions:
-
- The above copyright notice and this permission notice (including the
- next paragraph) shall be included in all copies or substantial
- portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
- LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
- **********************************************************************/
- /*
-  * Authors:
-  *   Keith Whitwell <keithw@vmware.com>
-  */
-
+ * Copyright (C) Intel Corp.  2006.  All Rights Reserved.
+ * Intel funded Tungsten Graphics to
+ * develop this 3D driver.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 #include "brw_context.h"
 #include "brw_wm.h"
 #include "brw_state.h"
+#include "brw_shader.h"
 #include "main/enums.h"
 #include "main/formats.h"
 #include "main/fbobject.h"
@@ -136,25 +131,6 @@ computed_depth_mode(struct gl_fragment_program *fp)
    return BRW_PSCDEPTH_OFF;
 }
 
-bool
-brw_wm_prog_data_compare(const void *in_a, const void *in_b)
-{
-   const struct brw_wm_prog_data *a = in_a;
-   const struct brw_wm_prog_data *b = in_b;
-
-   /* Compare the base structure. */
-   if (!brw_stage_prog_data_compare(&a->base, &b->base))
-      return false;
-
-   /* Compare the rest of the structure. */
-   const unsigned offset = sizeof(struct brw_stage_prog_data);
-   if (memcmp(((char *) a) + offset, ((char *) b) + offset,
-              sizeof(struct brw_wm_prog_data) - offset))
-      return false;
-
-   return true;
-}
-
 /**
  * All Mesa program -> GPU code generation goes through this function.
  * Depending on the instructions used (i.e. flow control instructions)
@@ -170,19 +146,24 @@ brw_codegen_wm_prog(struct brw_context *brw,
    void *mem_ctx = ralloc_context(NULL);
    struct brw_wm_prog_data prog_data;
    const GLuint *program;
-   struct gl_shader *fs = NULL;
+   struct brw_shader *fs = NULL;
    GLuint program_size;
+   bool start_busy = false;
+   double start_time = 0;
 
    if (prog)
-      fs = prog->_LinkedShaders[MESA_SHADER_FRAGMENT];
+      fs = (struct brw_shader *)prog->_LinkedShaders[MESA_SHADER_FRAGMENT];
 
    memset(&prog_data, 0, sizeof(prog_data));
    /* key->alpha_test_func means simulating alpha testing via discards,
     * so the shader definitely kills pixels.
     */
    prog_data.uses_kill = fp->program.UsesKill || key->alpha_test_func;
-
+   prog_data.uses_omask =
+      fp->program.Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
    prog_data.computed_depth_mode = computed_depth_mode(&fp->program);
+
+   prog_data.early_fragment_tests = fs && fs->base.EarlyFragmentTests;
 
    /* Use ALT floating point mode for ARB programs so that 0^0 == 1. */
    if (!prog)
@@ -194,7 +175,9 @@ brw_codegen_wm_prog(struct brw_context *brw,
     */
    int param_count;
    if (fs) {
-      param_count = fs->num_uniform_components;
+      param_count = fs->base.num_uniform_components +
+                    fs->base.NumImages * BRW_IMAGE_PARAM_SIZE;
+      prog_data.base.nr_image_params = fs->base.NumImages;
    } else {
       param_count = fp->program.Base.Parameters->NumParameters * 4;
    }
@@ -204,6 +187,9 @@ brw_codegen_wm_prog(struct brw_context *brw,
       rzalloc_array(NULL, const gl_constant_value *, param_count);
    prog_data.base.pull_param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
+   prog_data.base.image_param =
+      rzalloc_array(NULL, struct brw_image_param,
+                    prog_data.base.nr_image_params);
    prog_data.base.nr_params = param_count;
 
    prog_data.barycentric_interp_modes =
@@ -211,11 +197,28 @@ brw_codegen_wm_prog(struct brw_context *brw,
                                            key->persample_shading,
                                            &fp->program);
 
+   if (unlikely(brw->perf_debug)) {
+      start_busy = (brw->batch.last_bo &&
+                    drm_intel_bo_busy(brw->batch.last_bo));
+      start_time = get_time();
+   }
+
    program = brw_wm_fs_emit(brw, mem_ctx, key, &prog_data,
                             &fp->program, prog, &program_size);
    if (program == NULL) {
       ralloc_free(mem_ctx);
       return false;
+   }
+
+   if (unlikely(brw->perf_debug) && fs) {
+      if (fs->compiled_once)
+         brw_wm_debug_recompile(brw, prog, key);
+      fs->compiled_once = true;
+
+      if (start_busy && !drm_intel_bo_busy(brw->batch.last_bo)) {
+         perf_debug("FS compile took %.03f ms and stalled the GPU\n",
+                    (get_time() - start_time) * 1000);
+      }
    }
 
    if (prog_data.base.total_scratch) {
@@ -349,13 +352,15 @@ static uint8_t
 gen6_gather_workaround(GLenum internalformat)
 {
    switch (internalformat) {
-      case GL_R8I: return WA_SIGN | WA_8BIT;
-      case GL_R8UI: return WA_8BIT;
-      case GL_R16I: return WA_SIGN | WA_16BIT;
-      case GL_R16UI: return WA_16BIT;
-      /* note that even though GL_R32I and GL_R32UI have format overrides
-       * in the surface state, there is no shader w/a required */
-      default: return 0;
+   case GL_R8I: return WA_SIGN | WA_8BIT;
+   case GL_R8UI: return WA_8BIT;
+   case GL_R16I: return WA_SIGN | WA_16BIT;
+   case GL_R16UI: return WA_16BIT;
+   default:
+      /* Note that even though GL_R32I and GL_R32UI have format overrides in
+       * the surface state, there is no shader w/a required.
+       */
+      return 0;
    }
 }
 
@@ -402,8 +407,9 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
 	       key->gl_clamp_mask[2] |= 1 << s;
 	 }
 
-         /* gather4's channel select for green from RG32F is broken;
-          * requires a shader w/a on IVB; fixable with just SCS on HSW. */
+         /* gather4's channel select for green from RG32F is broken; requires
+          * a shader w/a on IVB; fixable with just SCS on HSW.
+          */
          if (brw->gen == 7 && !brw->is_haswell && prog->UsesGather) {
             if (img->InternalFormat == GL_RG32F)
                key->gather_channel_quirk_mask |= 1 << s;
@@ -452,13 +458,13 @@ brw_wm_state_dirty (struct brw_context *brw)
                           BRW_NEW_VUE_MAP_GEOM_OUT);
 }
 
-static void brw_wm_populate_key( struct brw_context *brw,
-				 struct brw_wm_prog_key *key )
+static void
+brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
    /* BRW_NEW_FRAGMENT_PROGRAM */
    const struct brw_fragment_program *fp =
-      (struct brw_fragment_program *)brw->fragment_program;
+      (struct brw_fragment_program *) brw->fragment_program;
    const struct gl_program *prog = (struct gl_program *) brw->fragment_program;
    GLuint lookup = 0;
    GLuint line_aa;
@@ -604,7 +610,8 @@ static void brw_wm_populate_key( struct brw_context *brw,
     * like GL requires.  Fix that by building the alpha test into the
     * shader, and we'll skip enabling the fixed function alpha test.
     */
-   if (brw->gen < 6 && ctx->DrawBuffer->_NumColorDrawBuffers > 1 && ctx->Color.AlphaEnabled) {
+   if (brw->gen < 6 && ctx->DrawBuffer->_NumColorDrawBuffers > 1 &&
+       ctx->Color.AlphaEnabled) {
       key->alpha_test_func = ctx->Color.AlphaFunc;
       key->alpha_test_ref = ctx->Color.AlphaRef;
    }
@@ -635,4 +642,62 @@ brw_upload_wm_prog(struct brw_context *brw)
       assert(success);
    }
    brw->wm.base.prog_data = &brw->wm.prog_data->base;
+}
+
+bool
+brw_fs_precompile(struct gl_context *ctx,
+                  struct gl_shader_program *shader_prog,
+                  struct gl_program *prog)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_wm_prog_key key;
+
+   struct gl_fragment_program *fp = (struct gl_fragment_program *) prog;
+   struct brw_fragment_program *bfp = brw_fragment_program(fp);
+   bool program_uses_dfdy = fp->UsesDFdy;
+
+   memset(&key, 0, sizeof(key));
+
+   if (brw->gen < 6) {
+      if (fp->UsesKill)
+         key.iz_lookup |= IZ_PS_KILL_ALPHATEST_BIT;
+
+      if (fp->Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
+         key.iz_lookup |= IZ_PS_COMPUTES_DEPTH_BIT;
+
+      /* Just assume depth testing. */
+      key.iz_lookup |= IZ_DEPTH_TEST_ENABLE_BIT;
+      key.iz_lookup |= IZ_DEPTH_WRITE_ENABLE_BIT;
+   }
+
+   if (brw->gen < 6 || _mesa_bitcount_64(fp->Base.InputsRead &
+                                         BRW_FS_VARYING_INPUT_MASK) > 16)
+      key.input_slots_valid = fp->Base.InputsRead | VARYING_BIT_POS;
+
+   brw_setup_tex_for_precompile(brw, &key.tex, &fp->Base);
+
+   if (fp->Base.InputsRead & VARYING_BIT_POS) {
+      key.drawable_height = ctx->DrawBuffer->Height;
+   }
+
+   key.nr_color_regions = _mesa_bitcount_64(fp->Base.OutputsWritten &
+         ~(BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
+         BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)));
+
+   if ((fp->Base.InputsRead & VARYING_BIT_POS) || program_uses_dfdy) {
+      key.render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer) ||
+                          key.nr_color_regions > 1;
+   }
+
+   key.program_string_id = bfp->id;
+
+   uint32_t old_prog_offset = brw->wm.base.prog_offset;
+   struct brw_wm_prog_data *old_prog_data = brw->wm.prog_data;
+
+   bool success = brw_codegen_wm_prog(brw, shader_prog, bfp, &key);
+
+   brw->wm.base.prog_offset = old_prog_offset;
+   brw->wm.prog_data = old_prog_data;
+
+   return success;
 }

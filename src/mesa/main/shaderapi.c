@@ -37,6 +37,7 @@
  */
 
 
+#include <stdbool.h>
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/dispatch.h"
@@ -48,19 +49,16 @@
 #include "main/shaderobj.h"
 #include "main/transformfeedback.h"
 #include "main/uniforms.h"
+#include "glsl/glsl_parser_extras.h"
+#include "glsl/ir.h"
+#include "glsl/ir_uniform.h"
+#include "glsl/program.h"
 #include "program/program.h"
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
 #include "util/ralloc.h"
 #include "util/hash_table.h"
-#include <stdbool.h>
-#include "../glsl/glsl_parser_extras.h"
-#include "../glsl/ir.h"
-#include "../glsl/ir_uniform.h"
-#include "../glsl/program.h"
-
-/** Define this to enable shader substitution (see below) */
-#define SHADER_SUBST 0
+#include "util/mesa-sha1.h"
 
 
 /**
@@ -110,6 +108,7 @@ _mesa_init_shader_state(struct gl_context *ctx)
     */
    struct gl_shader_compiler_options options;
    gl_shader_stage sh;
+   int i;
 
    memset(&options, 0, sizeof(options));
    options.MaxUnrollIterations = 32;
@@ -126,6 +125,12 @@ _mesa_init_shader_state(struct gl_context *ctx)
    /* Extended for ARB_separate_shader_objects */
    ctx->Shader.RefCount = 1;
    mtx_init(&ctx->Shader.Mutex, mtx_plain);
+
+   ctx->TessCtrlProgram.patch_vertices = 3;
+   for (i = 0; i < 4; ++i)
+      ctx->TessCtrlProgram.patch_default_outer_level[i] = 1.0;
+   for (i = 0; i < 2; ++i)
+      ctx->TessCtrlProgram.patch_default_inner_level[i] = 1.0;
 }
 
 
@@ -199,6 +204,9 @@ _mesa_validate_shader_target(const struct gl_context *ctx, GLenum type)
       return ctx == NULL || ctx->Extensions.ARB_vertex_shader;
    case GL_GEOMETRY_SHADER_ARB:
       return ctx == NULL || _mesa_has_geometry_shaders(ctx);
+   case GL_TESS_CONTROL_SHADER:
+   case GL_TESS_EVALUATION_SHADER:
+      return ctx == NULL || _mesa_has_tessellation(ctx);
    case GL_COMPUTE_SHADER:
       return ctx == NULL || ctx->Extensions.ARB_compute_shader;
    default:
@@ -415,6 +423,8 @@ detach_shader(struct gl_context *ctx, GLuint program, GLuint shader)
          /* sanity check - make sure the new list's entries are sensible */
          for (j = 0; j < shProg->NumShaders; j++) {
             assert(shProg->Shaders[j]->Type == GL_VERTEX_SHADER ||
+                   shProg->Shaders[j]->Type == GL_TESS_CONTROL_SHADER ||
+                   shProg->Shaders[j]->Type == GL_TESS_EVALUATION_SHADER ||
                    shProg->Shaders[j]->Type == GL_GEOMETRY_SHADER ||
                    shProg->Shaders[j]->Type == GL_FRAGMENT_SHADER);
             assert(shProg->Shaders[j]->RefCount > 0);
@@ -511,6 +521,57 @@ check_gs_query(struct gl_context *ctx, const struct gl_shader_program *shProg)
 
 
 /**
+ * Check if a tessellation control shader query is valid at this time.
+ * If not, report an error and return false.
+ *
+ * From GL 4.0 section 6.1.12 (Shader and Program Queries):
+ *
+ *     "If TESS_CONTROL_OUTPUT_VERTICES is queried for a program which has
+ *     not been linked successfully, or which does not contain objects to
+ *     form a tessellation control shader, then an INVALID_OPERATION error is
+ *     generated."
+ */
+static bool
+check_tcs_query(struct gl_context *ctx, const struct gl_shader_program *shProg)
+{
+   if (shProg->LinkStatus &&
+       shProg->_LinkedShaders[MESA_SHADER_TESS_CTRL] != NULL) {
+      return true;
+   }
+
+   _mesa_error(ctx, GL_INVALID_OPERATION,
+               "glGetProgramv(linked tessellation control shader required)");
+   return false;
+}
+
+
+/**
+ * Check if a tessellation evaluation shader query is valid at this time.
+ * If not, report an error and return false.
+ *
+ * From GL 4.0 section 6.1.12 (Shader and Program Queries):
+ *
+ *     "If any of the pname values in this paragraph are queried for a program
+ *     which has not been linked successfully, or which does not contain
+ *     objects to form a tessellation evaluation shader, then an
+ *     INVALID_OPERATION error is generated."
+ *
+ */
+static bool
+check_tes_query(struct gl_context *ctx, const struct gl_shader_program *shProg)
+{
+   if (shProg->LinkStatus &&
+       shProg->_LinkedShaders[MESA_SHADER_TESS_EVAL] != NULL) {
+      return true;
+   }
+
+   _mesa_error(ctx, GL_INVALID_OPERATION, "glGetProgramv(linked tessellation "
+               "evaluation shader required)");
+   return false;
+}
+
+
+/**
  * glGetProgramiv() - get shader program state.
  * Note that this is for GLSL shader programs, not ARB vertex/fragment
  * programs (see glGetProgramivARB).
@@ -533,6 +594,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
     * and GL 3.2) are available in this context
     */
    const bool has_core_gs = _mesa_has_geometry_shaders(ctx);
+   const bool has_tess = _mesa_has_tessellation(ctx);
 
    /* Are uniform buffer objects available in this context?
     */
@@ -651,7 +713,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      for (i = 0; i < shProg->NumUniformBlocks; i++) {
+      for (i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
 	 /* Add one for the terminating NUL character.
 	  */
 	 const GLint len = strlen(shProg->UniformBlocks[i].Name) + 1;
@@ -667,7 +729,11 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      *params = shProg->NumUniformBlocks;
+      *params = 0;
+      for (unsigned i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
+         if (!shProg->UniformBlocks[i].IsShaderStorage)
+            (*params)++;
+      }
       return;
    case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
       /* This enum isn't part of the OES extension for OpenGL ES 2.0.  It is
@@ -692,7 +758,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       return;
    case GL_COMPUTE_WORK_GROUP_SIZE: {
       int i;
-      if (!_mesa_is_desktop_gl(ctx) || !ctx->Extensions.ARB_compute_shader)
+      if (!_mesa_has_compute_shaders(ctx))
          break;
       if (!shProg->LinkStatus) {
          _mesa_error(ctx, GL_INVALID_OPERATION, "glGetProgramiv(program not "
@@ -709,14 +775,47 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       return;
    }
    case GL_PROGRAM_SEPARABLE:
-      *params = shProg->SeparateShader;
+      /* If the program has not been linked, return initial value 0. */
+      *params = (shProg->LinkStatus == GL_FALSE) ? 0 : shProg->SeparateShader;
+      return;
+
+   /* ARB_tessellation_shader */
+   case GL_TESS_CONTROL_OUTPUT_VERTICES:
+      if (!has_tess)
+         break;
+      if (check_tcs_query(ctx, shProg))
+         *params = shProg->TessCtrl.VerticesOut;
+      return;
+   case GL_TESS_GEN_MODE:
+      if (!has_tess)
+         break;
+      if (check_tes_query(ctx, shProg))
+         *params = shProg->TessEval.PrimitiveMode;
+      return;
+   case GL_TESS_GEN_SPACING:
+      if (!has_tess)
+         break;
+      if (check_tes_query(ctx, shProg))
+         *params = shProg->TessEval.Spacing;
+      return;
+   case GL_TESS_GEN_VERTEX_ORDER:
+      if (!has_tess)
+         break;
+      if (check_tes_query(ctx, shProg))
+         *params = shProg->TessEval.VertexOrder;
+      return;
+   case GL_TESS_GEN_POINT_MODE:
+      if (!has_tess)
+         break;
+      if (check_tes_query(ctx, shProg))
+         *params = shProg->TessEval.PointMode;
       return;
    default:
       break;
    }
 
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetProgramiv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 
@@ -836,13 +935,9 @@ get_shader_source(struct gl_context *ctx, GLuint shader, GLsizei maxLength,
  * glShaderSource[ARB].
  */
 static void
-shader_source(struct gl_context *ctx, GLuint shader, const GLchar *source)
+shader_source(struct gl_shader *sh, const GLchar *source)
 {
-   struct gl_shader *sh;
-
-   sh = _mesa_lookup_shader_err(ctx, shader, "glShaderSource");
-   if (!sh)
-      return;
+   assert(sh);
 
    /* free old shader source string and install new one */
    free((void *)sh->Source);
@@ -992,6 +1087,12 @@ print_shader_info(const struct gl_shader_program *shProg)
    if (shProg->_LinkedShaders[MESA_SHADER_GEOMETRY])
       printf("  geom prog %u\n",
 	     shProg->_LinkedShaders[MESA_SHADER_GEOMETRY]->Program->Id);
+   if (shProg->_LinkedShaders[MESA_SHADER_TESS_CTRL])
+      printf("  tesc prog %u\n",
+	     shProg->_LinkedShaders[MESA_SHADER_TESS_CTRL]->Program->Id);
+   if (shProg->_LinkedShaders[MESA_SHADER_TESS_EVAL])
+      printf("  tese prog %u\n",
+	     shProg->_LinkedShaders[MESA_SHADER_TESS_EVAL]->Program->Id);
 }
 
 
@@ -1037,11 +1138,9 @@ use_shader_program(struct gl_context *ctx, gl_shader_stage stage,
        */
       switch (stage) {
       case MESA_SHADER_VERTEX:
-	 /* Empty for now. */
-	 break;
+      case MESA_SHADER_TESS_CTRL:
+      case MESA_SHADER_TESS_EVAL:
       case MESA_SHADER_GEOMETRY:
-	 /* Empty for now. */
-	 break;
       case MESA_SHADER_COMPUTE:
          /* Empty for now. */
          break;
@@ -1071,6 +1170,7 @@ _mesa_use_program(struct gl_context *ctx, struct gl_shader_program *shProg)
       use_shader_program(ctx, i, shProg, &ctx->Shader);
    _mesa_active_program(ctx, shProg, "glUseProgram");
 
+   _mesa_shader_program_init_subroutine_defaults(shProg);
    if (ctx->Driver.UseProgram)
       ctx->Driver.UseProgram(ctx, shProg);
 }
@@ -1172,7 +1272,7 @@ _mesa_CreateShader(GLenum type)
 {
    GET_CURRENT_CONTEXT(ctx);
    if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glCreateShader %s\n", _mesa_lookup_enum_by_nr(type));
+      _mesa_debug(ctx, "glCreateShader %s\n", _mesa_enum_to_string(type));
    return create_shader(ctx, type);
 }
 
@@ -1331,7 +1431,7 @@ void GLAPIENTRY
 _mesa_GetObjectParameterfvARB(GLhandleARB object, GLenum pname,
                               GLfloat *params)
 {
-   GLint iparams[1];  /* XXX is one element enough? */
+   GLint iparams[1] = {0};  /* XXX is one element enough? */
    _mesa_GetObjectParameterivARB(object, pname, iparams);
    params[0] = (GLfloat) iparams[0];
 }
@@ -1411,23 +1511,99 @@ _mesa_LinkProgram(GLhandleARB programObj)
    link_program(ctx, programObj);
 }
 
+#if defined(HAVE_SHA1)
+/**
+ * Generate a SHA-1 hash value string for given source string.
+ */
+static void
+generate_sha1(const char *source, char sha_str[64])
+{
+   unsigned char sha[20];
+   _mesa_sha1_compute(source, strlen(source), sha);
+   _mesa_sha1_format(sha_str, sha);
+}
 
+/**
+ * Construct a full path for shader replacement functionality using
+ * following format:
+ *
+ * <path>/<stage prefix>_<CHECKSUM>.glsl
+ */
+static void
+construct_name(const gl_shader_stage stage, const char *source,
+               const char *path, char *name, unsigned length)
+{
+   char sha[64];
+   static const char *types[] = {
+      "VS", "TC", "TE", "GS", "FS", "CS",
+   };
+
+   generate_sha1(source, sha);
+   _mesa_snprintf(name, length, "%s/%s_%s.glsl", path, types[stage],
+                  sha);
+}
+
+/**
+ * Write given shader source to a file in MESA_SHADER_DUMP_PATH.
+ */
+static void
+dump_shader(const gl_shader_stage stage, const char *source)
+{
+   char name[PATH_MAX];
+   static bool path_exists = true;
+   char *dump_path;
+   FILE *f;
+
+   if (!path_exists)
+      return;
+
+   dump_path = getenv("MESA_SHADER_DUMP_PATH");
+   if (!dump_path) {
+      path_exists = false;
+      return;
+   }
+
+   construct_name(stage, source, dump_path, name, PATH_MAX);
+
+   f = fopen(name, "w");
+   if (f) {
+      fputs(source, f);
+      fclose(f);
+   } else {
+      GET_CURRENT_CONTEXT(ctx);
+      _mesa_warning(ctx, "could not open %s for dumping shader (%s)", name,
+                    strerror(errno));
+   }
+}
 
 /**
  * Read shader source code from a file.
  * Useful for debugging to override an app's shader.
  */
 static GLcharARB *
-read_shader(const char *fname)
+read_shader(const gl_shader_stage stage, const char *source)
 {
-   int shader_size = 0;
-   FILE *f = fopen(fname, "r");
-   GLcharARB *buffer, *shader;
-   int len;
+   char name[PATH_MAX];
+   char *read_path;
+   static bool path_exists = true;
+   int len, shader_size = 0;
+   GLcharARB *buffer;
+   FILE *f;
 
-   if (!f) {
+   if (!path_exists)
+      return NULL;
+
+   read_path = getenv("MESA_SHADER_READ_PATH");
+   if (!read_path) {
+      path_exists = false;
       return NULL;
    }
+
+   construct_name(stage, source, read_path, name, PATH_MAX);
+
+   f = fopen(name, "r");
+   if (!f)
+      return NULL;
 
    /* allocate enough room for the entire shader */
    fseek(f, 0, SEEK_END);
@@ -1446,12 +1622,9 @@ read_shader(const char *fname)
 
    fclose(f);
 
-   shader = strdup(buffer);
-   free(buffer);
-
-   return shader;
+   return buffer;
 }
-
+#endif /* HAVE_SHA1 */
 
 /**
  * Called via glShaderSource() and glShaderSourceARB() API functions.
@@ -1460,15 +1633,23 @@ read_shader(const char *fname)
  */
 void GLAPIENTRY
 _mesa_ShaderSource(GLhandleARB shaderObj, GLsizei count,
-                      const GLcharARB * const * string, const GLint * length)
+                   const GLcharARB * const * string, const GLint * length)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLint *offsets;
    GLsizei i, totalLength;
    GLcharARB *source;
-   GLuint checksum;
+   struct gl_shader *sh;
 
-   if (!shaderObj || string == NULL) {
+#if defined(HAVE_SHA1)
+   GLcharARB *replacement;
+#endif /* HAVE_SHA1 */
+
+   sh = _mesa_lookup_shader_err(ctx, shaderObj, "glShaderSourceARB");
+   if (!sh)
+      return;
+
+   if (string == NULL) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glShaderSourceARB");
       return;
    }
@@ -1519,34 +1700,20 @@ _mesa_ShaderSource(GLhandleARB shaderObj, GLsizei count,
    source[totalLength - 1] = '\0';
    source[totalLength - 2] = '\0';
 
-   if (SHADER_SUBST) {
-      /* Compute the shader's source code checksum then try to open a file
-       * named newshader_<CHECKSUM>.  If it exists, use it in place of the
-       * original shader source code.  For debugging.
-       */
-      char filename[100];
-      GLcharARB *newSource;
+#if defined(HAVE_SHA1)
+   /* Dump original shader source to MESA_SHADER_DUMP_PATH and replace
+    * if corresponding entry found from MESA_SHADER_READ_PATH.
+    */
+   dump_shader(sh->Stage, source);
 
-      checksum = _mesa_str_checksum(source);
-
-      _mesa_snprintf(filename, sizeof(filename), "newshader_%d", checksum);
-
-      newSource = read_shader(filename);
-      if (newSource) {
-         fprintf(stderr, "Mesa: Replacing shader %u chksum=%d with %s\n",
-                       shaderObj, checksum, filename);
-         free(source);
-         source = newSource;
-      }
+   replacement = read_shader(sh->Stage, source);
+   if (replacement) {
+      free(source);
+      source = replacement;
    }
+#endif /* HAVE_SHA1 */
 
-   shader_source(ctx, shaderObj, source);
-
-   if (SHADER_SUBST) {
-      struct gl_shader *sh = _mesa_lookup_shader(ctx, shaderObj);
-      if (sh)
-         sh->SourceChecksum = checksum; /* save original checksum */
-   }
+   shader_source(sh, source);
 
    free(offsets);
 }
@@ -1692,12 +1859,23 @@ _mesa_ShaderBinary(GLint n, const GLuint* shaders, GLenum binaryformat,
                    const void* binary, GLint length)
 {
    GET_CURRENT_CONTEXT(ctx);
-   (void) n;
    (void) shaders;
    (void) binaryformat;
    (void) binary;
-   (void) length;
-   _mesa_error(ctx, GL_INVALID_OPERATION, "glShaderBinary");
+
+   /* Page 68, section 7.2 'Shader Binaries" of the of the OpenGL ES 3.1, and
+    * page 88 of the OpenGL 4.5 specs state:
+    *
+    *     "An INVALID_VALUE error is generated if count or length is negative.
+    *      An INVALID_ENUM error is generated if binaryformat is not a supported
+    *      format returned in SHADER_BINARY_FORMATS."
+    */
+   if (n < 0 || length < 0) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glShaderBinary(count or length < 0)");
+      return;
+   }
+
+   _mesa_error(ctx, GL_INVALID_ENUM, "glShaderBinary(format)");
 }
 
 
@@ -1857,7 +2035,7 @@ _mesa_ProgramParameteri(GLuint program, GLenum pname, GLint value)
 
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glProgramParameteri(pname=%s)",
-                  _mesa_lookup_enum_by_nr(pname));
+                  _mesa_enum_to_string(pname));
       return;
    }
 
@@ -1865,7 +2043,7 @@ invalid_value:
    _mesa_error(ctx, GL_INVALID_VALUE,
                "glProgramParameteri(pname=%s, value=%d): "
                "value must be 0 or 1.",
-               _mesa_lookup_enum_by_nr(pname),
+               _mesa_enum_to_string(pname),
                value);
 }
 
@@ -1883,12 +2061,84 @@ _mesa_use_shader_program(struct gl_context *ctx, GLenum type,
 }
 
 
-static GLuint
-_mesa_create_shader_program(struct gl_context* ctx, GLboolean separate,
-                            GLenum type, GLsizei count, const GLchar* const *strings)
+/**
+ * Copy program-specific data generated by linking from the gl_shader_program
+ * object to a specific gl_program object.
+ */
+void
+_mesa_copy_linked_program_data(gl_shader_stage type,
+                               const struct gl_shader_program *src,
+                               struct gl_program *dst)
 {
+   switch (type) {
+   case MESA_SHADER_VERTEX:
+      dst->UsesClipDistanceOut = src->Vert.UsesClipDistance;
+      break;
+   case MESA_SHADER_TESS_CTRL: {
+      struct gl_tess_ctrl_program *dst_tcp =
+         (struct gl_tess_ctrl_program *) dst;
+      dst_tcp->VerticesOut = src->TessCtrl.VerticesOut;
+      break;
+   }
+   case MESA_SHADER_TESS_EVAL: {
+      struct gl_tess_eval_program *dst_tep =
+         (struct gl_tess_eval_program *) dst;
+      dst_tep->PrimitiveMode = src->TessEval.PrimitiveMode;
+      dst_tep->Spacing = src->TessEval.Spacing;
+      dst_tep->VertexOrder = src->TessEval.VertexOrder;
+      dst_tep->PointMode = src->TessEval.PointMode;
+      dst->UsesClipDistanceOut = src->TessEval.UsesClipDistance;
+      break;
+   }
+   case MESA_SHADER_GEOMETRY: {
+      struct gl_geometry_program *dst_gp = (struct gl_geometry_program *) dst;
+      dst_gp->VerticesIn = src->Geom.VerticesIn;
+      dst_gp->VerticesOut = src->Geom.VerticesOut;
+      dst_gp->Invocations = src->Geom.Invocations;
+      dst_gp->InputType = src->Geom.InputType;
+      dst_gp->OutputType = src->Geom.OutputType;
+      dst->UsesClipDistanceOut = src->Geom.UsesClipDistance;
+      dst_gp->UsesEndPrimitive = src->Geom.UsesEndPrimitive;
+      dst_gp->UsesStreams = src->Geom.UsesStreams;
+      break;
+   }
+   case MESA_SHADER_FRAGMENT: {
+      struct gl_fragment_program *dst_fp = (struct gl_fragment_program *) dst;
+      dst_fp->FragDepthLayout = src->FragDepthLayout;
+      break;
+   }
+   case MESA_SHADER_COMPUTE: {
+      struct gl_compute_program *dst_cp = (struct gl_compute_program *) dst;
+      int i;
+      for (i = 0; i < 3; i++)
+         dst_cp->LocalSize[i] = src->Comp.LocalSize[i];
+      break;
+   }
+   default:
+      break;
+   }
+}
+
+/**
+ * ARB_separate_shader_objects: Compile & Link Program
+ */
+GLuint GLAPIENTRY
+_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
+                           const GLchar* const *strings)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
    const GLuint shader = create_shader(ctx, type);
    GLuint program = 0;
+
+   /*
+    * According to OpenGL 4.5 and OpenGL ES 3.1 standards, section 7.3:
+    * GL_INVALID_VALUE should be generated if count < 0
+    */
+   if (count < 0) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glCreateShaderProgram (count < 0)");
+      return program;
+   }
 
    if (shader) {
       _mesa_ShaderSource(shader, count, strings, NULL);
@@ -1904,7 +2154,7 @@ _mesa_create_shader_program(struct gl_context* ctx, GLboolean separate,
 	 shProg = _mesa_lookup_shader_program(ctx, program);
 	 sh = _mesa_lookup_shader(ctx, shader);
 
-	 shProg->SeparateShader = separate;
+	 shProg->SeparateShader = GL_TRUE;
 
 	 get_shaderiv(ctx, shader, GL_COMPILE_STATUS, &compiled);
 	 if (compiled) {
@@ -1920,8 +2170,8 @@ _mesa_create_shader_program(struct gl_context* ctx, GLboolean separate,
 	    }
 #endif
 	 }
-
-	 ralloc_strcat(&shProg->InfoLog, sh->InfoLog);
+         if (sh->InfoLog)
+            ralloc_strcat(&shProg->InfoLog, sh->InfoLog);
       }
 
       delete_shader(ctx, shader);
@@ -1932,55 +2182,565 @@ _mesa_create_shader_program(struct gl_context* ctx, GLboolean separate,
 
 
 /**
- * Copy program-specific data generated by linking from the gl_shader_program
- * object to a specific gl_program object.
+ * For GL_ARB_tessellation_shader
  */
-void
-_mesa_copy_linked_program_data(gl_shader_stage type,
-                               const struct gl_shader_program *src,
-                               struct gl_program *dst)
+extern void GLAPIENTRY
+_mesa_PatchParameteri(GLenum pname, GLint value)
 {
-   switch (type) {
-   case MESA_SHADER_VERTEX:
-      dst->UsesClipDistanceOut = src->Vert.UsesClipDistance;
-      break;
-   case MESA_SHADER_GEOMETRY: {
-      struct gl_geometry_program *dst_gp = (struct gl_geometry_program *) dst;
-      dst_gp->VerticesIn = src->Geom.VerticesIn;
-      dst_gp->VerticesOut = src->Geom.VerticesOut;
-      dst_gp->Invocations = src->Geom.Invocations;
-      dst_gp->InputType = src->Geom.InputType;
-      dst_gp->OutputType = src->Geom.OutputType;
-      dst->UsesClipDistanceOut = src->Geom.UsesClipDistance;
-      dst_gp->UsesEndPrimitive = src->Geom.UsesEndPrimitive;
-      dst_gp->UsesStreams = src->Geom.UsesStreams;
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!_mesa_has_tessellation(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glPatchParameteri");
+      return;
    }
-      break;
-   case MESA_SHADER_FRAGMENT: {
-      struct gl_fragment_program *dst_fp = (struct gl_fragment_program *) dst;
-      dst_fp->FragDepthLayout = src->FragDepthLayout;
+
+   if (pname != GL_PATCH_VERTICES) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glPatchParameteri");
+      return;
    }
-      break;
-   case MESA_SHADER_COMPUTE: {
-      struct gl_compute_program *dst_cp = (struct gl_compute_program *) dst;
-      int i;
-      for (i = 0; i < 3; i++)
-         dst_cp->LocalSize[i] = src->Comp.LocalSize[i];
+
+   if (value <= 0 || value > ctx->Const.MaxPatchVertices) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glPatchParameteri");
+      return;
    }
-      break;
+
+   ctx->TessCtrlProgram.patch_vertices = value;
+}
+
+
+extern void GLAPIENTRY
+_mesa_PatchParameterfv(GLenum pname, const GLfloat *values)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!_mesa_has_tessellation(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glPatchParameterfv");
+      return;
+   }
+
+   switch(pname) {
+   case GL_PATCH_DEFAULT_OUTER_LEVEL:
+      FLUSH_VERTICES(ctx, 0);
+      memcpy(ctx->TessCtrlProgram.patch_default_outer_level, values,
+             4 * sizeof(GLfloat));
+      ctx->NewDriverState |= ctx->DriverFlags.NewDefaultTessLevels;
+      return;
+   case GL_PATCH_DEFAULT_INNER_LEVEL:
+      FLUSH_VERTICES(ctx, 0);
+      memcpy(ctx->TessCtrlProgram.patch_default_inner_level, values,
+             2 * sizeof(GLfloat));
+      ctx->NewDriverState |= ctx->DriverFlags.NewDefaultTessLevels;
+      return;
    default:
-      break;
+      _mesa_error(ctx, GL_INVALID_ENUM, "glPatchParameterfv");
+      return;
    }
 }
 
 /**
- * ARB_separate_shader_objects: Compile & Link Program
+ * ARB_shader_subroutine
  */
-GLuint GLAPIENTRY
-_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
-                           const GLchar* const *strings)
+GLint GLAPIENTRY
+_mesa_GetSubroutineUniformLocation(GLuint program, GLenum shadertype,
+                                   const GLchar *name)
 {
    GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetSubroutineUniformLocation";
+   struct gl_shader_program *shProg;
+   GLenum resource_type;
+   gl_shader_stage stage;
 
-   return _mesa_create_shader_program(ctx, GL_TRUE, type, count, strings);
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return -1;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   if (!shProg->_LinkedShaders[stage]) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   resource_type = _mesa_shader_stage_to_subroutine_uniform(stage);
+   return _mesa_program_resource_location(shProg, resource_type, name);
+}
+
+GLuint GLAPIENTRY
+_mesa_GetSubroutineIndex(GLuint program, GLenum shadertype,
+                         const GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetSubroutineIndex";
+   struct gl_shader_program *shProg;
+   struct gl_program_resource *res;
+   GLenum resource_type;
+   gl_shader_stage stage;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return -1;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   if (!shProg->_LinkedShaders[stage]) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return -1;
+   }
+
+   resource_type = _mesa_shader_stage_to_subroutine(stage);
+   res = _mesa_program_resource_find_name(shProg, resource_type, name, NULL);
+   if (!res) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+     return -1;
+   }
+
+   return _mesa_program_resource_index(shProg, res);
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_GetActiveSubroutineUniformiv(GLuint program, GLenum shadertype,
+                                   GLuint index, GLenum pname, GLint *values)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetActiveSubroutineUniformiv";
+   struct gl_shader_program *shProg;
+   struct gl_shader *sh;
+   gl_shader_stage stage;
+   struct gl_program_resource *res;
+   const struct gl_uniform_storage *uni;
+   GLenum resource_type;
+   int count, i, j;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   resource_type = _mesa_shader_stage_to_subroutine_uniform(stage);
+
+   sh = shProg->_LinkedShaders[stage];
+   if (!sh) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   switch (pname) {
+   case GL_NUM_COMPATIBLE_SUBROUTINES: {
+      res = _mesa_program_resource_find_index(shProg, resource_type, index);
+      if (res) {
+         uni = res->Data;
+         values[0] = uni->num_compatible_subroutines;
+      }
+      break;
+   }
+   case GL_COMPATIBLE_SUBROUTINES: {
+      res = _mesa_program_resource_find_index(shProg, resource_type, index);
+      if (res) {
+         uni = res->Data;
+         count = 0;
+         for (i = 0; i < sh->NumSubroutineFunctions; i++) {
+            struct gl_subroutine_function *fn = &sh->SubroutineFunctions[i];
+            for (j = 0; j < fn->num_compat_types; j++) {
+               if (fn->types[j] == uni->type) {
+                  values[count++] = i;
+                  break;
+               }
+            }
+         }
+      }
+      break;
+   }
+   case GL_UNIFORM_SIZE:
+      res = _mesa_program_resource_find_index(shProg, resource_type, index);
+      if (res) {
+         uni = res->Data;
+         values[0] = uni->array_elements ? uni->array_elements : 1;
+      }
+      break;
+   case GL_UNIFORM_NAME_LENGTH:
+      res = _mesa_program_resource_find_index(shProg, resource_type, index);
+      if (res) {
+         values[0] = strlen(_mesa_program_resource_name(res)) + 1
+            + ((_mesa_program_resource_array_size(res) != 0) ? 3 : 0);;
+      }
+      break;
+   default:
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_GetActiveSubroutineUniformName(GLuint program, GLenum shadertype,
+                                     GLuint index, GLsizei bufsize,
+                                     GLsizei *length, GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetActiveSubroutineUniformName";
+   struct gl_shader_program *shProg;
+   GLenum resource_type;
+   gl_shader_stage stage;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   if (!shProg->_LinkedShaders[stage]) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   resource_type = _mesa_shader_stage_to_subroutine_uniform(stage);
+   /* get program resource name */
+   _mesa_get_program_resource_name(shProg, resource_type,
+                                   index, bufsize,
+                                   length, name, api_name);
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_GetActiveSubroutineName(GLuint program, GLenum shadertype,
+                              GLuint index, GLsizei bufsize,
+                              GLsizei *length, GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetActiveSubroutineName";
+   struct gl_shader_program *shProg;
+   GLenum resource_type;
+   gl_shader_stage stage;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   if (!shProg->_LinkedShaders[stage]) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+   resource_type = _mesa_shader_stage_to_subroutine(stage);
+   _mesa_get_program_resource_name(shProg, resource_type,
+                                   index, bufsize,
+                                   length, name, api_name);
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_UniformSubroutinesuiv(GLenum shadertype, GLsizei count,
+                            const GLuint *indices)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glUniformSubroutinesuiv";
+   struct gl_shader_program *shProg;
+   struct gl_shader *sh;
+   gl_shader_stage stage;
+   int i;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   shProg = ctx->_Shader->CurrentProgram[stage];
+   if (!shProg) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   sh = shProg->_LinkedShaders[stage];
+   if (!sh) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (count != sh->NumSubroutineUniformRemapTable) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s", api_name);
+      return;
+   }
+
+   i = 0;
+   do {
+      struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[i];
+      int uni_count = uni->array_elements ? uni->array_elements : 1;
+      int j, k;
+
+      for (j = i; j < i + uni_count; j++) {
+         struct gl_subroutine_function *subfn;
+         if (indices[j] >= sh->NumSubroutineFunctions) {
+            _mesa_error(ctx, GL_INVALID_VALUE, "%s", api_name);
+            return;
+         }
+
+         subfn = &sh->SubroutineFunctions[indices[j]];
+         for (k = 0; k < subfn->num_compat_types; k++) {
+            if (subfn->types[k] == uni->type)
+               break;
+         }
+         if (k == subfn->num_compat_types) {
+            _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+            return;
+         }
+      }
+      i += uni_count;
+   } while(i < count);
+
+   FLUSH_VERTICES(ctx, _NEW_PROGRAM_CONSTANTS);
+   i = 0;
+   do {
+      struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[i];
+      int uni_count = uni->array_elements ? uni->array_elements : 1;
+
+      memcpy(&uni->storage[0], &indices[i],
+             sizeof(GLuint) * uni_count);
+
+      uni->initialized = true;
+      _mesa_propagate_uniforms_to_driver_storage(uni, 0, uni_count);
+      i += uni_count;
+   } while(i < count);
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_GetUniformSubroutineuiv(GLenum shadertype, GLint location,
+                              GLuint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetUniformSubroutineuiv";
+   struct gl_shader_program *shProg;
+   struct gl_shader *sh;
+   gl_shader_stage stage;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   shProg = ctx->_Shader->CurrentProgram[stage];
+   if (!shProg) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   sh = shProg->_LinkedShaders[stage];
+   if (!sh) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (location >= sh->NumSubroutineUniformRemapTable) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s", api_name);
+      return;
+   }
+
+   {
+      struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[location];
+      int offset = location - uni->subroutine[stage].index;
+      memcpy(params, &uni->storage[offset],
+	     sizeof(GLuint));
+   }
+}
+
+
+GLvoid GLAPIENTRY
+_mesa_GetProgramStageiv(GLuint program, GLenum shadertype,
+                        GLenum pname, GLint *values)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   const char *api_name = "glGetProgramStageiv";
+   struct gl_shader_program *shProg;
+   struct gl_shader *sh;
+   gl_shader_stage stage;
+
+   if (!_mesa_has_shader_subroutine(ctx)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   if (!_mesa_validate_shader_target(ctx, shadertype)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   shProg = _mesa_lookup_shader_program_err(ctx, program, api_name);
+   if (!shProg)
+      return;
+
+   stage = _mesa_shader_enum_to_shader_stage(shadertype);
+   sh = shProg->_LinkedShaders[stage];
+   if (!sh) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", api_name);
+      return;
+   }
+
+   switch (pname) {
+   case GL_ACTIVE_SUBROUTINES:
+      values[0] = sh->NumSubroutineFunctions;
+      break;
+   case GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS:
+      values[0] = sh->NumSubroutineUniformRemapTable;
+      break;
+   case GL_ACTIVE_SUBROUTINE_UNIFORMS:
+      values[0] = sh->NumSubroutineUniformTypes;
+      break;
+   case GL_ACTIVE_SUBROUTINE_MAX_LENGTH:
+   {
+      unsigned i;
+      GLint max_len = 0;
+      GLenum resource_type;
+      struct gl_program_resource *res;
+
+      resource_type = _mesa_shader_stage_to_subroutine(stage);
+      for (i = 0; i < sh->NumSubroutineFunctions; i++) {
+         res = _mesa_program_resource_find_index(shProg, resource_type, i);
+         if (res) {
+            const GLint len = strlen(_mesa_program_resource_name(res)) + 1;
+            if (len > max_len)
+               max_len = len;
+         }
+      }
+      values[0] = max_len;
+      break;
+   }
+   case GL_ACTIVE_SUBROUTINE_UNIFORM_MAX_LENGTH:
+   {
+      unsigned i;
+      GLint max_len = 0;
+      GLenum resource_type;
+      struct gl_program_resource *res;
+
+      resource_type = _mesa_shader_stage_to_subroutine_uniform(stage);
+      for (i = 0; i < sh->NumSubroutineUniformRemapTable; i++) {
+         res = _mesa_program_resource_find_index(shProg, resource_type, i);
+         if (res) {
+            const GLint len = strlen(_mesa_program_resource_name(res)) + 1
+               + ((_mesa_program_resource_array_size(res) != 0) ? 3 : 0);
+
+            if (len > max_len)
+               max_len = len;
+         }
+      }
+      values[0] = max_len;
+      break;
+   }
+   default:
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s", api_name);
+      values[0] = -1;
+      break;
+   }
+}
+
+static int
+find_compat_subroutine(struct gl_shader *sh, const struct glsl_type *type)
+{
+   int i, j;
+
+   for (i = 0; i < sh->NumSubroutineFunctions; i++) {
+      struct gl_subroutine_function *fn = &sh->SubroutineFunctions[i];
+      for (j = 0; j < fn->num_compat_types; j++) {
+         if (fn->types[j] == type)
+            return i;
+      }
+   }
+   return 0;
+}
+
+static void
+_mesa_shader_init_subroutine_defaults(struct gl_shader *sh)
+{
+   int i, j;
+
+   for (i = 0; i < sh->NumSubroutineUniformRemapTable; i++) {
+      struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[i];
+      int uni_count;
+      int val;
+
+      if (!uni)
+         continue;
+      uni_count = uni->array_elements ? uni->array_elements : 1;
+      val = find_compat_subroutine(sh, uni->type);
+
+      for (j = 0; j < uni_count; j++)
+         memcpy(&uni->storage[j], &val, sizeof(int));
+      uni->initialized = true;
+      _mesa_propagate_uniforms_to_driver_storage(uni, 0, uni_count);
+   }
+}
+
+void
+_mesa_shader_program_init_subroutine_defaults(struct gl_shader_program *shProg)
+{
+   int i;
+
+   if (!shProg)
+      return;
+
+   for (i = 0; i < MESA_SHADER_STAGES; i++) {
+      if (!shProg->_LinkedShaders[i])
+         continue;
+
+      _mesa_shader_init_subroutine_defaults(shProg->_LinkedShaders[i]);
+   }
 }

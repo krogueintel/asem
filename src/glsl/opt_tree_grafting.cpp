@@ -274,6 +274,7 @@ ir_tree_grafting_visitor::visit_enter(ir_texture *ir)
    case ir_tex:
    case ir_lod:
    case ir_query_levels:
+   case ir_texture_samples:
       break;
    case ir_txb:
       if (do_graft(&ir->lod_info.bias))
@@ -359,10 +360,11 @@ tree_grafting_basic_block(ir_instruction *bb_first,
       if (!lhs_var)
 	 continue;
 
-      if (lhs_var->data.mode == ir_var_function_out ||
-	  lhs_var->data.mode == ir_var_function_inout ||
-          lhs_var->data.mode == ir_var_shader_out)
-	 continue;
+   if (lhs_var->data.mode == ir_var_function_out ||
+       lhs_var->data.mode == ir_var_function_inout ||
+       lhs_var->data.mode == ir_var_shader_out ||
+       lhs_var->data.mode == ir_var_shader_storage)
+      continue;
 
       ir_variable_refcount_entry *entry = info->refs->get_variable_entry(lhs_var);
 

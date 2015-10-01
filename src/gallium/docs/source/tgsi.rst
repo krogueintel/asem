@@ -960,7 +960,6 @@ XXX doesn't look like most of the opcodes really belong here.
   For components which don't return a resource dimension, their value
   is undefined.
 
-
 .. math::
 
   lod = src0.x
@@ -972,6 +971,17 @@ XXX doesn't look like most of the opcodes really belong here.
   dst.z = texture\_depth(unit, lod)
 
   dst.w = texture\_levels(unit)
+
+
+.. opcode:: TXQS - Texture Samples Query
+
+  This retrieves the number of samples in the texture, and stores it
+  into the x component. The other components are undefined.
+
+.. math::
+
+  dst.x = texture\_samples(unit)
+
 
 .. opcode:: TG4 - Texture Gather
 
@@ -2591,7 +2601,7 @@ Array Declaration
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 Declarations can optional have an ArrayID attribute which can be referred by
-indirect addressing operands. An ArrayID of zero is reserved and treaded as
+indirect addressing operands. An ArrayID of zero is reserved and treated as
 if no ArrayID is specified.
 
 If an indirect addressing operand refers to a specific declaration by using
@@ -2603,6 +2613,7 @@ not relative to the specified declaration
 If no ArrayID is specified with an indirect addressing operand the whole
 register file might be accessed by this operand. This is strongly discouraged
 and will prevent packing of scalar/vec2 arrays and effective alias analysis.
+This is only legal for TEMP and CONST register files.
 
 Declaration Semantic
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -2965,6 +2976,18 @@ resource can be one of BUFFER, 1D, 2D, 3D, 1DArray and 2DArray.
 type must be 1 or 4 entries (if specifying on a per-component
 level) out of UNORM, SNORM, SINT, UINT and FLOAT.
 
+For TEX\* style texture sample opcodes (as opposed to SAMPLE\* opcodes
+which take an explicit SVIEW[#] source register), there may be optionally
+SVIEW[#] declarations.  In this case, the SVIEW index is implied by the
+SAMP index, and there must be a corresponding SVIEW[#] declaration for
+each SAMP[#] declaration.  Drivers are free to ignore this if they wish.
+But note in particular that some drivers need to know the sampler type
+(float/int/unsigned) in order to generate the correct code, so cases
+where integer textures are sampled, SVIEW[#] declarations should be
+used.
+
+NOTE: It is NOT legal to mix SAMPLE\* style opcodes and TEX\* opcodes
+in the same shader.
 
 Declaration Resource
 ^^^^^^^^^^^^^^^^^^^^

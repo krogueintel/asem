@@ -56,12 +56,14 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
 {
    uint procType, i;
    struct tgsi_parse_context parse;
+   unsigned current_depth = 0;
 
    memset(info, 0, sizeof(*info));
    for (i = 0; i < TGSI_FILE_COUNT; i++)
       info->file_max[i] = -1;
    for (i = 0; i < Elements(info->const_file_max); i++)
       info->const_file_max[i] = -1;
+   info->properties[TGSI_PROPERTY_GS_INVOCATIONS] = 1;
 
    /**
     ** Setup to begin parsing input shader
@@ -98,6 +100,25 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
 
             assert(fullinst->Instruction.Opcode < TGSI_OPCODE_LAST);
             info->opcode_count[fullinst->Instruction.Opcode]++;
+
+            switch (fullinst->Instruction.Opcode) {
+            case TGSI_OPCODE_IF:
+            case TGSI_OPCODE_UIF:
+            case TGSI_OPCODE_BGNLOOP:
+               current_depth++;
+               info->max_depth = MAX2(info->max_depth, current_depth);
+               break;
+            case TGSI_OPCODE_ENDIF:
+            case TGSI_OPCODE_ENDLOOP:
+               current_depth--;
+               break;
+            default:
+               break;
+            }
+
+            if (fullinst->Instruction.Opcode >= TGSI_OPCODE_F2D &&
+                fullinst->Instruction.Opcode <= TGSI_OPCODE_DSSG)
+               info->uses_doubles = true;
 
             for (i = 0; i < fullinst->Instruction.NumSrcRegs; i++) {
                const struct tgsi_full_src_register *src =
@@ -248,6 +269,8 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                   }
                   else if (semName == TGSI_SEMANTIC_PRIMID) {
                      info->uses_primid = TRUE;
+                  } else if (semName == TGSI_SEMANTIC_INVOCATIONID) {
+                     info->uses_invocationid = TRUE;
                   }
                }
                else if (file == TGSI_FILE_OUTPUT) {

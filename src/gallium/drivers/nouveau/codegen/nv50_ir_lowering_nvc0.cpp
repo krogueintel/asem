@@ -224,7 +224,7 @@ NVC0LegalizePostRA::findFirstUses(
       const Instruction *texi,
       const Instruction *insn,
       std::list<TexUse> &uses,
-      std::tr1::unordered_set<const Instruction *>& visited)
+      unordered_set<const Instruction *>& visited)
 {
    for (int d = 0; insn->defExists(d); ++d) {
       Value *v = insn->getDef(d);
@@ -323,7 +323,7 @@ NVC0LegalizePostRA::insertTextureBarriers(Function *fn)
    if (!uses)
       return false;
    for (size_t i = 0; i < texes.size(); ++i) {
-      std::tr1::unordered_set<const Instruction *> visited;
+      unordered_set<const Instruction *> visited;
       findFirstUses(texes[i], texes[i], uses[i], visited);
    }
 
@@ -558,6 +558,12 @@ NVC0LegalizePostRA::visit(BasicBlock *bb)
          replaceZero(i);
       } else
       if (i->isNop()) {
+         bb->remove(i);
+      } else
+      if (i->op == OP_BAR && i->subOp == NV50_IR_SUBOP_BAR_SYNC &&
+          prog->getType() != Program::TYPE_COMPUTE) {
+         // It seems like barriers are never required for tessellation since
+         // the warp size is 32, and there are always at most 32 tcs threads.
          bb->remove(i);
       } else {
          // TODO: Move this to before register allocation for operations that
@@ -956,7 +962,46 @@ NVC0LoweringPass::handleTXD(TexInstruction *txd)
 bool
 NVC0LoweringPass::handleTXQ(TexInstruction *txq)
 {
-   // TODO: indirect resource/sampler index
+   const int chipset = prog->getTarget()->getChipset();
+   if (chipset >= NVISA_GK104_CHIPSET && txq->tex.rIndirectSrc < 0)
+      txq->tex.r += prog->driver->io.texBindBase / 4;
+
+   if (txq->tex.rIndirectSrc < 0)
+      return true;
+
+   Value *ticRel = txq->getIndirectR();
+
+   txq->setIndirectS(NULL);
+   txq->tex.sIndirectSrc = -1;
+
+   assert(ticRel);
+
+   if (chipset < NVISA_GK104_CHIPSET) {
+      LValue *src = new_LValue(func, FILE_GPR); // 0xttxsaaaa
+
+      txq->setSrc(txq->tex.rIndirectSrc, NULL);
+      if (txq->tex.r)
+         ticRel = bld.mkOp2v(OP_ADD, TYPE_U32, bld.getScratch(),
+                             ticRel, bld.mkImm(txq->tex.r));
+
+      bld.mkOp2(OP_SHL, TYPE_U32, src, ticRel, bld.mkImm(0x17));
+
+      txq->moveSources(0, 1);
+      txq->setSrc(0, src);
+   } else {
+      Value *hnd = loadTexHandle(
+            bld.mkOp2v(OP_SHL, TYPE_U32, bld.getSSA(),
+                       txq->getIndirectR(), bld.mkImm(2)),
+            txq->tex.r);
+      txq->tex.r = 0xff;
+      txq->tex.s = 0x1f;
+
+      txq->setIndirectR(NULL);
+      txq->moveSources(0, 1);
+      txq->setSrc(0, hnd);
+      txq->tex.rIndirectSrc = 0;
+   }
+
    return true;
 }
 
@@ -1485,6 +1530,10 @@ NVC0LoweringPass::handleRDSV(Instruction *i)
          i->op = OP_MOV;
          i->setSrc(0, bld.mkImm((sv == SV_NTID || sv == SV_NCTAID) ? 1 : 0));
       }
+      if (sv == SV_VERTEX_COUNT) {
+         bld.setPosition(i, true);
+         bld.mkOp2(OP_EXTBF, TYPE_U32, i->getDef(0), i->getDef(0), bld.mkImm(0x808));
+      }
       return true;
    }
 
@@ -1554,7 +1603,7 @@ NVC0LoweringPass::handleRDSV(Instruction *i)
       ld->subOp = NV50_IR_SUBOP_PIXLD_COVMASK;
       break;
    default:
-      if (prog->getType() == Program::TYPE_TESSELLATION_EVAL)
+      if (prog->getType() == Program::TYPE_TESSELLATION_EVAL && !i->perPatch)
          vtx = bld.mkOp1v(OP_PFETCH, TYPE_U32, bld.getSSA(), bld.mkImm(0));
       ld = bld.mkFetch(i->getDef(0), i->dType,
                        FILE_SHADER_INPUT, addr, i->getIndirect(0, 0), vtx);
@@ -1705,6 +1754,7 @@ NVC0LoweringPass::checkPredicate(Instruction *insn)
 bool
 NVC0LoweringPass::visit(Instruction *i)
 {
+   bool ret = true;
    bld.setPosition(i, false);
 
    if (i->cc != CC_ALWAYS)
@@ -1736,7 +1786,8 @@ NVC0LoweringPass::visit(Instruction *i)
    case OP_SQRT:
       return handleSQRT(i);
    case OP_EXPORT:
-      return handleEXPORT(i);
+      ret = handleEXPORT(i);
+      break;
    case OP_EMIT:
    case OP_RESTART:
       return handleOUT(i);
@@ -1775,6 +1826,9 @@ NVC0LoweringPass::visit(Instruction *i)
             i->setIndirect(0, 0, ptr);
             i->subOp = NV50_IR_SUBOP_LDC_IS;
          }
+      } else if (i->src(0).getFile() == FILE_SHADER_OUTPUT) {
+         assert(prog->getType() == Program::TYPE_TESSELLATION_CONTROL);
+         i->op = OP_VFETCH;
       }
       break;
    case OP_ATOM:
@@ -1796,7 +1850,20 @@ NVC0LoweringPass::visit(Instruction *i)
    default:
       break;
    }
-   return true;
+
+   /* Kepler+ has a special opcode to compute a new base address to be used
+    * for indirect loads.
+    */
+   if (targ->getChipset() >= NVISA_GK104_CHIPSET && !i->perPatch &&
+       (i->op == OP_VFETCH || i->op == OP_EXPORT) && i->src(0).isIndirect(0)) {
+      Instruction *afetch = bld.mkOp1(OP_AFETCH, TYPE_U32, bld.getSSA(),
+                                      cloneShallow(func, i->getSrc(0)));
+      afetch->setIndirect(0, 0, i->getIndirect(0, 0));
+      i->src(0).get()->reg.data.offset = 0;
+      i->setIndirect(0, 0, afetch->getDef(0));
+   }
+
+   return ret;
 }
 
 bool

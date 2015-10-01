@@ -27,6 +27,7 @@
 #include "pipe/p_format.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h" /* pipe_box */
+#include "util/macros.h"
 #include "util/u_rect.h"
 #include "util/u_format.h"
 #include "nine_helpers.h"
@@ -36,14 +37,14 @@ struct cso_context;
 extern const enum pipe_format nine_d3d9_to_pipe_format_map[120];
 extern const D3DFORMAT nine_pipe_to_d3d9_format_map[PIPE_FORMAT_COUNT];
 
-void nine_convert_dsa_state(struct cso_context *, const DWORD *);
-void nine_convert_rasterizer_state(struct cso_context *, const DWORD *);
-void nine_convert_blend_state(struct cso_context *, const DWORD *);
+void nine_convert_dsa_state(struct pipe_depth_stencil_alpha_state *, const DWORD *);
+void nine_convert_rasterizer_state(struct pipe_rasterizer_state *, const DWORD *);
+void nine_convert_blend_state(struct pipe_blend_state *, const DWORD *);
 void nine_convert_sampler_state(struct cso_context *, int idx, const DWORD *);
 
 void nine_pipe_context_clear(struct NineDevice9 *);
 
-static INLINE unsigned d3dlock_buffer_to_pipe_transfer_usage(DWORD Flags)
+static inline unsigned d3dlock_buffer_to_pipe_transfer_usage(DWORD Flags)
 {
     unsigned usage;
 
@@ -70,7 +71,7 @@ static INLINE unsigned d3dlock_buffer_to_pipe_transfer_usage(DWORD Flags)
     return usage;
 }
 
-static INLINE void
+static inline void
 rect_to_pipe_box(struct pipe_box *dst, const RECT *src)
 {
     dst->x = src->left;
@@ -81,7 +82,50 @@ rect_to_pipe_box(struct pipe_box *dst, const RECT *src)
     dst->depth = 1;
 }
 
-static INLINE boolean
+static inline void
+pipe_box_to_rect(RECT *dst, const struct pipe_box *src)
+{
+    dst->left = src->x;
+    dst->right = src->x + src->width;
+    dst->top = src->y;
+    dst->bottom = src->y + src->height;
+}
+
+static inline void
+rect_minify_inclusive(RECT *rect)
+{
+    rect->left = rect->left >> 2;
+    rect->top = rect->top >> 2;
+    rect->right = DIV_ROUND_UP(rect->right, 2);
+    rect->bottom = DIV_ROUND_UP(rect->bottom, 2);
+}
+
+/* We suppose:
+ * 0 <= rect->left < rect->right
+ * 0 <= rect->top < rect->bottom
+ */
+static inline void
+fit_rect_format_inclusive(enum pipe_format format, RECT *rect, int width, int height)
+{
+    const unsigned w = util_format_get_blockwidth(format);
+    const unsigned h = util_format_get_blockheight(format);
+
+    if (util_format_is_compressed(format)) {
+        rect->left = rect->left - rect->left % w;
+        rect->top = rect->top - rect->top % h;
+        rect->right = (rect->right % w) == 0 ?
+            rect->right :
+            rect->right - (rect->right % w) + w;
+        rect->bottom = (rect->bottom % h) == 0 ?
+            rect->bottom :
+            rect->bottom - (rect->bottom % h) + h;
+    }
+
+    rect->right = MIN2(rect->right, width);
+    rect->bottom = MIN2(rect->bottom, height);
+}
+
+static inline boolean
 rect_to_pipe_box_clamp(struct pipe_box *dst, const RECT *src)
 {
     rect_to_pipe_box(dst, src);
@@ -95,7 +139,7 @@ rect_to_pipe_box_clamp(struct pipe_box *dst, const RECT *src)
     return FALSE;
 }
 
-static INLINE boolean
+static inline boolean
 rect_to_pipe_box_flip(struct pipe_box *dst, const RECT *src)
 {
     rect_to_pipe_box(dst, src);
@@ -107,7 +151,7 @@ rect_to_pipe_box_flip(struct pipe_box *dst, const RECT *src)
     return TRUE;
 }
 
-static INLINE void
+static inline void
 rect_to_pipe_box_xy_only(struct pipe_box *dst, const RECT *src)
 {
     user_warn(src->left > src->right || src->top > src->bottom);
@@ -118,7 +162,7 @@ rect_to_pipe_box_xy_only(struct pipe_box *dst, const RECT *src)
     dst->height = src->bottom - src->top;
 }
 
-static INLINE boolean
+static inline boolean
 rect_to_pipe_box_xy_only_clamp(struct pipe_box *dst, const RECT *src)
 {
     rect_to_pipe_box_xy_only(dst, src);
@@ -132,7 +176,7 @@ rect_to_pipe_box_xy_only_clamp(struct pipe_box *dst, const RECT *src)
     return FALSE;
 }
 
-static INLINE void
+static inline void
 rect_to_g3d_u_rect(struct u_rect *dst, const RECT *src)
 {
     user_warn(src->left > src->right || src->top > src->bottom);
@@ -143,7 +187,7 @@ rect_to_g3d_u_rect(struct u_rect *dst, const RECT *src)
     dst->y1 = src->bottom;
 }
 
-static INLINE void
+static inline void
 d3dbox_to_pipe_box(struct pipe_box *dst, const D3DBOX *src)
 {
     user_warn(src->Left > src->Right);
@@ -158,13 +202,30 @@ d3dbox_to_pipe_box(struct pipe_box *dst, const D3DBOX *src)
     dst->depth = src->Back - src->Front;
 }
 
-static INLINE D3DFORMAT
+static inline D3DFORMAT
 pipe_to_d3d9_format(enum pipe_format format)
 {
     return nine_pipe_to_d3d9_format_map[format];
 }
 
-static INLINE boolean
+/* ATI1 and ATI2 are not officially compressed in d3d9 */
+static inline boolean
+compressed_format( D3DFORMAT fmt )
+{
+    switch (fmt) {
+    case D3DFMT_DXT1:
+    case D3DFMT_DXT2:
+    case D3DFMT_DXT3:
+    case D3DFMT_DXT4:
+    case D3DFMT_DXT5:
+        return TRUE;
+    default:
+        break;
+    }
+    return FALSE;
+}
+
+static inline boolean
 depth_stencil_format( D3DFORMAT fmt )
 {
     static D3DFORMAT allowed[] = {
@@ -190,7 +251,7 @@ depth_stencil_format( D3DFORMAT fmt )
     return FALSE;
 }
 
-static INLINE unsigned
+static inline unsigned
 d3d9_get_pipe_depth_format_bindings(D3DFORMAT format)
 {
     switch (format) {
@@ -215,7 +276,7 @@ d3d9_get_pipe_depth_format_bindings(D3DFORMAT format)
     }
 }
 
-static INLINE enum pipe_format
+static inline enum pipe_format
 d3d9_to_pipe_format_internal(D3DFORMAT format)
 {
     if (format <= D3DFMT_A2B10G10R10_XR_BIAS)
@@ -257,7 +318,7 @@ d3d9_to_pipe_format_internal(D3DFORMAT format)
     screen->is_format_supported(screen, pipe_format, target, \
                                 sample_count, bindings)
 
-static INLINE enum pipe_format
+static inline enum pipe_format
 d3d9_to_pipe_format_checked(struct pipe_screen *screen,
                             D3DFORMAT format,
                             enum pipe_texture_target target,
@@ -298,7 +359,7 @@ d3d9_to_pipe_format_checked(struct pipe_screen *screen,
     return PIPE_FORMAT_NONE;
 }
 
-static INLINE const char *
+static inline const char *
 d3dformat_to_string(D3DFORMAT fmt)
 {
     switch (fmt) {
@@ -381,7 +442,7 @@ d3dformat_to_string(D3DFORMAT fmt)
     return "Unknown";
 }
 
-static INLINE unsigned
+static inline unsigned
 nine_fvf_stride( DWORD fvf )
 {
     unsigned texcount, i, size = 0;
@@ -428,7 +489,7 @@ nine_fvf_stride( DWORD fvf )
     return size;
 }
 
-static INLINE void
+static inline void
 d3dcolor_to_rgba(float *rgba, D3DCOLOR color)
 {
     rgba[0] = (float)((color >> 16) & 0xFF) / 0xFF;
@@ -437,13 +498,13 @@ d3dcolor_to_rgba(float *rgba, D3DCOLOR color)
     rgba[3] = (float)((color >> 24) & 0xFF) / 0xFF;
 }
 
-static INLINE void
+static inline void
 d3dcolor_to_pipe_color_union(union pipe_color_union *rgba, D3DCOLOR color)
 {
     d3dcolor_to_rgba(&rgba->f[0], color);
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dprimitivetype_to_pipe_prim(D3DPRIMITIVETYPE prim)
 {
     switch (prim) {
@@ -459,7 +520,7 @@ d3dprimitivetype_to_pipe_prim(D3DPRIMITIVETYPE prim)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 prim_count_to_vertex_count(D3DPRIMITIVETYPE prim, UINT count)
 {
     switch (prim) {
@@ -475,7 +536,7 @@ prim_count_to_vertex_count(D3DPRIMITIVETYPE prim, UINT count)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dcmpfunc_to_pipe_func(D3DCMPFUNC func)
 {
     switch (func) {
@@ -494,7 +555,7 @@ d3dcmpfunc_to_pipe_func(D3DCMPFUNC func)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dstencilop_to_pipe_stencil_op(D3DSTENCILOP op)
 {
     switch (op) {
@@ -511,7 +572,7 @@ d3dstencilop_to_pipe_stencil_op(D3DSTENCILOP op)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dcull_to_pipe_face(D3DCULL cull)
 {
     switch (cull) {
@@ -524,7 +585,7 @@ d3dcull_to_pipe_face(D3DCULL cull)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dfillmode_to_pipe_polygon_mode(D3DFILLMODE mode)
 {
     switch (mode) {
@@ -538,7 +599,7 @@ d3dfillmode_to_pipe_polygon_mode(D3DFILLMODE mode)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dblendop_to_pipe_blend(D3DBLENDOP op)
 {
     switch (op) {
@@ -557,7 +618,7 @@ d3dblendop_to_pipe_blend(D3DBLENDOP op)
  * Drivers may check RGB and ALPHA factors for equality so we should not
  * simply substitute the ALPHA variants.
  */
-static INLINE unsigned
+static inline unsigned
 d3dblend_alpha_to_pipe_blendfactor(D3DBLEND b)
 {
     switch (b) {
@@ -584,7 +645,7 @@ d3dblend_alpha_to_pipe_blendfactor(D3DBLEND b)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dblend_color_to_pipe_blendfactor(D3DBLEND b)
 {
     switch (b) {
@@ -611,7 +672,7 @@ d3dblend_color_to_pipe_blendfactor(D3DBLEND b)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dtextureaddress_to_pipe_tex_wrap(D3DTEXTUREADDRESS addr)
 {
     switch (addr) {
@@ -626,7 +687,7 @@ d3dtextureaddress_to_pipe_tex_wrap(D3DTEXTUREADDRESS addr)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dtexturefiltertype_to_pipe_tex_filter(D3DTEXTUREFILTERTYPE filter)
 {
     switch (filter) {
@@ -644,7 +705,7 @@ d3dtexturefiltertype_to_pipe_tex_filter(D3DTEXTUREFILTERTYPE filter)
     }
 }
 
-static INLINE unsigned
+static inline unsigned
 d3dtexturefiltertype_to_pipe_tex_mipfilter(D3DTEXTUREFILTERTYPE filter)
 {
     switch (filter) {
@@ -662,7 +723,7 @@ d3dtexturefiltertype_to_pipe_tex_mipfilter(D3DTEXTUREFILTERTYPE filter)
     }
 }
 
-static INLINE unsigned nine_format_get_stride(enum pipe_format format,
+static inline unsigned nine_format_get_stride(enum pipe_format format,
                                               unsigned width)
 {
     unsigned stride = util_format_get_stride(format, width);
@@ -670,7 +731,7 @@ static INLINE unsigned nine_format_get_stride(enum pipe_format format,
     return align(stride, 4);
 }
 
-static INLINE unsigned nine_format_get_level_alloc_size(enum pipe_format format,
+static inline unsigned nine_format_get_level_alloc_size(enum pipe_format format,
                                                         unsigned width,
                                                         unsigned height,
                                                         unsigned level)
@@ -684,7 +745,7 @@ static INLINE unsigned nine_format_get_level_alloc_size(enum pipe_format format,
     return size;
 }
 
-static INLINE unsigned nine_format_get_size_and_offsets(enum pipe_format format,
+static inline unsigned nine_format_get_size_and_offsets(enum pipe_format format,
                                                         unsigned *offsets,
                                                         unsigned width,
                                                         unsigned height,

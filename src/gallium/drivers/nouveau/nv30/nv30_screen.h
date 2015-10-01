@@ -38,9 +38,11 @@ struct nv30_screen {
    /*XXX: nvfx state */
    struct nouveau_heap *vp_exec_heap;
    struct nouveau_heap *vp_data_heap;
+
+   unsigned max_sample_count;
 };
 
-static INLINE struct nv30_screen *
+static inline struct nv30_screen *
 nv30_screen(struct pipe_screen *pscreen)
 {
    return (struct nv30_screen *)pscreen;

@@ -94,21 +94,40 @@ struct tgsi_transform_context
 /**
  * Helper for emitting temporary register declarations.
  */
-static INLINE void
-tgsi_transform_temp_decl(struct tgsi_transform_context *ctx,
-                         unsigned index)
+static inline void
+tgsi_transform_temps_decl(struct tgsi_transform_context *ctx,
+                          unsigned firstIdx, unsigned lastIdx)
 {
    struct tgsi_full_declaration decl;
 
    decl = tgsi_default_full_declaration();
    decl.Declaration.File = TGSI_FILE_TEMPORARY;
-   decl.Range.First =
-   decl.Range.Last = index;
+   decl.Range.First = firstIdx;
+   decl.Range.Last = lastIdx;
    ctx->emit_declaration(ctx, &decl);
 }
 
+static inline void
+tgsi_transform_temp_decl(struct tgsi_transform_context *ctx,
+                         unsigned index)
+{
+   tgsi_transform_temps_decl(ctx, index, index);
+}
 
-static INLINE void
+static inline void
+tgsi_transform_const_decl(struct tgsi_transform_context *ctx,
+                          unsigned firstIdx, unsigned lastIdx)
+{
+   struct tgsi_full_declaration decl;
+
+   decl = tgsi_default_full_declaration();
+   decl.Declaration.File = TGSI_FILE_CONSTANT;
+   decl.Range.First = firstIdx;
+   decl.Range.Last = lastIdx;
+   ctx->emit_declaration(ctx, &decl);
+}
+ 
+static inline void
 tgsi_transform_input_decl(struct tgsi_transform_context *ctx,
                           unsigned index,
                           unsigned sem_name, unsigned sem_index,
@@ -129,8 +148,28 @@ tgsi_transform_input_decl(struct tgsi_transform_context *ctx,
    ctx->emit_declaration(ctx, &decl);
 }
 
+static inline void
+tgsi_transform_output_decl(struct tgsi_transform_context *ctx,
+                          unsigned index,
+                          unsigned sem_name, unsigned sem_index,
+                          unsigned interp)
+{
+   struct tgsi_full_declaration decl;
 
-static INLINE void
+   decl = tgsi_default_full_declaration();
+   decl.Declaration.File = TGSI_FILE_OUTPUT;
+   decl.Declaration.Interpolate = 1;
+   decl.Declaration.Semantic = 1;
+   decl.Semantic.Name = sem_name;
+   decl.Semantic.Index = sem_index;
+   decl.Range.First =
+   decl.Range.Last = index;
+   decl.Interp.Interpolate = interp;
+
+   ctx->emit_declaration(ctx, &decl);
+}
+
+static inline void
 tgsi_transform_sampler_decl(struct tgsi_transform_context *ctx,
                             unsigned index)
 {
@@ -143,8 +182,29 @@ tgsi_transform_sampler_decl(struct tgsi_transform_context *ctx,
    ctx->emit_declaration(ctx, &decl);
 }
 
+static inline void
+tgsi_transform_sampler_view_decl(struct tgsi_transform_context *ctx,
+                                 unsigned index,
+                                 unsigned target,
+                                 enum tgsi_return_type type)
+{
+   struct tgsi_full_declaration decl;
 
-static INLINE void
+   decl = tgsi_default_full_declaration();
+   decl.Declaration.File = TGSI_FILE_SAMPLER_VIEW;
+   decl.Declaration.UsageMask = 0xf;
+   decl.Range.First =
+   decl.Range.Last = index;
+   decl.SamplerView.Resource = target;
+   decl.SamplerView.ReturnTypeX = type;
+   decl.SamplerView.ReturnTypeY = type;
+   decl.SamplerView.ReturnTypeZ = type;
+   decl.SamplerView.ReturnTypeW = type;
+
+   ctx->emit_declaration(ctx, &decl);
+}
+
+static inline void
 tgsi_transform_immediate_decl(struct tgsi_transform_context *ctx,
                               float x, float y, float z, float w)
 {
@@ -161,11 +221,33 @@ tgsi_transform_immediate_decl(struct tgsi_transform_context *ctx,
    ctx->emit_immediate(ctx, &immed);
 }
 
+static inline void
+tgsi_transform_dst_reg(struct tgsi_full_dst_register *reg,
+                       unsigned file, unsigned index, unsigned writemask)
+{
+   reg->Register.File = file;
+   reg->Register.Index = index;
+   reg->Register.WriteMask = writemask;
+}
+
+static inline void
+tgsi_transform_src_reg(struct tgsi_full_src_register *reg,
+                       unsigned file, unsigned index, 
+                       unsigned swizzleX, unsigned swizzleY,
+                       unsigned swizzleZ, unsigned swizzleW)
+{
+   reg->Register.File = file;
+   reg->Register.Index = index;
+   reg->Register.SwizzleX = swizzleX; 
+   reg->Register.SwizzleY = swizzleY; 
+   reg->Register.SwizzleZ = swizzleZ; 
+   reg->Register.SwizzleW = swizzleW; 
+}
 
 /**
  * Helper for emitting 1-operand instructions.
  */
-static INLINE void
+static inline void
 tgsi_transform_op1_inst(struct tgsi_transform_context *ctx,
                         unsigned opcode,
                         unsigned dst_file,
@@ -190,7 +272,7 @@ tgsi_transform_op1_inst(struct tgsi_transform_context *ctx,
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_op2_inst(struct tgsi_transform_context *ctx,
                         unsigned opcode,
                         unsigned dst_file,
@@ -219,7 +301,7 @@ tgsi_transform_op2_inst(struct tgsi_transform_context *ctx,
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_op1_swz_inst(struct tgsi_transform_context *ctx,
                             unsigned opcode,
                             unsigned dst_file,
@@ -261,7 +343,7 @@ tgsi_transform_op1_swz_inst(struct tgsi_transform_context *ctx,
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_op2_swz_inst(struct tgsi_transform_context *ctx,
                             unsigned opcode,
                             unsigned dst_file,
@@ -312,7 +394,7 @@ tgsi_transform_op2_swz_inst(struct tgsi_transform_context *ctx,
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_op3_swz_inst(struct tgsi_transform_context *ctx,
                             unsigned opcode,
                             unsigned dst_file,
@@ -374,11 +456,12 @@ tgsi_transform_op3_swz_inst(struct tgsi_transform_context *ctx,
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_kill_inst(struct tgsi_transform_context *ctx,
                          unsigned src_file,
                          unsigned src_index,
-                         unsigned src_swizzle)
+                         unsigned src_swizzle,
+                         boolean negate)
 {
    struct tgsi_full_instruction inst;
 
@@ -392,13 +475,13 @@ tgsi_transform_kill_inst(struct tgsi_transform_context *ctx,
    inst.Src[0].Register.SwizzleY =
    inst.Src[0].Register.SwizzleZ =
    inst.Src[0].Register.SwizzleW = src_swizzle;
-   inst.Src[0].Register.Negate = 1;
+   inst.Src[0].Register.Negate = negate;
 
    ctx->emit_instruction(ctx, &inst);
 }
 
 
-static INLINE void
+static inline void
 tgsi_transform_tex_2d_inst(struct tgsi_transform_context *ctx,
                            unsigned dst_file,
                            unsigned dst_index,

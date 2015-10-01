@@ -66,20 +66,11 @@ brw_write_timestamp(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
 void
 brw_write_depth_count(struct brw_context *brw, drm_intel_bo *query_bo, int idx)
 {
-   uint32_t flags;
-
-   flags = (PIPE_CONTROL_WRITE_DEPTH_COUNT |
-            PIPE_CONTROL_DEPTH_STALL);
-
-   /* Needed to ensure the memory is coherent for the MI_LOAD_REGISTER_MEM
-    * command when loading the values into the predicate source registers for
-    * conditional rendering.
-    */
-   if (brw->predicate.supported)
-      flags |= PIPE_CONTROL_FLUSH_ENABLE;
-
-   brw_emit_pipe_control_write(brw, flags, query_bo,
-                               idx * sizeof(uint64_t), 0, 0);
+   brw_emit_pipe_control_write(brw,
+                               PIPE_CONTROL_WRITE_DEPTH_COUNT |
+                               PIPE_CONTROL_DEPTH_STALL,
+                               query_bo, idx * sizeof(uint64_t),
+                               0, 0);
 }
 
 /**
@@ -497,13 +488,22 @@ brw_get_timestamp(struct gl_context *ctx)
    struct brw_context *brw = brw_context(ctx);
    uint64_t result = 0;
 
-   drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+   switch (brw->intelScreen->hw_has_timestamp) {
+   case 3: /* New kernel, always full 36bit accuracy */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP | 1, &result);
+      break;
+   case 2: /* 64bit kernel, result is left-shifted by 32bits, losing 4bits */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+      result = result >> 32;
+      break;
+   case 1: /* 32bit kernel, result is 36bit wide but may be inaccurate! */
+      drm_intel_reg_read(brw->bufmgr, TIMESTAMP, &result);
+      break;
+   }
 
    /* See logic in brw_queryobj_get_results() */
-   result = result >> 32;
    result *= 80;
    result &= (1ull << 36) - 1;
-
    return result;
 }
 

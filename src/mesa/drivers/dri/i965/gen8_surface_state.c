@@ -88,14 +88,14 @@ vertical_alignment(const struct brw_context *brw,
                    uint32_t surf_type)
 {
    /* On Gen9+ vertical alignment is ignored for 1D surfaces and when
-    * tr_mode is not TRMODE_NONE.
+    * tr_mode is not TRMODE_NONE. Set to an arbitrary non-reserved value.
     */
    if (brw->gen > 8 &&
        (mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE ||
         surf_type == BRW_SURFACE_1D))
-      return 0;
+      return GEN8_SURFACE_VALIGN_4;
 
-   switch (mt->align_h) {
+   switch (mt->valign) {
    case 4:
       return GEN8_SURFACE_VALIGN_4;
    case 8:
@@ -113,14 +113,14 @@ horizontal_alignment(const struct brw_context *brw,
                      uint32_t surf_type)
 {
    /* On Gen9+ horizontal alignment is ignored when tr_mode is not
-    * TRMODE_NONE.
+    * TRMODE_NONE. Set to an arbitrary non-reserved value.
     */
    if (brw->gen > 8 &&
        (mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE ||
         gen9_use_linear_1d_layout(brw, mt)))
-      return 0;
+      return GEN8_SURFACE_HALIGN_4;
 
-   switch (mt->align_w) {
+   switch (mt->halign) {
    case 4:
       return GEN8_SURFACE_HALIGN_4;
    case 8:
@@ -221,8 +221,8 @@ gen8_emit_texture_surface_state(struct brw_context *brw,
        * "When Auxiliary Surface Mode is set to AUX_CCS_D or AUX_CCS_E, HALIGN
        *  16 must be used."
        */
-      assert(brw->gen < 9 || mt->align_w == 16);
-      assert(brw->gen < 8 || mt->num_samples > 1 || mt->align_w == 16);
+      assert(brw->gen < 9 || mt->halign == 16);
+      assert(brw->gen < 8 || mt->num_samples > 1 || mt->halign == 16);
    }
 
    const uint32_t surf_type = translate_tex_target(target);
@@ -237,6 +237,20 @@ gen8_emit_texture_surface_state(struct brw_context *brw,
    if (surf_type == BRW_SURFACE_CUBE) {
       surf[0] |= BRW_SURFACE_CUBEFACE_ENABLES;
    }
+
+   /* From the CHV PRM, Volume 2d, page 321 (RENDER_SURFACE_STATE dword 0
+    * bit 9 "Sampler L2 Bypass Mode Disable" Programming Notes):
+    *
+    *    This bit must be set for the following surface types: BC2_UNORM
+    *    BC3_UNORM BC5_UNORM BC5_SNORM BC7_UNORM
+    */
+   if ((brw->gen >= 9 || brw->is_cherryview) &&
+       (format == BRW_SURFACEFORMAT_BC2_UNORM ||
+        format == BRW_SURFACEFORMAT_BC3_UNORM ||
+        format == BRW_SURFACEFORMAT_BC5_UNORM ||
+        format == BRW_SURFACEFORMAT_BC5_SNORM ||
+        format == BRW_SURFACEFORMAT_BC7_UNORM))
+      surf[0] |= GEN8_SURFACE_SAMPLER_L2_BYPASS_DISABLE;
 
    if (_mesa_is_array_texture(target) || target == GL_TEXTURE_CUBE_MAP)
       surf[0] |= GEN8_SURFACE_IS_ARRAY;
@@ -262,8 +276,13 @@ gen8_emit_texture_surface_state(struct brw_context *brw,
    }
 
    if (aux_mt) {
+      uint32_t tile_w, tile_h;
+      assert(aux_mt->tiling == I915_TILING_Y);
+      intel_get_tile_dims(aux_mt->tiling, aux_mt->tr_mode,
+                          aux_mt->cpp, &tile_w, &tile_h);
       surf[6] = SET_FIELD(mt->qpitch / 4, GEN8_SURFACE_AUX_QPITCH) |
-                SET_FIELD((aux_mt->pitch / 128) - 1, GEN8_SURFACE_AUX_PITCH) |
+                SET_FIELD((aux_mt->pitch / tile_w) - 1,
+                          GEN8_SURFACE_AUX_PITCH) |
                 aux_mode;
    } else {
       surf[6] = 0;
@@ -401,8 +420,7 @@ gen8_update_renderbuffer_surface(struct brw_context *brw,
       irb->mt_layer : (irb->mt_layer / MAX2(mt->num_samples, 1));
    GLenum gl_target =
       rb->TexImage ? rb->TexImage->TexObject->Target : GL_TEXTURE_2D;
-   /* FINISHME: Use PTE MOCS on Skylake. */
-   uint32_t mocs = brw->gen >= 9 ? SKL_MOCS_WT : BDW_MOCS_PTE;
+   const uint32_t mocs = brw->gen >= 9 ? SKL_MOCS_PTE : BDW_MOCS_PTE;
 
    intel_miptree_used_for_rendering(mt);
 
@@ -452,8 +470,8 @@ gen8_update_renderbuffer_surface(struct brw_context *brw,
        * "When Auxiliary Surface Mode is set to AUX_CCS_D or AUX_CCS_E, HALIGN
        *  16 must be used."
        */
-      assert(brw->gen < 9 || mt->align_w == 16);
-      assert(brw->gen < 8 || mt->num_samples > 1 || mt->align_w == 16);
+      assert(brw->gen < 9 || mt->halign == 16);
+      assert(brw->gen < 8 || mt->num_samples > 1 || mt->halign == 16);
    }
 
    uint32_t *surf = allocate_surface_state(brw, &offset, surf_index);
@@ -488,8 +506,13 @@ gen8_update_renderbuffer_surface(struct brw_context *brw,
    }
 
    if (aux_mt) {
+      uint32_t tile_w, tile_h;
+      assert(aux_mt->tiling == I915_TILING_Y);
+      intel_get_tile_dims(aux_mt->tiling, aux_mt->tr_mode,
+                          aux_mt->cpp, &tile_w, &tile_h);
       surf[6] = SET_FIELD(mt->qpitch / 4, GEN8_SURFACE_AUX_QPITCH) |
-                SET_FIELD((aux_mt->pitch / 128) - 1, GEN8_SURFACE_AUX_PITCH) |
+                SET_FIELD((aux_mt->pitch / tile_w) - 1,
+                          GEN8_SURFACE_AUX_PITCH) |
                 aux_mode;
    } else {
       surf[6] = 0;

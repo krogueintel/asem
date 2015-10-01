@@ -563,6 +563,8 @@ const struct function common_desktop_functions_possible[] = {
 
    /* GL 4.0 */
    { "glMinSampleShading", 40, -1 },
+   { "glPatchParameteri", 40, -1 },
+   { "glPatchParameterfv", 40, -1 },
    { "glBlendEquationi", 40, -1 },
    { "glBlendEquationSeparatei", 40, -1 },
    { "glBlendFunci", 40, -1 },
@@ -842,12 +844,15 @@ const struct function common_desktop_functions_possible[] = {
    { "glGetProgramResourceiv", 43, -1 },
    { "glGetProgramResourceLocation", 43, -1 },
    { "glGetProgramResourceLocationIndex", 43, -1 },
-// { "glShaderStorageBlockBinding", 43, -1 },           // XXX: Add to xml
+   { "glShaderStorageBlockBinding", 43, -1 },
 // { "glTextureBufferRangeEXT", 43, -1 },               // XXX: Add to xml
    { "glTexStorage2DMultisample", 43, -1 },
    { "glTexStorage3DMultisample", 43, -1 },
 // { "glTextureStorage2DMultisampleEXT", 43, -1 },      // XXX: Add to xml
 // { "glTextureStorage3DMultisampleEXT", 43, -1 },      // XXX: Add to xml
+
+/* GL 4.5 */
+   { "glMemoryBarrierByRegion", 45, -1 },
 
    /* GL_ARB_internalformat_query */
    { "glGetInternalformativ", 30, -1 },
@@ -930,6 +935,11 @@ const struct function common_desktop_functions_possible[] = {
 
    /* GL_EXT_polygon_offset_clamp */
    { "glPolygonOffsetClampEXT", 11, -1 },
+
+   /* GL_ARB_get_texture_sub_image */
+   { "glGetTextureSubImage", 20, -1 },
+   { "glGetCompressedTextureSubImage", 20, -1 },
+
    { NULL, 0, -1 }
 };
 
@@ -1424,6 +1434,16 @@ const struct function gl_core_functions_possible[] = {
    /* GL 3.2 */
    { "glFramebufferTexture", 32, -1 },
 
+   /* GL 4.0 */
+   { "glGetSubroutineUniformLocation", 40, -1 },
+   { "glGetSubroutineIndex", 40, -1 },
+   { "glGetActiveSubroutineUniformiv", 40, -1 },
+   { "glGetActiveSubroutineUniformName", 40, -1 },
+   { "glGetActiveSubroutineName", 40, -1 },
+   { "glUniformSubroutinesuiv", 40, -1 },
+   { "glGetUniformSubroutineuiv", 40, -1 },
+   { "glGetProgramStageiv", 40, -1 },
+
    /* GL 4.3 */
    { "glIsRenderbuffer", 43, -1 },
    { "glBindRenderbuffer", 43, -1 },
@@ -1562,16 +1582,6 @@ const struct function gl_core_functions_possible[] = {
    { "glUniformMatrix4x2dv", 40, -1 },
    { "glUniformMatrix4x3dv", 40, -1 },
    { "glGetUniformdv", 43, -1 },
-// { "glGetSubroutineUniformLocation", 43, -1 },        // XXX: Add to xml
-// { "glGetSubroutineIndex", 43, -1 },                  // XXX: Add to xml
-// { "glGetActiveSubroutineUniformiv", 43, -1 },        // XXX: Add to xml
-// { "glGetActiveSubroutineUniformName", 43, -1 },      // XXX: Add to xml
-// { "glGetActiveSubroutineName", 43, -1 },             // XXX: Add to xml
-// { "glUniformSubroutinesuiv", 43, -1 },               // XXX: Add to xml
-// { "glGetUniformSubroutineuiv", 43, -1 },             // XXX: Add to xml
-// { "glGetProgramStageiv", 43, -1 },                   // XXX: Add to xml
-// { "glPatchParameteri", 43, -1 },                     // XXX: Add to xml
-// { "glPatchParameterfv", 43, -1 },                    // XXX: Add to xml
 
    { "glBindTransformFeedback", 43, -1 },
    { "glDeleteTransformFeedbacks", 43, -1 },
@@ -1731,6 +1741,9 @@ const struct function gl_core_functions_possible[] = {
    { "glTexStorage3DMultisample", 43, -1 },
 // { "glTextureStorage2DMultisampleEXT", 43, -1 },      // XXX: Add to xml
 // { "glTextureStorage3DMultisampleEXT", 43, -1 },      // XXX: Add to xml
+
+/* GL 4.5 */
+   { "glMemoryBarrierByRegion", 45, -1 },
 
    /* GL_ARB_direct_state_access */
    { "glCreateTransformFeedbacks", 45, -1 },
@@ -2392,10 +2405,8 @@ const struct function gles31_functions_possible[] = {
    { "glDrawArraysIndirect", 31, -1 },
    { "glDrawElementsIndirect", 31, -1 },
 
-   // FINISHME: These two functions have not been implemented yet.  They come
-   // FINISHME: from the ARB_framebuffer_no_attachments extension.
-   // { "glFramebufferParameteri", 31, -1 },
-   // { "glGetFramebufferParameteriv", 31, -1 },
+   { "glFramebufferParameteri", 31, -1 },
+   { "glGetFramebufferParameteriv", 31, -1 },
 
    { "glGetProgramInterfaceiv", 31, -1 },
    { "glGetProgramResourceIndex", 31, -1 },
@@ -2454,8 +2465,7 @@ const struct function gles31_functions_possible[] = {
    { "glGetBooleani_v", 31, -1 },
    { "glMemoryBarrier", 31, -1 },
 
-   // FINISHME: This function has not been implemented yet.
-   // { "glMemoryBarrierByRegion", 31, -1 },
+   { "glMemoryBarrierByRegion", 31, -1 },
 
    { "glTexStorage2DMultisample", 31, -1 },
    { "glGetMultisamplefv", 31, -1 },
@@ -2467,6 +2477,9 @@ const struct function gles31_functions_possible[] = {
    { "glVertexAttribIFormat", 31, -1 },
    { "glVertexAttribBinding", 31, -1 },
    { "glVertexBindingDivisor", 31, -1 },
+
+   /* GL_OES_texture_storage_multisample_2d_array */
+   { "glTexStorage3DMultisampleOES", 31, -1 },
 
    { NULL, 0, -1 },
  };

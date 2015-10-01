@@ -35,6 +35,7 @@ extern "C" {
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
 }
+#include "main/context.h"
 
 #define MAX_INSTRUCTION (1 << 30)
 
@@ -60,6 +61,8 @@ src_reg::src_reg(register_file file, int reg, const glsl_type *type)
       this->swizzle = brw_swizzle_for_size(type->vector_elements);
    else
       this->swizzle = BRW_SWIZZLE_XYZW;
+   if (type)
+      this->type = brw_type_for_base_type(type);
 }
 
 /** Generic unset register constructor. */
@@ -170,6 +173,17 @@ dst_reg::dst_reg(register_file file, int reg, const glsl_type *type,
    this->writemask = writemask;
 }
 
+dst_reg::dst_reg(register_file file, int reg, brw_reg_type type,
+                 unsigned writemask)
+{
+   init();
+
+   this->file = file;
+   this->reg = reg;
+   this->type = type;
+   this->writemask = writemask;
+}
+
 dst_reg::dst_reg(struct brw_reg reg)
 {
    init();
@@ -204,8 +218,9 @@ dst_reg::equals(const dst_reg &r) const
            writemask == r.writemask &&
            (reladdr == r.reladdr ||
             (reladdr && r.reladdr && reladdr->equals(*r.reladdr))) &&
-           memcmp(&fixed_hw_reg, &r.fixed_hw_reg,
-                  sizeof(fixed_hw_reg)) == 0);
+           ((file != HW_REG && file != IMM) ||
+            memcmp(&fixed_hw_reg, &r.fixed_hw_reg,
+                   sizeof(fixed_hw_reg)) == 0));
 }
 
 bool
@@ -316,6 +331,8 @@ vec4_visitor::implied_mrf_writes(vec4_instruction *inst)
    case SHADER_OPCODE_TXS:
    case SHADER_OPCODE_TG4:
    case SHADER_OPCODE_TG4_OFFSET:
+   case SHADER_OPCODE_SAMPLEINFO:
+   case VS_OPCODE_GET_BUFFER_SIZE:
       return inst->header_size;
    default:
       unreachable("not reached");
@@ -925,10 +942,18 @@ vec4_visitor::opt_set_dependency_control()
 }
 
 bool
-vec4_instruction::can_reswizzle(int dst_writemask,
+vec4_instruction::can_reswizzle(const struct brw_device_info *devinfo,
+                                int dst_writemask,
                                 int swizzle,
                                 int swizzle_mask)
 {
+   /* Gen6 MATH instructions can not execute in align16 mode, so swizzles
+    * or writemasking are not allowed.
+    */
+   if (devinfo->gen == 6 && is_math() &&
+       (swizzle != BRW_SWIZZLE_XYZW || dst_writemask != WRITEMASK_XYZW))
+      return false;
+
    /* If this instruction sets anything not referenced by swizzle, then we'd
     * totally break it when we reswizzle.
     */
@@ -937,6 +962,14 @@ vec4_instruction::can_reswizzle(int dst_writemask,
 
    if (mlen > 0)
       return false;
+
+   /* We can't use swizzles on the accumulator and that's really the only
+    * HW_REG we would care to reswizzle so just disallow them all.
+    */
+   for (int i = 0; i < 3; i++) {
+      if (src[i].file == HW_REG)
+         return false;
+   }
 
    return true;
 }
@@ -997,6 +1030,28 @@ vec4_visitor::opt_register_coalesce()
 	  inst->src[0].abs || inst->src[0].negate || inst->src[0].reladdr)
 	 continue;
 
+      /* Remove no-op MOVs */
+      if (inst->dst.file == inst->src[0].file &&
+          inst->dst.reg == inst->src[0].reg &&
+          inst->dst.reg_offset == inst->src[0].reg_offset) {
+         bool is_nop_mov = true;
+
+         for (unsigned c = 0; c < 4; c++) {
+            if ((inst->dst.writemask & (1 << c)) == 0)
+               continue;
+
+            if (BRW_GET_SWZ(inst->src[0].swizzle, c) != c) {
+               is_nop_mov = false;
+               break;
+            }
+         }
+
+         if (is_nop_mov) {
+            inst->remove(block);
+            continue;
+         }
+      }
+
       bool to_mrf = (inst->dst.file == MRF);
 
       /* Can't coalesce this GRF if someone else was going to
@@ -1041,8 +1096,19 @@ vec4_visitor::opt_register_coalesce()
                }
             }
 
+            /* This doesn't handle saturation on the instruction we
+             * want to coalesce away if the register types do not match.
+             * But if scan_inst is a non type-converting 'mov', we can fix
+             * the types later.
+             */
+            if (inst->saturate &&
+                inst->dst.type != scan_inst->dst.type &&
+                !(scan_inst->opcode == BRW_OPCODE_MOV &&
+                  scan_inst->dst.type == scan_inst->src[0].type))
+               break;
+
             /* If we can't handle the swizzle, bail. */
-            if (!scan_inst->can_reswizzle(inst->dst.writemask,
+            if (!scan_inst->can_reswizzle(devinfo, inst->dst.writemask,
                                           inst->src[0].swizzle,
                                           chans_needed)) {
                break;
@@ -1074,11 +1140,13 @@ vec4_visitor::opt_register_coalesce()
 	 if (interfered)
 	    break;
 
-         /* If somebody else writes our destination here, we can't coalesce
-          * before that.
+         /* If somebody else writes the same channels of our destination here,
+          * we can't coalesce before that.
           */
-         if (inst->dst.in_range(scan_inst->dst, scan_inst->regs_written))
-	    break;
+         if (inst->dst.in_range(scan_inst->dst, scan_inst->regs_written) &&
+             (inst->dst.writemask & scan_inst->dst.writemask) != 0) {
+            break;
+         }
 
          /* Check for reads of the register we're trying to coalesce into.  We
           * can't go rewriting instructions above that to put some other value
@@ -1116,6 +1184,16 @@ vec4_visitor::opt_register_coalesce()
 	       scan_inst->dst.file = inst->dst.file;
 	       scan_inst->dst.reg = inst->dst.reg;
 	       scan_inst->dst.reg_offset = inst->dst.reg_offset;
+               if (inst->saturate &&
+                   inst->dst.type != scan_inst->dst.type) {
+                  /* If we have reached this point, scan_inst is a non
+                   * type-converting 'mov' and we can modify its register types
+                   * to match the ones in inst. Otherwise, we could have an
+                   * incorrect saturation result.
+                   */
+                  scan_inst->dst.type = inst->dst.type;
+                  scan_inst->src[0].type = inst->src[0].type;
+               }
 	       scan_inst->saturate |= inst->saturate;
 	    }
 	    scan_inst = (vec4_instruction *)scan_inst->next;
@@ -1676,20 +1754,16 @@ vec4_visitor::emit_shader_time_end()
     */
    emit(ADD(diff, src_reg(diff), src_reg(-2u)));
 
-   emit_shader_time_write(st_base, src_reg(diff));
-   emit_shader_time_write(st_written, src_reg(1u));
+   emit_shader_time_write(0, src_reg(diff));
+   emit_shader_time_write(1, src_reg(1u));
    emit(BRW_OPCODE_ELSE);
-   emit_shader_time_write(st_reset, src_reg(1u));
+   emit_shader_time_write(2, src_reg(1u));
    emit(BRW_OPCODE_ENDIF);
 }
 
 void
-vec4_visitor::emit_shader_time_write(enum shader_time_shader_type type,
-                                     src_reg value)
+vec4_visitor::emit_shader_time_write(int shader_time_subindex, src_reg value)
 {
-   int shader_time_index =
-      brw_get_shader_time_index(brw, shader_prog, prog, type);
-
    dst_reg dst =
       dst_reg(this, glsl_type::get_array_instance(glsl_type::vec4_type, 2));
 
@@ -1698,7 +1772,8 @@ vec4_visitor::emit_shader_time_write(enum shader_time_shader_type type,
    time.reg_offset++;
 
    offset.type = BRW_REGISTER_TYPE_UD;
-   emit(MOV(offset, src_reg(shader_time_index * SHADER_TIME_STRIDE)));
+   int index = shader_time_index * 3 + shader_time_subindex;
+   emit(MOV(offset, src_reg(index * SHADER_TIME_STRIDE)));
 
    time.type = BRW_REGISTER_TYPE_UD;
    emit(MOV(time, src_reg(value)));
@@ -1711,27 +1786,32 @@ vec4_visitor::emit_shader_time_write(enum shader_time_shader_type type,
 bool
 vec4_visitor::run()
 {
+   bool use_vec4_nir =
+      compiler->glsl_compiler_options[stage].NirOptions != NULL;
+
    sanity_param_count = prog->Parameters->NumParameters;
 
-   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+   if (shader_time_index >= 0)
       emit_shader_time_begin();
 
    assign_binding_table_offsets();
 
    emit_prolog();
 
-   /* Generate VS IR for main().  (the visitor only descends into
-    * functions called "main").
-    */
-   if (shader) {
+   if (use_vec4_nir) {
+      assert(prog->nir != NULL);
+      emit_nir_code();
+      if (failed)
+         return false;
+   } else if (shader) {
+      /* Generate VS IR for main().  (the visitor only descends into
+       * functions called "main").
+       */
       visit_instructions(shader->base.ir);
    } else {
       emit_program_code();
    }
    base_ir = NULL;
-
-   if (key->userclip_active && !prog->UsesClipDistanceOut)
-      setup_uniform_clipplane_values();
 
    emit_thread_end();
 
@@ -1743,7 +1823,7 @@ vec4_visitor::run()
     * that we have reladdr computations available for CSE, since we'll
     * often do repeated subexpressions for those.
     */
-   if (shader) {
+   if (shader || use_vec4_nir) {
       move_grf_array_access_to_scratch();
       move_uniform_array_access_to_pull_constants();
    } else {
@@ -1816,7 +1896,7 @@ vec4_visitor::run()
 
    setup_payload();
 
-   if (false) {
+   if (unlikely(INTEL_DEBUG & DEBUG_SPILL_VEC4)) {
       /* Debug of register spilling: Go spill everything. */
       const int grf_count = alloc.count;
       float spill_costs[alloc.count];
@@ -1829,14 +1909,29 @@ vec4_visitor::run()
       }
    }
 
-   while (!reg_allocate()) {
-      if (failed)
-         return false;
+   bool allocated_without_spills = reg_allocate();
+
+   if (!allocated_without_spills) {
+      compiler->shader_perf_log(log_data,
+                                "%s shader triggered register spilling.  "
+                                "Try reducing the number of live vec4 values "
+                                "to improve performance.\n",
+                                stage_name);
+
+      while (!reg_allocate()) {
+         if (failed)
+            return false;
+      }
    }
 
    opt_schedule_instructions();
 
    opt_set_dependency_control();
+
+   if (last_scratch > 0) {
+      prog_data->base.total_scratch =
+         brw_get_scratch_size(last_scratch * REG_SIZE);
+   }
 
    /* If any state parameters were appended, then ParameterValues could have
     * been realloced, in which case the driver uniform storage set up by
@@ -1859,46 +1954,48 @@ extern "C" {
  */
 const unsigned *
 brw_vs_emit(struct brw_context *brw,
-            struct gl_shader_program *prog,
-            struct brw_vs_compile *c,
-            struct brw_vs_prog_data *prog_data,
             void *mem_ctx,
+            const struct brw_vs_prog_key *key,
+            struct brw_vs_prog_data *prog_data,
+            struct gl_vertex_program *vp,
+            struct gl_shader_program *prog,
             unsigned *final_assembly_size)
 {
-   bool start_busy = false;
-   double start_time = 0;
    const unsigned *assembly = NULL;
-
-   if (unlikely(brw->perf_debug)) {
-      start_busy = (brw->batch.last_bo &&
-                    drm_intel_bo_busy(brw->batch.last_bo));
-      start_time = get_time();
-   }
 
    struct brw_shader *shader = NULL;
    if (prog)
       shader = (brw_shader *) prog->_LinkedShaders[MESA_SHADER_VERTEX];
 
+   int st_index = -1;
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      st_index = brw_get_shader_time_index(brw, prog, &vp->Base, ST_VS);
+
    if (unlikely(INTEL_DEBUG & DEBUG_VS))
-      brw_dump_ir("vertex", prog, &shader->base, &c->vp->program.Base);
+      brw_dump_ir("vertex", prog, &shader->base, &vp->Base);
 
-   if (brw->scalar_vs) {
-      if (!c->vp->program.Base.nir) {
-         /* Normally we generate NIR in LinkShader() or
-          * ProgramStringNotify(), but Mesa's fixed-function vertex program
-          * handling doesn't notify the driver at all.  Just do it here, at
-          * the last minute, even though it's lame.
-          */
-         assert(c->vp->program.Base.Id == 0 && prog == NULL);
-         c->vp->program.Base.nir =
-            brw_create_nir(brw, NULL, &c->vp->program.Base, MESA_SHADER_VERTEX);
-      }
+   if (!vp->Base.nir &&
+       (brw->intelScreen->compiler->scalar_vs ||
+        brw->intelScreen->compiler->glsl_compiler_options[MESA_SHADER_VERTEX].NirOptions != NULL)) {
+      /* Normally we generate NIR in LinkShader() or
+       * ProgramStringNotify(), but Mesa's fixed-function vertex program
+       * handling doesn't notify the driver at all.  Just do it here, at
+       * the last minute, even though it's lame.
+       */
+      assert(vp->Base.Id == 0 && prog == NULL);
+      vp->Base.nir =
+         brw_create_nir(brw, NULL, &vp->Base, MESA_SHADER_VERTEX,
+                        brw->intelScreen->compiler->scalar_vs);
+   }
 
+   if (brw->intelScreen->compiler->scalar_vs) {
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
-      fs_visitor v(brw, mem_ctx, MESA_SHADER_VERTEX, &c->key,
-                   &prog_data->base.base, prog, &c->vp->program.Base, 8);
-      if (!v.run_vs()) {
+      fs_visitor v(brw->intelScreen->compiler, brw,
+                   mem_ctx, MESA_SHADER_VERTEX, key,
+                   &prog_data->base.base, prog, &vp->Base,
+                   8, st_index);
+      if (!v.run_vs(brw_select_clip_planes(&brw->ctx))) {
          if (prog) {
             prog->LinkStatus = false;
             ralloc_strcat(&prog->InfoLog, v.fail_msg);
@@ -1910,8 +2007,9 @@ brw_vs_emit(struct brw_context *brw,
          return NULL;
       }
 
-      fs_generator g(brw, mem_ctx, (void *) &c->key, &prog_data->base.base,
-                     &c->vp->program.Base, v.promoted_constants,
+      fs_generator g(brw->intelScreen->compiler, brw,
+                     mem_ctx, (void *) key, &prog_data->base.base,
+                     &vp->Base, v.promoted_constants,
                      v.runtime_check_aads_emit, "VS");
       if (INTEL_DEBUG & DEBUG_VS) {
          char *name;
@@ -1921,20 +2019,21 @@ brw_vs_emit(struct brw_context *brw,
                                    prog->Name);
          } else {
             name = ralloc_asprintf(mem_ctx, "vertex program %d",
-                                   c->vp->program.Base.Id);
+                                   vp->Base.Id);
          }
          g.enable_debug(name);
       }
       g.generate_code(v.cfg, 8);
       assembly = g.get_assembly(final_assembly_size);
-
-      c->base.last_scratch = v.last_scratch;
    }
 
    if (!assembly) {
       prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
 
-      vec4_vs_visitor v(brw, c, prog_data, prog, mem_ctx);
+      vec4_vs_visitor v(brw->intelScreen->compiler, brw, key, prog_data,
+                        vp, prog, brw_select_clip_planes(&brw->ctx),
+                        mem_ctx, st_index,
+                        !_mesa_is_gles3(&brw->ctx));
       if (!v.run()) {
          if (prog) {
             prog->LinkStatus = false;
@@ -1947,35 +2046,13 @@ brw_vs_emit(struct brw_context *brw,
          return NULL;
       }
 
-      vec4_generator g(brw, prog, &c->vp->program.Base, &prog_data->base,
+      vec4_generator g(brw->intelScreen->compiler, brw,
+                       prog, &vp->Base, &prog_data->base,
                        mem_ctx, INTEL_DEBUG & DEBUG_VS, "vertex", "VS");
       assembly = g.generate_assembly(v.cfg, final_assembly_size);
    }
 
-   if (unlikely(brw->perf_debug) && shader) {
-      if (shader->compiled_once) {
-         brw_vs_debug_recompile(brw, prog, &c->key);
-      }
-      if (start_busy && !drm_intel_bo_busy(brw->batch.last_bo)) {
-         perf_debug("VS compile took %.03f ms and stalled the GPU\n",
-                    (get_time() - start_time) * 1000);
-      }
-      shader->compiled_once = true;
-   }
-
    return assembly;
-}
-
-
-void
-brw_vue_setup_prog_key_for_precompile(struct gl_context *ctx,
-                                      struct brw_vue_prog_key *key,
-                                      GLuint id, struct gl_program *prog)
-{
-   struct brw_context *brw = brw_context(ctx);
-   key->program_string_id = id;
-
-   brw_setup_tex_for_precompile(brw, &key->tex, prog);
 }
 
 } /* extern "C" */

@@ -32,6 +32,7 @@
 #include "p_format.h"
 #include "p_video_enums.h"
 #include "p_defines.h"
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +49,7 @@ struct pipe_depth_stencil_alpha_state;
 struct pipe_draw_info;
 struct pipe_fence_handle;
 struct pipe_framebuffer_state;
+struct pipe_image_view;
 struct pipe_index_buffer;
 struct pipe_query;
 struct pipe_poly_stipple;
@@ -57,6 +59,7 @@ struct pipe_resource;
 struct pipe_sampler_state;
 struct pipe_sampler_view;
 struct pipe_scissor_state;
+struct pipe_shader_buffer;
 struct pipe_shader_state;
 struct pipe_stencil_ref;
 struct pipe_stream_output_target;
@@ -236,20 +239,38 @@ struct pipe_context {
                           const float default_inner_level[2]);
 
    /**
-    * Bind an array of shader resources that will be used by the
-    * graphics pipeline.  Any resources that were previously bound to
-    * the specified range will be unbound after this call.
+    * Bind an array of shader buffers that will be used by a shader.
+    * Any buffers that were previously bound to the specified range
+    * will be unbound.
     *
-    * \param start      first resource to bind.
-    * \param count      number of consecutive resources to bind.
-    * \param resources  array of pointers to the resources to bind, it
+    * \param shader     selects shader stage
+    * \param start_slot first buffer slot to bind.
+    * \param count      number of consecutive buffers to bind.
+    * \param buffers    array of pointers to the buffers to bind, it
     *                   should contain at least \a count elements
-    *                   unless it's NULL, in which case no new
-    *                   resources will be bound.
+    *                   unless it's NULL, in which case no buffers will
+    *                   be bound.
     */
-   void (*set_shader_resources)(struct pipe_context *,
-                                unsigned start, unsigned count,
-                                struct pipe_surface **resources);
+   void (*set_shader_buffers)(struct pipe_context *, unsigned shader,
+                              unsigned start_slot, unsigned count,
+                              struct pipe_shader_buffer *buffers);
+
+   /**
+    * Bind an array of images that will be used by a shader.
+    * Any images that were previously bound to the specified range
+    * will be unbound.
+    *
+    * \param shader     selects shader stage
+    * \param start_slot first image slot to bind.
+    * \param count      number of consecutive images to bind.
+    * \param buffers    array of pointers to the images to bind, it
+    *                   should contain at least \a count elements
+    *                   unless it's NULL, in which case no images will
+    *                   be bound.
+    */
+   void (*set_shader_images)(struct pipe_context *, unsigned shader,
+                             unsigned start_slot, unsigned count,
+                             struct pipe_image_view **images);
 
    void (*set_vertex_buffers)( struct pipe_context *,
                                unsigned start_slot,
@@ -361,8 +382,14 @@ struct pipe_context {
                         const void *clear_value,
                         int clear_value_size);
 
-   /** Flush draw commands
+   /**
+    * Flush draw commands
     *
+    * NOTE: use screen->fence_reference() (or equivalent) to transfer
+    * new fence ref to **fence, to ensure that previous fence is unref'd
+    *
+    * \param fence  if not NULL, an old fence to unref and transfer a
+    *    new fence reference to
     * \param flags  bitfield of enum pipe_flush_flags values.
     */
    void (*flush)(struct pipe_context *pipe,
@@ -390,6 +417,17 @@ struct pipe_context {
 
    void (*surface_destroy)(struct pipe_context *ctx,
                            struct pipe_surface *);
+
+   /**
+    * Create an image view into a buffer or texture to be used with load,
+    * store, and atomic instructions by a shader stage.
+    */
+   struct pipe_image_view * (*create_image_view)(struct pipe_context *ctx,
+                                                 struct pipe_resource *texture,
+                                                 const struct pipe_image_view *templat);
+
+   void (*image_view_destroy)(struct pipe_context *ctx,
+                              struct pipe_image_view *view);
 
    /**
     * Map a resource.
@@ -554,6 +592,13 @@ struct pipe_context {
                                float *out_value);
 
    /**
+    * Query a timestamp in nanoseconds.  This is completely equivalent to
+    * pipe_screen::get_timestamp() but takes a context handle for drivers
+    * that require a context.
+    */
+   uint64_t (*get_timestamp)(struct pipe_context *);
+
+   /**
     * Flush the resource cache, so that the resource can be used
     * by an external client. Possible usage:
     * - flushing a resource before presenting it on the screen
@@ -580,6 +625,17 @@ struct pipe_context {
     * Return information about unexpected device resets.
     */
    enum pipe_reset_status (*get_device_reset_status)(struct pipe_context *ctx);
+
+   /**
+    * Dump driver-specific debug information into a stream. This is
+    * used by debugging tools.
+    *
+    * \param ctx        pipe context
+    * \param stream     where the output should be written to
+    * \param flags      a mask of PIPE_DEBUG_* flags
+    */
+   void (*dump_debug_state)(struct pipe_context *ctx, FILE *stream,
+                            unsigned flags);
 };
 
 

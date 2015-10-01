@@ -236,7 +236,7 @@ void rp_gpr_tracker::unreserve(alu_node* n) {
 
 	for (i = 0; i < nsrc; ++i) {
 		value *v = n->src[i];
-		if (v->is_readonly())
+		if (v->is_readonly() || v->is_undef())
 			continue;
 		if (i == 1 && opt)
 			continue;
@@ -489,7 +489,7 @@ bool alu_group_tracker::try_reserve(alu_node* n) {
 
 	n->bc.bank_swizzle = 0;
 
-	if (!trans & fbs)
+	if (!trans && fbs)
 		n->bc.bank_swizzle = VEC_210;
 
 	if (gpr.try_reserve(n)) {

@@ -51,7 +51,7 @@ struct svga_texture
 {
    struct u_resource b;
 
-   boolean defined[6][SVGA_MAX_TEXTURE_LEVELS];
+   ushort *defined;
    
    struct svga_sampler_view *cached_view;
 
@@ -77,6 +77,12 @@ struct svga_texture
     */
    struct svga_winsys_surface *handle;
 
+   /**
+    * Whether the host side surface is imported and not created by this
+    * driver.
+    */
+   boolean imported;
+
    unsigned size;  /**< Approximate size in bytes */
 
    /** array indexed by cube face or 3D/array slice, one bit per mipmap level */
@@ -91,7 +97,7 @@ struct svga_transfer
 {
    struct pipe_transfer base;
 
-   unsigned face;
+   unsigned slice;  /**< array slice or cube face */
 
    struct svga_winsys_buffer *hwbuf;
 
@@ -106,7 +112,7 @@ struct svga_transfer
 };
 
 
-static INLINE struct svga_texture *svga_texture( struct pipe_resource *resource )
+static inline struct svga_texture *svga_texture( struct pipe_resource *resource )
 {
    struct svga_texture *tex = (struct svga_texture *)resource;
    assert(tex == NULL || tex->b.vtbl == &svga_texture_vtbl);
@@ -114,7 +120,7 @@ static INLINE struct svga_texture *svga_texture( struct pipe_resource *resource 
 }
 
 
-static INLINE struct svga_transfer *
+static inline struct svga_transfer *
 svga_transfer(struct pipe_transfer *transfer)
 {
    assert(transfer);
@@ -127,34 +133,11 @@ svga_transfer(struct pipe_transfer *transfer)
  * This is used to track updates to textures when we draw into
  * them via a surface.
  */
-static INLINE void
+static inline void
 svga_age_texture_view(struct svga_texture *tex, unsigned level)
 {
    assert(level < Elements(tex->view_age));
    tex->view_age[level] = ++(tex->age);
-}
-
-
-/**
- * Mark the given texture face/level as being defined.
- */
-static INLINE void
-svga_define_texture_level(struct svga_texture *tex,
-                          unsigned face,unsigned level)
-{
-   assert(face < Elements(tex->defined));
-   assert(level < Elements(tex->defined[0]));
-   tex->defined[face][level] = TRUE;
-}
-
-
-static INLINE bool
-svga_is_texture_level_defined(const struct svga_texture *tex,
-                              unsigned face, unsigned level)
-{
-   assert(face < Elements(tex->defined));
-   assert(level < Elements(tex->defined[0]));
-   return tex->defined[face][level];
 }
 
 
@@ -177,7 +160,28 @@ check_face_level(const struct svga_texture *tex,
 }
 
 
-static INLINE void
+/**
+ * Mark the given texture face/level as being defined.
+ */
+static inline void
+svga_define_texture_level(struct svga_texture *tex,
+                          unsigned face,unsigned level)
+{
+   check_face_level(tex, face, level);
+   tex->defined[face] |= 1 << level;
+}
+
+
+static inline bool
+svga_is_texture_level_defined(const struct svga_texture *tex,
+                              unsigned face, unsigned level)
+{
+   check_face_level(tex, face, level);
+   return (tex->defined[face] & (1 << level)) != 0;
+}
+
+
+static inline void
 svga_set_texture_rendered_to(struct svga_texture *tex,
                              unsigned face, unsigned level)
 {
@@ -186,7 +190,7 @@ svga_set_texture_rendered_to(struct svga_texture *tex,
 }
 
 
-static INLINE void
+static inline void
 svga_clear_texture_rendered_to(struct svga_texture *tex,
                                unsigned face, unsigned level)
 {
@@ -195,7 +199,7 @@ svga_clear_texture_rendered_to(struct svga_texture *tex,
 }
 
 
-static INLINE boolean
+static inline boolean
 svga_was_texture_rendered_to(const struct svga_texture *tex,
                              unsigned face, unsigned level)
 {

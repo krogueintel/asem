@@ -23,7 +23,6 @@
 
 
 #include "brw_vs.h"
-#include "main/context.h"
 
 
 namespace brw {
@@ -37,7 +36,7 @@ vec4_vs_visitor::emit_prolog()
 
    for (int i = 0; i < VERT_ATTRIB_MAX; i++) {
       if (vs_prog_data->inputs_read & BITFIELD64_BIT(i)) {
-         uint8_t wa_flags = vs_compile->key.gl_attrib_wa_flags[i];
+         uint8_t wa_flags = key->gl_attrib_wa_flags[i];
          dst_reg reg(ATTR, i);
          dst_reg reg_d = reg;
          reg_d.type = BRW_REGISTER_TYPE_D;
@@ -78,7 +77,7 @@ vec4_vs_visitor::emit_prolog()
             /* ES 3.0 has different rules for converting signed normalized
              * fixed-point numbers than desktop GL.
              */
-            if (_mesa_is_gles3(ctx) && (wa_flags & BRW_ATTRIB_WA_SIGN)) {
+            if ((wa_flags & BRW_ATTRIB_WA_SIGN) && !use_legacy_snorm_formula) {
                /* According to equation 2.2 of the ES 3.0 specification,
                 * signed normalization conversion is done by:
                 *
@@ -144,7 +143,8 @@ vec4_vs_visitor::emit_prolog()
 
 
 dst_reg *
-vec4_vs_visitor::make_reg_for_system_value(ir_variable *ir)
+vec4_vs_visitor::make_reg_for_system_value(int location,
+                                           const glsl_type *type)
 {
    /* VertexID is stored by the VF as the last vertex element, but
     * we don't represent it with a flag in inputs_read, so we call
@@ -152,7 +152,7 @@ vec4_vs_visitor::make_reg_for_system_value(ir_variable *ir)
     */
    dst_reg *reg = new(mem_ctx) dst_reg(ATTR, VERT_ATTRIB_MAX);
 
-   switch (ir->data.location) {
+   switch (location) {
    case SYSTEM_VALUE_BASE_VERTEX:
       reg->writemask = WRITEMASK_X;
       vs_prog_data->uses_vertexid = true;
@@ -202,8 +202,94 @@ vec4_vs_visitor::emit_urb_write_opcode(bool complete)
 
 
 void
+vec4_vs_visitor::emit_urb_slot(dst_reg reg, int varying)
+{
+   reg.type = BRW_REGISTER_TYPE_F;
+   output_reg[varying].type = reg.type;
+
+   switch (varying) {
+   case VARYING_SLOT_COL0:
+   case VARYING_SLOT_COL1:
+   case VARYING_SLOT_BFC0:
+   case VARYING_SLOT_BFC1: {
+      /* These built-in varyings are only supported in compatibility mode,
+       * and we only support GS in core profile.  So, this must be a vertex
+       * shader.
+       */
+      vec4_instruction *inst = emit_generic_urb_slot(reg, varying);
+      if (key->clamp_vertex_color)
+         inst->saturate = true;
+      break;
+   }
+   default:
+      return vec4_visitor::emit_urb_slot(reg, varying);
+   }
+}
+
+
+void
+vec4_vs_visitor::emit_clip_distances(dst_reg reg, int offset)
+{
+   /* From the GLSL 1.30 spec, section 7.1 (Vertex Shader Special Variables):
+    *
+    *     "If a linked set of shaders forming the vertex stage contains no
+    *     static write to gl_ClipVertex or gl_ClipDistance, but the
+    *     application has requested clipping against user clip planes through
+    *     the API, then the coordinate written to gl_Position is used for
+    *     comparison against the user clip planes."
+    *
+    * This function is only called if the shader didn't write to
+    * gl_ClipDistance.  Accordingly, we use gl_ClipVertex to perform clipping
+    * if the user wrote to it; otherwise we use gl_Position.
+    */
+   gl_varying_slot clip_vertex = VARYING_SLOT_CLIP_VERTEX;
+   if (!(prog_data->vue_map.slots_valid & VARYING_BIT_CLIP_VERTEX)) {
+      clip_vertex = VARYING_SLOT_POS;
+   }
+
+   for (int i = 0; i + offset < key->nr_userclip_plane_consts && i < 4;
+        ++i) {
+      reg.writemask = 1 << i;
+      emit(DP4(reg,
+               src_reg(output_reg[clip_vertex]),
+               src_reg(this->userplane[i + offset])));
+   }
+}
+
+
+void
+vec4_vs_visitor::setup_uniform_clipplane_values()
+{
+   for (int i = 0; i < key->nr_userclip_plane_consts; ++i) {
+      assert(this->uniforms < uniform_array_size);
+      this->uniform_vector_size[this->uniforms] = 4;
+      this->userplane[i] = dst_reg(UNIFORM, this->uniforms);
+      this->userplane[i].type = BRW_REGISTER_TYPE_F;
+      for (int j = 0; j < 4; ++j) {
+         stage_prog_data->param[this->uniforms * 4 + j] =
+            (gl_constant_value *) &clip_planes[i][j];
+      }
+      ++this->uniforms;
+   }
+}
+
+
+void
 vec4_vs_visitor::emit_thread_end()
 {
+   setup_uniform_clipplane_values();
+
+   /* Lower legacy ff and ClipVertex clipping to clip distances */
+   if (key->nr_userclip_plane_consts > 0) {
+      current_annotation = "user clip distances";
+
+      output_reg[VARYING_SLOT_CLIP_DIST0] = dst_reg(this, glsl_type::vec4_type);
+      output_reg[VARYING_SLOT_CLIP_DIST1] = dst_reg(this, glsl_type::vec4_type);
+
+      emit_clip_distances(output_reg[VARYING_SLOT_CLIP_DIST0], 0);
+      emit_clip_distances(output_reg[VARYING_SLOT_CLIP_DIST1], 4);
+   }
+
    /* For VS, we always end the thread by emitting a single vertex.
     * emit_urb_write_opcode() will take care of setting the eot flag on the
     * SEND instruction.
@@ -212,18 +298,26 @@ vec4_vs_visitor::emit_thread_end()
 }
 
 
-vec4_vs_visitor::vec4_vs_visitor(struct brw_context *brw,
-                                 struct brw_vs_compile *vs_compile,
+vec4_vs_visitor::vec4_vs_visitor(const struct brw_compiler *compiler,
+                                 void *log_data,
+                                 const struct brw_vs_prog_key *key,
                                  struct brw_vs_prog_data *vs_prog_data,
+                                 struct gl_vertex_program *vp,
                                  struct gl_shader_program *prog,
-                                 void *mem_ctx)
-   : vec4_visitor(brw, &vs_compile->base, &vs_compile->vp->program.Base,
-                  &vs_compile->key.base, &vs_prog_data->base, prog,
+                                 gl_clip_plane *clip_planes,
+                                 void *mem_ctx,
+                                 int shader_time_index,
+                                 bool use_legacy_snorm_formula)
+   : vec4_visitor(compiler, log_data,
+                  &vp->Base, &key->tex, &vs_prog_data->base, prog,
                   MESA_SHADER_VERTEX,
                   mem_ctx, false /* no_spills */,
-                  ST_VS, ST_VS_WRITTEN, ST_VS_RESET),
-     vs_compile(vs_compile),
-     vs_prog_data(vs_prog_data)
+                  shader_time_index),
+     key(key),
+     vs_prog_data(vs_prog_data),
+     vp(vp),
+     clip_planes(clip_planes),
+     use_legacy_snorm_formula(use_legacy_snorm_formula)
 {
 }
 

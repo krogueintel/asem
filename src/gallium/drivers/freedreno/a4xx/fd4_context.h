@@ -29,6 +29,8 @@
 #ifndef FD4_CONTEXT_H_
 #define FD4_CONTEXT_H_
 
+#include "util/u_upload_mgr.h"
+
 #include "freedreno_drmif.h"
 
 #include "freedreno_context.h"
@@ -70,6 +72,9 @@ struct fd4_context {
 	 */
 	struct fd_vertex_state blit_vbuf_state;
 
+	struct u_upload_mgr *border_color_uploader;
+	struct pipe_resource *border_color_buf;
+
 	/* if *any* of bits are set in {v,f}saturate_{s,t,r} */
 	bool vsaturate, fsaturate;
 
@@ -83,9 +88,6 @@ struct fd4_context {
 	 */
 	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
 
-	/* bitmask of integer texture samplers */
-	uint16_t vinteger_s, finteger_s;
-
 	/* some state changes require a different shader variant.  Keep
 	 * track of this so we know when we need to re-emit shader state
 	 * due to variant change.  See fixup_shader_state()
@@ -93,13 +95,13 @@ struct fd4_context {
 	struct ir3_shader_key last_key;
 };
 
-static INLINE struct fd4_context *
+static inline struct fd4_context *
 fd4_context(struct fd_context *ctx)
 {
 	return (struct fd4_context *)ctx;
 }
 
 struct pipe_context *
-fd4_context_create(struct pipe_screen *pscreen, void *priv);
+fd4_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags);
 
 #endif /* FD4_CONTEXT_H_ */

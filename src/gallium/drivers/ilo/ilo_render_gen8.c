@@ -30,6 +30,7 @@
 #include "core/ilo_builder_render.h"
 
 #include "ilo_blitter.h"
+#include "ilo_resource.h"
 #include "ilo_shader.h"
 #include "ilo_state.h"
 #include "ilo_render_gen.h"
@@ -199,34 +200,34 @@ gen8_draw_vf(struct ilo_render *r,
              const struct ilo_state_vector *vec,
              struct ilo_render_draw_session *session)
 {
-   int i;
-
    /* 3DSTATE_INDEX_BUFFER */
-   if (DIRTY(IB) || r->batch_bo_changed)
-      gen8_3DSTATE_INDEX_BUFFER(r->builder, &vec->ib);
+   if ((session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_INDEX_BUFFER) ||
+       DIRTY(IB) || r->batch_bo_changed)
+      gen8_3DSTATE_INDEX_BUFFER(r->builder, &vec->ve->vf, &vec->ib.ib);
 
    /* 3DSTATE_VF */
-   if (session->primitive_restart_changed) {
-      gen75_3DSTATE_VF(r->builder, vec->draw->primitive_restart,
-            vec->draw->restart_index);
-   }
+   if (session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VF)
+      gen75_3DSTATE_VF(r->builder, &vec->ve->vf);
 
    /* 3DSTATE_VERTEX_BUFFERS */
-   if (DIRTY(VB) || DIRTY(VE) || r->batch_bo_changed) {
-      gen6_3DSTATE_VERTEX_BUFFERS(r->builder, &vec->vb, vec->ve->vb_mapping,
-            vec->ve->instance_divisors, vec->ve->vb_count);
+   if ((session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VERTEX_BUFFERS) ||
+       DIRTY(VB) || DIRTY(VE) || r->batch_bo_changed) {
+      gen6_3DSTATE_VERTEX_BUFFERS(r->builder, &vec->ve->vf,
+            vec->vb.vb, vec->ve->vb_count);
    }
 
    /* 3DSTATE_VERTEX_ELEMENTS */
    if (session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VERTEX_ELEMENTS)
       gen6_3DSTATE_VERTEX_ELEMENTS(r->builder, &vec->ve->vf);
 
-   gen8_3DSTATE_VF_TOPOLOGY(r->builder,
-         gen6_3d_translate_pipe_prim(vec->draw->mode));
+   gen8_3DSTATE_VF_TOPOLOGY(r->builder, vec->draw_info.topology);
 
-   for (i = 0; i < vec->ve->vb_count; i++) {
-      gen8_3DSTATE_VF_INSTANCING(r->builder, i,
-            vec->ve->instance_divisors[i]);
+   if (session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VF_INSTANCING) {
+      const uint8_t attr_count = ilo_state_vf_get_attr_count(&vec->ve->vf);
+      uint8_t i;
+
+      for (i = 0; i < attr_count; i++)
+         gen8_3DSTATE_VF_INSTANCING(r->builder, &vec->ve->vf, i);
    }
 
    if (session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VF_SGVS)
@@ -268,7 +269,7 @@ ilo_render_emit_draw_commands_gen8(struct ilo_render *render,
    gen6_draw_sf_rect(render, vec, session);
    gen8_draw_vf(render, vec, session);
 
-   ilo_render_3dprimitive(render, vec->draw, &vec->ib);
+   ilo_render_3dprimitive(render, &vec->draw_info);
 }
 
 int

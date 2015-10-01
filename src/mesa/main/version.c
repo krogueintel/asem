@@ -309,7 +309,7 @@ compute_version(const struct gl_extensions *extensions,
                          extensions->ARB_gpu_shader5 &&
                          extensions->ARB_gpu_shader_fp64 &&
                          extensions->ARB_sample_shading &&
-                         false /*extensions->ARB_shader_subroutine*/ &&
+                         extensions->ARB_shader_subroutine &&
                          extensions->ARB_tessellation_shader &&
                          extensions->ARB_texture_buffer_object_rgb32 &&
                          extensions->ARB_texture_cube_map_array &&
@@ -450,13 +450,15 @@ compute_version_es2(const struct gl_extensions *extensions)
                          extensions->ARB_arrays_of_arrays &&
                          extensions->ARB_compute_shader &&
                          extensions->ARB_draw_indirect &&
-                         false /*extensions->ARB_framebuffer_no_attachments*/ &&
+                         extensions->ARB_explicit_uniform_location &&
+                         extensions->ARB_framebuffer_no_attachments &&
                          extensions->ARB_shader_atomic_counters &&
                          extensions->ARB_shader_image_load_store &&
-                         false /*extensions->ARB_shader_image_size*/ &&
-                         false /*extensions->ARB_shader_storage_buffer_object*/ &&
+                         extensions->ARB_shader_image_size &&
+                         extensions->ARB_shader_storage_buffer_object &&
                          extensions->ARB_shading_language_packing &&
                          extensions->ARB_stencil_texturing &&
+                         extensions->ARB_texture_multisample &&
                          extensions->ARB_gpu_shader5 &&
                          extensions->EXT_shader_integer_mix);
 

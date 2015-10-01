@@ -26,6 +26,7 @@
  */
 
 #include "nir.h"
+#include "nir_control_flow.h"
 
 /*
  * Implements a small peephole optimization that looks for
@@ -82,12 +83,22 @@ block_check_for_allowed_instrs(nir_block *block)
          break;
 
       case nir_instr_type_alu: {
-         /* It must be a move operation */
          nir_alu_instr *mov = nir_instr_as_alu(instr);
-         if (mov->op != nir_op_fmov && mov->op != nir_op_imov &&
-             mov->op != nir_op_fneg && mov->op != nir_op_ineg &&
-             mov->op != nir_op_fabs && mov->op != nir_op_iabs)
+         switch (mov->op) {
+         case nir_op_fmov:
+         case nir_op_imov:
+         case nir_op_fneg:
+         case nir_op_ineg:
+         case nir_op_fabs:
+         case nir_op_iabs:
+         case nir_op_vec2:
+         case nir_op_vec3:
+         case nir_op_vec4:
+            /* It must be a move-like operation. */
+            break;
+         default:
             return false;
+         }
 
          /* Can't handle saturate */
          if (mov->dest.saturate)
@@ -185,7 +196,7 @@ nir_opt_peephole_select_block(nir_block *block, void *void_state)
 
       nir_phi_instr *phi = nir_instr_as_phi(instr);
       nir_alu_instr *sel = nir_alu_instr_create(state->mem_ctx, nir_op_bcsel);
-      nir_src_copy(&sel->src[0].src, &if_stmt->condition, state->mem_ctx);
+      nir_src_copy(&sel->src[0].src, &if_stmt->condition, sel);
       /* Splat the condition to all channels */
       memset(sel->src[0].swizzle, 0, sizeof sel->src[0].swizzle);
 
@@ -195,7 +206,7 @@ nir_opt_peephole_select_block(nir_block *block, void *void_state)
          assert(src->src.is_ssa);
 
          unsigned idx = src->pred == then_block ? 1 : 2;
-         nir_src_copy(&sel->src[idx].src, &src->src, state->mem_ctx);
+         nir_src_copy(&sel->src[idx].src, &src->src, sel);
       }
 
       nir_ssa_dest_init(&sel->instr, &sel->dest.dest,
@@ -203,8 +214,7 @@ nir_opt_peephole_select_block(nir_block *block, void *void_state)
       sel->dest.write_mask = (1 << phi->dest.ssa.num_components) - 1;
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
-                               nir_src_for_ssa(&sel->dest.dest.ssa),
-                               state->mem_ctx);
+                               nir_src_for_ssa(&sel->dest.dest.ssa));
 
       nir_instr_insert_before(&phi->instr, &sel->instr);
       nir_instr_remove(&phi->instr);

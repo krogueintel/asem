@@ -65,6 +65,7 @@ _mesa_delete_pipeline_object(struct gl_context *ctx,
 
    _mesa_reference_shader_program(ctx, &obj->ActiveProgram, NULL);
    mtx_destroy(&obj->Mutex);
+   free(obj->Label);
    ralloc_free(obj);
 }
 
@@ -136,8 +137,8 @@ _mesa_free_pipeline_data(struct gl_context *ctx)
  * a non-existent ID.  The spec defines ID 0 as being technically
  * non-existent.
  */
-static inline struct gl_pipeline_object *
-lookup_pipeline_object(struct gl_context *ctx, GLuint id)
+struct gl_pipeline_object *
+_mesa_lookup_pipeline_object(struct gl_context *ctx, GLuint id)
 {
    if (id == 0)
       return NULL;
@@ -225,7 +226,7 @@ _mesa_UseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   struct gl_pipeline_object *pipe = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *pipe = _mesa_lookup_pipeline_object(ctx, pipeline);
    struct gl_shader_program *shProg = NULL;
    GLbitfield any_valid_stages;
 
@@ -243,14 +244,13 @@ _mesa_UseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program)
     *
     *     "If stages is not the special value ALL_SHADER_BITS, and has a bit
     *     set that is not recognized, the error INVALID_VALUE is generated."
-    *
-    * NOT YET SUPPORTED:
-    * GL_TESS_CONTROL_SHADER_BIT
-    * GL_TESS_EVALUATION_SHADER_BIT
     */
    any_valid_stages = GL_VERTEX_SHADER_BIT | GL_FRAGMENT_SHADER_BIT;
    if (_mesa_has_geometry_shaders(ctx))
       any_valid_stages |= GL_GEOMETRY_SHADER_BIT;
+   if (_mesa_has_tessellation(ctx))
+      any_valid_stages |= GL_TESS_CONTROL_SHADER_BIT |
+                          GL_TESS_EVALUATION_SHADER_BIT;
 
    if (stages != GL_ALL_SHADER_BITS && (stages & ~any_valid_stages) != 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glUseProgramStages(Stages)");
@@ -326,6 +326,12 @@ _mesa_UseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program)
 
    if ((stages & GL_GEOMETRY_SHADER_BIT) != 0)
       _mesa_use_shader_program(ctx, GL_GEOMETRY_SHADER, shProg, pipe);
+
+   if ((stages & GL_TESS_CONTROL_SHADER_BIT) != 0)
+      _mesa_use_shader_program(ctx, GL_TESS_CONTROL_SHADER, shProg, pipe);
+
+   if ((stages & GL_TESS_EVALUATION_SHADER_BIT) != 0)
+      _mesa_use_shader_program(ctx, GL_TESS_EVALUATION_SHADER, shProg, pipe);
 }
 
 /**
@@ -337,7 +343,7 @@ _mesa_ActiveShaderProgram(GLuint pipeline, GLuint program)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_shader_program *shProg = NULL;
-   struct gl_pipeline_object *pipe = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *pipe = _mesa_lookup_pipeline_object(ctx, pipeline);
 
    if (program != 0) {
       shProg = _mesa_lookup_shader_program_err(ctx, program,
@@ -399,7 +405,7 @@ _mesa_BindProgramPipeline(GLuint pipeline)
     */
    if (pipeline) {
       /* non-default pipeline object */
-      newObj = lookup_pipeline_object(ctx, pipeline);
+      newObj = _mesa_lookup_pipeline_object(ctx, pipeline);
       if (!newObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glBindProgramPipeline(non-gen name)");
@@ -468,7 +474,7 @@ _mesa_DeleteProgramPipelines(GLsizei n, const GLuint *pipelines)
 
    for (i = 0; i < n; i++) {
       struct gl_pipeline_object *obj =
-         lookup_pipeline_object(ctx, pipelines[i]);
+         _mesa_lookup_pipeline_object(ctx, pipelines[i]);
 
       if (obj) {
          assert(obj->Name == pipelines[i]);
@@ -568,7 +574,7 @@ _mesa_IsProgramPipeline(GLuint pipeline)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   struct gl_pipeline_object *obj = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *obj = _mesa_lookup_pipeline_object(ctx, pipeline);
    if (obj == NULL)
       return GL_FALSE;
 
@@ -582,11 +588,12 @@ void GLAPIENTRY
 _mesa_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *params)
 {
    GET_CURRENT_CONTEXT(ctx);
-   struct gl_pipeline_object *pipe = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *pipe = _mesa_lookup_pipeline_object(ctx, pipeline);
 
    /* Are geometry shaders available in this context?
     */
    const bool has_gs = _mesa_has_geometry_shaders(ctx);
+   const bool has_tess = _mesa_has_tessellation(ctx);;
 
    if (!pipe) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
@@ -607,18 +614,25 @@ _mesa_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *params)
       *params = pipe->InfoLog ? strlen(pipe->InfoLog) + 1 : 0;
       return;
    case GL_VALIDATE_STATUS:
-      *params = pipe->Validated;
+      /* If pipeline is not bound, return initial value 0. */
+      *params = (ctx->_Shader->Name != pipe->Name) ? 0 : pipe->Validated;
       return;
    case GL_VERTEX_SHADER:
       *params = pipe->CurrentProgram[MESA_SHADER_VERTEX]
          ? pipe->CurrentProgram[MESA_SHADER_VERTEX]->Name : 0;
       return;
    case GL_TESS_EVALUATION_SHADER:
-      /* NOT YET SUPPORTED */
-      break;
+      if (!has_tess)
+         break;
+      *params = pipe->CurrentProgram[MESA_SHADER_TESS_EVAL]
+         ? pipe->CurrentProgram[MESA_SHADER_TESS_EVAL]->Name : 0;
+      return;
    case GL_TESS_CONTROL_SHADER:
-      /* NOT YET SUPPORTED */
-      break;
+      if (!has_tess)
+         break;
+      *params = pipe->CurrentProgram[MESA_SHADER_TESS_CTRL]
+         ? pipe->CurrentProgram[MESA_SHADER_TESS_CTRL]->Name : 0;
+      return;
    case GL_GEOMETRY_SHADER:
       if (!has_gs)
          break;
@@ -634,7 +648,7 @@ _mesa_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *params)
    }
 
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetProgramPipelineiv(pname=%s)",
-               _mesa_lookup_enum_by_nr(pname));
+               _mesa_enum_to_string(pname));
 }
 
 /**
@@ -776,7 +790,9 @@ _mesa_validate_program_pipeline(struct gl_context* ctx,
     *           executable vertex shader."
     */
    if (!pipe->CurrentProgram[MESA_SHADER_VERTEX]
-       && pipe->CurrentProgram[MESA_SHADER_GEOMETRY]) {
+       && (pipe->CurrentProgram[MESA_SHADER_GEOMETRY] ||
+           pipe->CurrentProgram[MESA_SHADER_TESS_CTRL] ||
+           pipe->CurrentProgram[MESA_SHADER_TESS_EVAL])) {
       pipe->InfoLog = ralloc_strdup(pipe, "Program lacks a vertex shader");
       goto err;
    }
@@ -841,7 +857,7 @@ _mesa_ValidateProgramPipeline(GLuint pipeline)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   struct gl_pipeline_object *pipe = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *pipe = _mesa_lookup_pipeline_object(ctx, pipeline);
 
    if (!pipe) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
@@ -859,7 +875,7 @@ _mesa_GetProgramPipelineInfoLog(GLuint pipeline, GLsizei bufSize,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   struct gl_pipeline_object *pipe = lookup_pipeline_object(ctx, pipeline);
+   struct gl_pipeline_object *pipe = _mesa_lookup_pipeline_object(ctx, pipeline);
 
    if (!pipe) {
       _mesa_error(ctx, GL_INVALID_VALUE,

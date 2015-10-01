@@ -338,6 +338,12 @@ sign(operand a)
    return expr(ir_unop_sign, a);
 }
 
+ir_expression *
+subr_to_int(operand a)
+{
+   return expr(ir_unop_subroutine_to_int, a);
+}
+
 ir_expression*
 equal(operand a, operand b)
 {
@@ -558,6 +564,12 @@ ir_expression *
 csel(operand a, operand b, operand c)
 {
    return expr(ir_triop_csel, a, b, c);
+}
+
+ir_expression *
+bitfield_extract(operand a, operand b, operand c)
+{
+   return expr(ir_triop_bitfield_extract, a, b, c);
 }
 
 ir_expression *

@@ -50,6 +50,7 @@
 
 #include "brw_context.h"
 #include "brw_defines.h"
+#include "brw_shader.h"
 #include "brw_draw.h"
 #include "brw_state.h"
 
@@ -67,8 +68,6 @@
 #include "tnl/tnl.h"
 #include "tnl/t_pipeline.h"
 #include "util/ralloc.h"
-
-#include "glsl/nir/nir.h"
 
 /***************************************
  * Mesa's Driver Functions
@@ -324,6 +323,15 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    ctx->Const.StripTextureBorder = true;
 
+   ctx->Const.MaxUniformBlockSize = 65536;
+   for (int i = 0; i < MESA_SHADER_STAGES; i++) {
+      struct gl_program_constants *prog = &ctx->Const.Program[i];
+      prog->MaxUniformBlocks = 12;
+      prog->MaxCombinedUniformComponents =
+         prog->MaxUniformComponents +
+         ctx->Const.MaxUniformBlockSize / 4 * prog->MaxUniformBlocks;
+   }
+
    ctx->Const.MaxDualSourceDrawBuffers = 1;
    ctx->Const.MaxDrawBuffers = BRW_MAX_DRAW_BUFFERS;
    ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits = max_samplers;
@@ -506,6 +514,18 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxAtomicBuffers = BRW_MAX_ABO;
       ctx->Const.Program[MESA_SHADER_COMPUTE].MaxAtomicBuffers = BRW_MAX_ABO;
       ctx->Const.MaxCombinedAtomicBuffers = 3 * BRW_MAX_ABO;
+
+      ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxImageUniforms =
+         BRW_MAX_IMAGES;
+      ctx->Const.Program[MESA_SHADER_VERTEX].MaxImageUniforms =
+         (brw->intelScreen->compiler->scalar_vs ? BRW_MAX_IMAGES : 0);
+      ctx->Const.Program[MESA_SHADER_COMPUTE].MaxImageUniforms =
+         BRW_MAX_IMAGES;
+      ctx->Const.MaxImageUnits = MAX_IMAGE_UNITS;
+      ctx->Const.MaxCombinedShaderOutputResources =
+         MAX_IMAGE_UNITS + BRW_MAX_DRAW_BUFFERS;
+      ctx->Const.MaxImageSamples = 0;
+      ctx->Const.MaxCombinedImageUniforms = 3 * BRW_MAX_IMAGES;
    }
 
    /* Gen6 converts quads to polygon in beginning of 3D pipeline,
@@ -547,8 +567,32 @@ brw_initialize_context_constants(struct brw_context *brw)
     * However, unaligned accesses are slower, so enforce buffer alignment.
     */
    ctx->Const.UniformBufferOffsetAlignment = 16;
+
+   /* ShaderStorageBufferOffsetAlignment should be a cacheline (64 bytes) so
+    * that we can safely have the CPU and GPU writing the same SSBO on
+    * non-cachecoherent systems (our Atom CPUs). With UBOs, the GPU never
+    * writes, so there's no problem. For an SSBO, the GPU and the CPU can
+    * be updating disjoint regions of the buffer simultaneously and that will
+    * break if the regions overlap the same cacheline.
+    */
+   ctx->Const.ShaderStorageBufferOffsetAlignment = 64;
    ctx->Const.TextureBufferOffsetAlignment = 16;
    ctx->Const.MaxTextureBufferSize = 128 * 1024 * 1024;
+
+   /* FIXME: Tessellation stages are not yet supported in i965, so
+    * MaxCombinedShaderStorageBlocks doesn't take them into account.
+    */
+   ctx->Const.Program[MESA_SHADER_VERTEX].MaxShaderStorageBlocks = 12;
+   ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxShaderStorageBlocks = 12;
+   ctx->Const.Program[MESA_SHADER_TESS_EVAL].MaxShaderStorageBlocks = 0;
+   ctx->Const.Program[MESA_SHADER_TESS_CTRL].MaxShaderStorageBlocks = 0;
+   ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxShaderStorageBlocks = 12;
+   ctx->Const.Program[MESA_SHADER_COMPUTE].MaxShaderStorageBlocks = 12;
+   ctx->Const.MaxCombinedShaderStorageBlocks = 12 * 3;
+   ctx->Const.MaxShaderStorageBufferBindings = 36;
+
+   if (_mesa_extension_override_enables.ARB_compute_shader)
+      ctx->Const.MaxShaderStorageBufferBindings += 12;
 
    if (brw->gen >= 6) {
       ctx->Const.MaxVarying = 32;
@@ -558,47 +602,11 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxInputComponents = 128;
    }
 
-   static const nir_shader_compiler_options nir_options = {
-      .native_integers = true,
-      /* In order to help allow for better CSE at the NIR level we tell NIR
-       * to split all ffma instructions during opt_algebraic and we then
-       * re-combine them as a later step.
-       */
-      .lower_ffma = true,
-      .lower_sub = true,
-   };
-
    /* We want the GLSL compiler to emit code that uses condition codes */
    for (int i = 0; i < MESA_SHADER_STAGES; i++) {
-      ctx->Const.ShaderCompilerOptions[i].MaxIfDepth = brw->gen < 6 ? 16 : UINT_MAX;
-      ctx->Const.ShaderCompilerOptions[i].EmitCondCodes = true;
-      ctx->Const.ShaderCompilerOptions[i].EmitNoNoise = true;
-      ctx->Const.ShaderCompilerOptions[i].EmitNoMainReturn = true;
-      ctx->Const.ShaderCompilerOptions[i].EmitNoIndirectInput = true;
-      ctx->Const.ShaderCompilerOptions[i].EmitNoIndirectOutput =
-	 (i == MESA_SHADER_FRAGMENT);
-      ctx->Const.ShaderCompilerOptions[i].EmitNoIndirectTemp =
-	 (i == MESA_SHADER_FRAGMENT);
-      ctx->Const.ShaderCompilerOptions[i].EmitNoIndirectUniform = false;
-      ctx->Const.ShaderCompilerOptions[i].LowerClipDistance = true;
+      ctx->Const.ShaderCompilerOptions[i] =
+         brw->intelScreen->compiler->glsl_compiler_options[i];
    }
-
-   ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = true;
-   ctx->Const.ShaderCompilerOptions[MESA_SHADER_GEOMETRY].OptimizeForAOS = true;
-
-   if (brw->scalar_vs) {
-      /* If we're using the scalar backend for vertex shaders, we need to
-       * configure these accordingly.
-       */
-      ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectOutput = true;
-      ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectTemp = true;
-      ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS = false;
-
-      ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].NirOptions = &nir_options;
-   }
-
-   ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT].NirOptions = &nir_options;
-   ctx->Const.ShaderCompilerOptions[MESA_SHADER_COMPUTE].NirOptions = &nir_options;
 
    /* ARB_viewport_array */
    if (brw->gen >= 6 && ctx->API == API_OPENGL_CORE) {
@@ -752,6 +760,7 @@ brwCreateContext(gl_api api,
    brw->is_baytrail = devinfo->is_baytrail;
    brw->is_haswell = devinfo->is_haswell;
    brw->is_cherryview = devinfo->is_cherryview;
+   brw->is_broxton = devinfo->is_broxton;
    brw->has_llc = devinfo->has_llc;
    brw->has_hiz = devinfo->has_hiz_and_separate_stencil;
    brw->has_separate_stencil = devinfo->has_hiz_and_separate_stencil;
@@ -822,10 +831,9 @@ brwCreateContext(gl_api api,
    _mesa_meta_init(ctx);
 
    brw_process_driconf_options(brw);
-   brw_process_intel_debug_variable(brw);
 
-   if (brw->gen >= 8 && !(INTEL_DEBUG & DEBUG_VEC4VS))
-      brw->scalar_vs = true;
+   if (INTEL_DEBUG & DEBUG_PERF)
+      brw->perf_debug = true;
 
    brw_initialize_context_constants(brw);
 
@@ -854,6 +862,12 @@ brwCreateContext(gl_api api,
          intelDestroyContext(driContextPriv);
          return false;
       }
+   }
+
+   if (brw_init_pipe_control(brw, devinfo)) {
+      *dri_ctx_error = __DRI_CTX_ERROR_NO_MEMORY;
+      intelDestroyContext(driContextPriv);
+      return false;
    }
 
    brw_init_state(brw);
@@ -901,6 +915,10 @@ brwCreateContext(gl_api api,
    brw->sf.viewport_transform_enable = true;
 
    brw->predicate.state = BRW_PREDICATE_STATE_RENDER;
+
+   brw->use_resource_streamer = screen->has_resource_streamer &&
+      (brw_env_var_as_boolean("INTEL_USE_HW_BT", false) ||
+       brw_env_var_as_boolean("INTEL_USE_GATHER", false));
 
    ctx->VertexProgram._MaintainTnlProgram = true;
    ctx->FragmentProgram._MaintainTexEnvProgram = true;
@@ -968,6 +986,10 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    if (brw->wm.base.scratch_bo)
       drm_intel_bo_unreference(brw->wm.base.scratch_bo);
 
+   gen7_reset_hw_bt_pool_offsets(brw);
+   drm_intel_bo_unreference(brw->hw_bt_pool.bo);
+   brw->hw_bt_pool.bo = NULL;
+
    drm_intel_gem_context_destroy(brw->hw_ctx);
 
    if (ctx->swrast_context) {
@@ -979,6 +1001,7 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    if (ctx->swrast_context)
       _swrast_DestroyContext(&brw->ctx);
 
+   brw_fini_pipe_control(brw);
    intel_batchbuffer_free(brw);
 
    drm_intel_bo_unreference(brw->throttle_batch[1]);
@@ -1413,7 +1436,6 @@ intel_process_dri2_buffer(struct brw_context *brw,
               buffer->cpp, buffer->pitch);
    }
 
-   intel_miptree_release(&rb->mt);
    bo = drm_intel_bo_gem_create_from_name(brw->bufmgr, buffer_name,
                                           buffer->name);
    if (!bo) {

@@ -69,6 +69,8 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return PIPE_ENDIAN_LITTLE;
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
+   case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
+      return NOUVEAU_MIN_BUFFER_MAP_ALIGN;
    case PIPE_CAP_MAX_VIEWPORTS:
       return 1;
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
@@ -96,6 +98,9 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return 1;
+   /* nv35 capabilities */
+   case PIPE_CAP_DEPTH_BOUNDS_TEST:
+      return eng3d->oclass == NV35_3D_CLASS || eng3d->oclass >= NV40_3D_CLASS;
    /* nv4x capabilities */
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_NPOT_TEXTURES:
@@ -135,7 +140,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_START_INSTANCE:
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
-   case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
@@ -162,6 +166,10 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+   case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
+   case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
+   case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
+   case PIPE_CAP_TGSI_TXQS:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -312,13 +320,14 @@ nv30_screen_is_format_supported(struct pipe_screen *pscreen,
                                 unsigned sample_count,
                                 unsigned bindings)
 {
-   if (sample_count > 4)
-      return FALSE;
+   if (sample_count > nv30_screen(pscreen)->max_sample_count)
+      return false;
+
    if (!(0x00000017 & (1 << sample_count)))
-      return FALSE;
+      return false;
 
    if (!util_format_is_supported(format, bindings)) {
-      return FALSE;
+      return false;
    }
 
    /* transfers & shared are always supported */
@@ -442,6 +451,23 @@ nv30_screen_create(struct nouveau_device *dev)
       FREE(screen);
       return NULL;
    }
+
+   /*
+    * Some modern apps try to use msaa without keeping in mind the
+    * restrictions on videomem of older cards. Resulting in dmesg saying:
+    * [ 1197.850642] nouveau E[soffice.bin[3785]] fail ttm_validate
+    * [ 1197.850648] nouveau E[soffice.bin[3785]] validating bo list
+    * [ 1197.850654] nouveau E[soffice.bin[3785]] validate: -12
+    *
+    * Because we are running out of video memory, after which the program
+    * using the msaa visual freezes, and eventually the entire system freezes.
+    *
+    * To work around this we do not allow msaa visauls by default and allow
+    * the user to override this via NV30_MAX_MSAA.
+    */
+   screen->max_sample_count = debug_get_num_option("NV30_MAX_MSAA", 0);
+   if (screen->max_sample_count > 4)
+      screen->max_sample_count = 4;
 
    pscreen = &screen->base.base;
    pscreen->destroy = nv30_screen_destroy;
@@ -656,6 +682,6 @@ nv30_screen_create(struct nouveau_device *dev)
 
    nouveau_pushbuf_kick(push, push->channel);
 
-   nouveau_fence_new(&screen->base, &screen->base.fence.current, FALSE);
+   nouveau_fence_new(&screen->base, &screen->base.fence.current, false);
    return pscreen;
 }

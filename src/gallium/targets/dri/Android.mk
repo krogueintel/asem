@@ -35,17 +35,15 @@ endif
 
 LOCAL_SRC_FILES := target.c
 
-LOCAL_CFLAGS := -DDRI_TARGET -DHAVE_LIBDRM
+LOCAL_CFLAGS := -DDRI_TARGET
 
 LOCAL_SHARED_LIBRARIES := \
 	libdl \
 	libglapi \
 	libexpat \
 
-# swrast only?
-ifeq ($(MESA_GPU_DRIVERS),swrast)
-LOCAL_CFLAGS += -D__NOT_HAVE_DRM_H
-else
+ifneq ($(filter-out swrast,$(MESA_GPU_DRIVERS)),)
+LOCAL_CFLAGS += -DHAVE_LIBDRM
 LOCAL_SHARED_LIBRARIES += libdrm
 endif
 
@@ -79,15 +77,15 @@ gallium_DRIVERS += libmesa_pipe_r600
 LOCAL_CFLAGS += -DGALLIUM_R600
 endif
 ifneq ($(filter radeonsi,$(MESA_GPU_DRIVERS)),)
-gallium_DRIVERS += libmesa_pipe_radeonsi
-LOCAL_SHARED_LIBRARIES += libLLVM
+gallium_DRIVERS += libmesa_pipe_radeonsi libmesa_winsys_amdgpu
+LOCAL_SHARED_LIBRARIES += libLLVM libdrm_amdgpu
 LOCAL_CFLAGS += -DGALLIUM_RADEONSI
 endif
 gallium_DRIVERS += libmesa_winsys_radeon libmesa_pipe_radeon
 LOCAL_SHARED_LIBRARIES += libdrm_radeon
 endif
 ifneq ($(filter swrast,$(MESA_GPU_DRIVERS)),)
-gallium_DRIVERS += libmesa_pipe_softpipe libmesa_winsys_sw_dri libmesa_winsys_sw_kms_dri
+gallium_DRIVERS += libmesa_pipe_softpipe libmesa_winsys_sw_dri
 LOCAL_CFLAGS += -DGALLIUM_SOFTPIPE
 endif
 ifneq ($(filter vc4,$(MESA_GPU_DRIVERS)),)

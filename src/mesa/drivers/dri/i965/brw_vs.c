@@ -40,108 +40,6 @@
 
 #include "util/ralloc.h"
 
-static inline void assign_vue_slot(struct brw_vue_map *vue_map,
-                                   int varying)
-{
-   /* Make sure this varying hasn't been assigned a slot already */
-   assert (vue_map->varying_to_slot[varying] == -1);
-
-   vue_map->varying_to_slot[varying] = vue_map->num_slots;
-   vue_map->slot_to_varying[vue_map->num_slots++] = varying;
-}
-
-/**
- * Compute the VUE map for vertex shader program.
- */
-void
-brw_compute_vue_map(const struct brw_device_info *devinfo,
-                    struct brw_vue_map *vue_map,
-                    GLbitfield64 slots_valid)
-{
-   vue_map->slots_valid = slots_valid;
-   int i;
-
-   /* gl_Layer and gl_ViewportIndex don't get their own varying slots -- they
-    * are stored in the first VUE slot (VARYING_SLOT_PSIZ).
-    */
-   slots_valid &= ~(VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT);
-
-   /* Make sure that the values we store in vue_map->varying_to_slot and
-    * vue_map->slot_to_varying won't overflow the signed chars that are used
-    * to store them.  Note that since vue_map->slot_to_varying sometimes holds
-    * values equal to BRW_VARYING_SLOT_COUNT, we need to ensure that
-    * BRW_VARYING_SLOT_COUNT is <= 127, not 128.
-    */
-   STATIC_ASSERT(BRW_VARYING_SLOT_COUNT <= 127);
-
-   vue_map->num_slots = 0;
-   for (i = 0; i < BRW_VARYING_SLOT_COUNT; ++i) {
-      vue_map->varying_to_slot[i] = -1;
-      vue_map->slot_to_varying[i] = BRW_VARYING_SLOT_COUNT;
-   }
-
-   /* VUE header: format depends on chip generation and whether clipping is
-    * enabled.
-    */
-   if (devinfo->gen < 6) {
-      /* There are 8 dwords in VUE header pre-Ironlake:
-       * dword 0-3 is indices, point width, clip flags.
-       * dword 4-7 is ndc position
-       * dword 8-11 is the first vertex data.
-       *
-       * On Ironlake the VUE header is nominally 20 dwords, but the hardware
-       * will accept the same header layout as Gen4 [and should be a bit faster]
-       */
-      assign_vue_slot(vue_map, VARYING_SLOT_PSIZ);
-      assign_vue_slot(vue_map, BRW_VARYING_SLOT_NDC);
-      assign_vue_slot(vue_map, VARYING_SLOT_POS);
-   } else {
-      /* There are 8 or 16 DWs (D0-D15) in VUE header on Sandybridge:
-       * dword 0-3 of the header is indices, point width, clip flags.
-       * dword 4-7 is the 4D space position
-       * dword 8-15 of the vertex header is the user clip distance if
-       * enabled.
-       * dword 8-11 or 16-19 is the first vertex element data we fill.
-       */
-      assign_vue_slot(vue_map, VARYING_SLOT_PSIZ);
-      assign_vue_slot(vue_map, VARYING_SLOT_POS);
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_CLIP_DIST0))
-         assign_vue_slot(vue_map, VARYING_SLOT_CLIP_DIST0);
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_CLIP_DIST1))
-         assign_vue_slot(vue_map, VARYING_SLOT_CLIP_DIST1);
-
-      /* front and back colors need to be consecutive so that we can use
-       * ATTRIBUTE_SWIZZLE_INPUTATTR_FACING to swizzle them when doing
-       * two-sided color.
-       */
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_COL0))
-         assign_vue_slot(vue_map, VARYING_SLOT_COL0);
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_BFC0))
-         assign_vue_slot(vue_map, VARYING_SLOT_BFC0);
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_COL1))
-         assign_vue_slot(vue_map, VARYING_SLOT_COL1);
-      if (slots_valid & BITFIELD64_BIT(VARYING_SLOT_BFC1))
-         assign_vue_slot(vue_map, VARYING_SLOT_BFC1);
-   }
-
-   /* The hardware doesn't care about the rest of the vertex outputs, so just
-    * assign them contiguously.  Don't reassign outputs that already have a
-    * slot.
-    *
-    * We generally don't need to assign a slot for VARYING_SLOT_CLIP_VERTEX,
-    * since it's encoded as the clip distances by emit_clip_distances().
-    * However, it may be output by transform feedback, and we'd rather not
-    * recompute state when TF changes, so we just always include it.
-    */
-   for (int i = 0; i < VARYING_SLOT_MAX; ++i) {
-      if ((slots_valid & BITFIELD64_BIT(i)) &&
-          vue_map->varying_to_slot[i] == -1) {
-         assign_vue_slot(vue_map, i);
-      }
-   }
-}
-
-
 /**
  * Decide which set of clip planes should be used when clipping via
  * gl_Position or gl_ClipVertex.
@@ -167,27 +65,6 @@ gl_clip_plane *brw_select_clip_planes(struct gl_context *ctx)
    }
 }
 
-
-bool
-brw_vs_prog_data_compare(const void *in_a, const void *in_b)
-{
-   const struct brw_vs_prog_data *a = in_a;
-   const struct brw_vs_prog_data *b = in_b;
-
-   /* Compare the base structure. */
-   if (!brw_stage_prog_data_compare(&a->base.base, &b->base.base))
-      return false;
-
-   /* Compare the rest of the struct. */
-   const unsigned offset = sizeof(struct brw_stage_prog_data);
-   if (memcmp(((char *) a) + offset, ((char *) b) + offset,
-              sizeof(struct brw_vs_prog_data) - offset)) {
-      return false;
-   }
-
-   return true;
-}
-
 bool
 brw_codegen_vs_prog(struct brw_context *brw,
                     struct gl_shader_program *prog,
@@ -196,18 +73,17 @@ brw_codegen_vs_prog(struct brw_context *brw,
 {
    GLuint program_size;
    const GLuint *program;
-   struct brw_vs_compile c;
    struct brw_vs_prog_data prog_data;
    struct brw_stage_prog_data *stage_prog_data = &prog_data.base.base;
    void *mem_ctx;
    int i;
-   struct gl_shader *vs = NULL;
+   struct brw_shader *vs = NULL;
+   bool start_busy = false;
+   double start_time = 0;
 
    if (prog)
-      vs = prog->_LinkedShaders[MESA_SHADER_VERTEX];
+      vs = (struct brw_shader *) prog->_LinkedShaders[MESA_SHADER_VERTEX];
 
-   memset(&c, 0, sizeof(c));
-   memcpy(&c.key, key, sizeof(*key));
    memset(&prog_data, 0, sizeof(prog_data));
 
    /* Use ALT floating point mode for ARB programs so that 0^0 == 1. */
@@ -215,8 +91,6 @@ brw_codegen_vs_prog(struct brw_context *brw,
       stage_prog_data->use_alt_mode = true;
 
    mem_ctx = ralloc_context(NULL);
-
-   c.vp = vp;
 
    /* Allocate the references to the uniforms that will end up in the
     * prog_data associated with the compiled program, and which will be freed
@@ -228,26 +102,30 @@ brw_codegen_vs_prog(struct brw_context *brw,
        * case being a float value that gets blown up to a vec4, so be
        * conservative here.
        */
-      param_count = vs->num_uniform_components * 4;
-
+      param_count = vs->base.num_uniform_components * 4 +
+                    vs->base.NumImages * BRW_IMAGE_PARAM_SIZE;
+      stage_prog_data->nr_image_params = vs->base.NumImages;
    } else {
       param_count = vp->program.Base.Parameters->NumParameters * 4;
    }
    /* vec4_visitor::setup_uniform_clipplane_values() also uploads user clip
     * planes as uniforms.
     */
-   param_count += c.key.base.nr_userclip_plane_consts * 4;
+   param_count += key->nr_userclip_plane_consts * 4;
 
    stage_prog_data->param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
    stage_prog_data->pull_param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
+   stage_prog_data->image_param =
+      rzalloc_array(NULL, struct brw_image_param,
+                    stage_prog_data->nr_image_params);
    stage_prog_data->nr_params = param_count;
 
    GLbitfield64 outputs_written = vp->program.Base.OutputsWritten;
    prog_data.inputs_read = vp->program.Base.InputsRead;
 
-   if (c.key.copy_edgeflag) {
+   if (key->copy_edgeflag) {
       outputs_written |= BITFIELD64_BIT(VARYING_SLOT_EDGE);
       prog_data.inputs_read |= VERT_BIT_EDGEFLAG;
    }
@@ -260,7 +138,7 @@ brw_codegen_vs_prog(struct brw_context *brw,
        * coords, which would be a pain to handle.
        */
       for (i = 0; i < 8; i++) {
-         if (c.key.point_coord_replace & (1 << i))
+         if (key->point_coord_replace & (1 << i))
             outputs_written |= BITFIELD64_BIT(VARYING_SLOT_TEX0 + i);
       }
 
@@ -275,43 +153,55 @@ brw_codegen_vs_prog(struct brw_context *brw,
     * distance varying slots whenever clipping is enabled, even if the vertex
     * shader doesn't write to gl_ClipDistance.
     */
-   if (c.key.base.userclip_active) {
+   if (key->nr_userclip_plane_consts > 0) {
       outputs_written |= BITFIELD64_BIT(VARYING_SLOT_CLIP_DIST0);
       outputs_written |= BITFIELD64_BIT(VARYING_SLOT_CLIP_DIST1);
    }
 
    brw_compute_vue_map(brw->intelScreen->devinfo,
-                       &prog_data.base.vue_map, outputs_written);
+                       &prog_data.base.vue_map, outputs_written,
+                       prog ? prog->SeparateShader : false);
 
    if (0) {
-      _mesa_fprint_program_opt(stderr, &c.vp->program.Base, PROG_PRINT_DEBUG,
+      _mesa_fprint_program_opt(stderr, &vp->program.Base, PROG_PRINT_DEBUG,
 			       true);
+   }
+
+   if (unlikely(brw->perf_debug)) {
+      start_busy = (brw->batch.last_bo &&
+                    drm_intel_bo_busy(brw->batch.last_bo));
+      start_time = get_time();
    }
 
    /* Emit GEN4 code.
     */
-   program = brw_vs_emit(brw, prog, &c, &prog_data, mem_ctx, &program_size);
+   program = brw_vs_emit(brw, mem_ctx, key, &prog_data,
+                         &vp->program, prog, &program_size);
    if (program == NULL) {
       ralloc_free(mem_ctx);
       return false;
    }
 
+   if (unlikely(brw->perf_debug) && vs) {
+      if (vs->compiled_once) {
+         brw_vs_debug_recompile(brw, prog, key);
+      }
+      if (start_busy && !drm_intel_bo_busy(brw->batch.last_bo)) {
+         perf_debug("VS compile took %.03f ms and stalled the GPU\n",
+                    (get_time() - start_time) * 1000);
+      }
+      vs->compiled_once = true;
+   }
+
    /* Scratch space is used for register spilling */
-   if (c.base.last_scratch) {
-      perf_debug("Vertex shader triggered register spilling.  "
-                 "Try reducing the number of live vec4 values to "
-                 "improve performance.\n");
-
-      prog_data.base.base.total_scratch
-         = brw_get_scratch_size(c.base.last_scratch*REG_SIZE);
-
+   if (prog_data.base.base.total_scratch) {
       brw_get_scratch_bo(brw, &brw->vs.base.scratch_bo,
 			 prog_data.base.base.total_scratch *
                          brw->max_vs_threads);
    }
 
    brw_upload_cache(&brw->cache, BRW_CACHE_VS_PROG,
-		    &c.key, sizeof(c.key),
+		    key, sizeof(struct brw_vs_prog_key),
 		    program, program_size,
 		    &prog_data, sizeof(prog_data),
 		    &brw->vs.base.prog_offset, &brw->vs.prog_data);
@@ -346,7 +236,7 @@ brw_vs_debug_recompile(struct brw_context *brw,
          if (c->cache_id == BRW_CACHE_VS_PROG) {
             old_key = c->key;
 
-            if (old_key->base.program_string_id == key->base.program_string_id)
+            if (old_key->program_string_id == key->program_string_id)
                break;
          }
       }
@@ -366,12 +256,9 @@ brw_vs_debug_recompile(struct brw_context *brw,
                          key->gl_attrib_wa_flags[i]);
    }
 
-   found |= key_debug(brw, "user clip flags",
-                      old_key->base.userclip_active, key->base.userclip_active);
-
-   found |= key_debug(brw, "user clipping planes as push constants",
-                      old_key->base.nr_userclip_plane_consts,
-                      key->base.nr_userclip_plane_consts);
+   found |= key_debug(brw, "legacy user clipping",
+                      old_key->nr_userclip_plane_consts,
+                      key->nr_userclip_plane_consts);
 
    found |= key_debug(brw, "copy edgeflag",
                       old_key->copy_edgeflag, key->copy_edgeflag);
@@ -380,26 +267,10 @@ brw_vs_debug_recompile(struct brw_context *brw,
    found |= key_debug(brw, "vertex color clamping",
                       old_key->clamp_vertex_color, key->clamp_vertex_color);
 
-   found |= brw_debug_recompile_sampler_key(brw, &old_key->base.tex,
-                                            &key->base.tex);
+   found |= brw_debug_recompile_sampler_key(brw, &old_key->tex, &key->tex);
 
    if (!found) {
       perf_debug("  Something else\n");
-   }
-}
-
-
-void
-brw_setup_vue_key_clip_info(struct brw_context *brw,
-                            struct brw_vue_prog_key *key,
-                            bool program_uses_clip_distance)
-{
-   struct gl_context *ctx = &brw->ctx;
-
-   key->userclip_active = (ctx->Transform.ClipPlanesEnabled != 0);
-   if (key->userclip_active && !program_uses_clip_distance) {
-      key->nr_userclip_plane_consts
-         = _mesa_logbase2(ctx->Transform.ClipPlanesEnabled) + 1;
    }
 }
 
@@ -433,9 +304,14 @@ brw_vs_populate_key(struct brw_context *brw,
    /* Just upload the program verbatim for now.  Always send it all
     * the inputs it asks for, whether they are varying or not.
     */
-   key->base.program_string_id = vp->id;
-   brw_setup_vue_key_clip_info(brw, &key->base,
-                               vp->program.Base.UsesClipDistanceOut);
+   key->program_string_id = vp->id;
+
+   if (ctx->Transform.ClipPlanesEnabled != 0 &&
+       ctx->API == API_OPENGL_COMPAT &&
+       !vp->program.Base.UsesClipDistanceOut) {
+      key->nr_userclip_plane_consts =
+         _mesa_logbase2(ctx->Transform.ClipPlanesEnabled) + 1;
+   }
 
    /* _NEW_POLYGON */
    if (brw->gen < 6) {
@@ -459,7 +335,7 @@ brw_vs_populate_key(struct brw_context *brw,
 
    /* _NEW_TEXTURE */
    brw_populate_sampler_prog_key_data(ctx, prog, brw->vs.base.sampler_count,
-                                      &key->base.tex);
+                                      &key->tex);
 
    /* BRW_NEW_VS_ATTRIB_WORKAROUNDS */
    memcpy(key->gl_attrib_wa_flags, brw->vb.attrib_wa_flags,
@@ -490,19 +366,6 @@ brw_upload_vs_prog(struct brw_context *brw)
       assert(success);
    }
    brw->vs.base.prog_data = &brw->vs.prog_data->base.base;
-
-   if (memcmp(&brw->vs.prog_data->base.vue_map, &brw->vue_map_geom_out,
-              sizeof(brw->vue_map_geom_out)) != 0) {
-      brw->vue_map_vs = brw->vs.prog_data->base.vue_map;
-      brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_VS;
-      if (brw->gen < 6) {
-         /* No geometry shader support, so the VS VUE map is the VUE map for
-          * the output of the "geometry" portion of the pipeline.
-          */
-         brw->vue_map_geom_out = brw->vue_map_vs;
-         brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_GEOM_OUT;
-      }
-   }
 }
 
 bool
@@ -521,7 +384,8 @@ brw_vs_precompile(struct gl_context *ctx,
 
    memset(&key, 0, sizeof(key));
 
-   brw_vue_setup_prog_key_for_precompile(ctx, &key.base, bvp->id, &vp->Base);
+   brw_setup_tex_for_precompile(brw, &key.tex, prog);
+   key.program_string_id = bvp->id;
    key.clamp_vertex_color =
       (prog->OutputsWritten & (VARYING_BIT_COL0 | VARYING_BIT_COL1 |
                                VARYING_BIT_BFC0 | VARYING_BIT_BFC1));

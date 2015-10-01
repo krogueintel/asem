@@ -67,7 +67,7 @@ create_solid_vertexbuf(struct pipe_context *pctx)
 }
 
 static const uint8_t a22x_primtypes[PIPE_PRIM_MAX] = {
-		[PIPE_PRIM_POINTS]         = DI_PT_POINTLIST_A2XX,
+		[PIPE_PRIM_POINTS]         = DI_PT_POINTLIST_PSIZE,
 		[PIPE_PRIM_LINES]          = DI_PT_LINELIST,
 		[PIPE_PRIM_LINE_STRIP]     = DI_PT_LINESTRIP,
 		[PIPE_PRIM_LINE_LOOP]      = DI_PT_LINELOOP,
@@ -77,7 +77,7 @@ static const uint8_t a22x_primtypes[PIPE_PRIM_MAX] = {
 };
 
 static const uint8_t a20x_primtypes[PIPE_PRIM_MAX] = {
-		[PIPE_PRIM_POINTS]         = DI_PT_POINTLIST_A2XX,
+		[PIPE_PRIM_POINTS]         = DI_PT_POINTLIST_PSIZE,
 		[PIPE_PRIM_LINES]          = DI_PT_LINELIST,
 		[PIPE_PRIM_LINE_STRIP]     = DI_PT_LINESTRIP,
 		[PIPE_PRIM_TRIANGLES]      = DI_PT_TRILIST,
@@ -86,7 +86,7 @@ static const uint8_t a20x_primtypes[PIPE_PRIM_MAX] = {
 };
 
 struct pipe_context *
-fd2_context_create(struct pipe_screen *pscreen, void *priv)
+fd2_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct fd2_context *fd2_ctx = CALLOC_STRUCT(fd2_context);

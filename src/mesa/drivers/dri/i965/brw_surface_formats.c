@@ -307,6 +307,34 @@ const struct surface_format_info surface_formats[] = {
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x, ETC2_EAC_SRGB8_A8)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x, R8G8B8_UINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x, R8G8B8_SINT)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_4x4_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_5x4_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_5x5_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_6x5_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_6x6_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x5_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x6_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x8_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x5_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x6_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x8_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x10_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_12x10_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_12x12_FLT16)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_4x4_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_5x4_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_5x5_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_6x5_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_6x6_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x5_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x6_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_8x8_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x5_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x6_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x8_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_10x10_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_12x10_U8sRGB)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x, ASTC_LDR_2D_12x12_U8sRGB)
 };
 #undef x
 #undef Y
@@ -502,6 +530,35 @@ brw_format_for_mesa_format(mesa_format mesa_format)
       [MESA_FORMAT_BPTC_SRGB_ALPHA_UNORM] = BRW_SURFACEFORMAT_BC7_UNORM_SRGB,
       [MESA_FORMAT_BPTC_RGB_SIGNED_FLOAT] = BRW_SURFACEFORMAT_BC6H_SF16,
       [MESA_FORMAT_BPTC_RGB_UNSIGNED_FLOAT] = BRW_SURFACEFORMAT_BC6H_UF16,
+
+      [MESA_FORMAT_RGBA_ASTC_4x4]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_4x4_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_5x4]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_5x4_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_5x5]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_5x5_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_6x5]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_6x5_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_6x6]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_6x6_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_8x5]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x5_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_8x6]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x6_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_8x8]           = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x8_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_10x5]          = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x5_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_10x6]          = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x6_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_10x8]          = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x8_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_10x10]         = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x10_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_12x10]         = BRW_SURFACEFORMAT_ASTC_LDR_2D_12x10_FLT16,
+      [MESA_FORMAT_RGBA_ASTC_12x12]         = BRW_SURFACEFORMAT_ASTC_LDR_2D_12x12_FLT16,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x4]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_4x4_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x4]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_5x4_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_5x5_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x5]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_6x5_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x6]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_6x6_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_8x5]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x5_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_8x6]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x6_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_8x8]   = BRW_SURFACEFORMAT_ASTC_LDR_2D_8x8_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_10x5]  = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x5_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_10x6]  = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x6_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_10x8]  = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x8_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_10x10] = BRW_SURFACEFORMAT_ASTC_LDR_2D_10x10_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_12x10] = BRW_SURFACEFORMAT_ASTC_LDR_2D_12x10_U8sRGB,
+      [MESA_FORMAT_SRGB8_ALPHA8_ASTC_12x12] = BRW_SURFACEFORMAT_ASTC_LDR_2D_12x12_U8sRGB,
 
       [MESA_FORMAT_A_SNORM8] = 0,
       [MESA_FORMAT_L_SNORM8] = 0,
@@ -768,6 +825,36 @@ translate_tex_format(struct brw_context *brw,
       }
       return brw_format_for_mesa_format(mesa_format);
 
+   case MESA_FORMAT_RGBA_ASTC_4x4:
+   case MESA_FORMAT_RGBA_ASTC_5x4:
+   case MESA_FORMAT_RGBA_ASTC_5x5:
+   case MESA_FORMAT_RGBA_ASTC_6x5:
+   case MESA_FORMAT_RGBA_ASTC_6x6:
+   case MESA_FORMAT_RGBA_ASTC_8x5:
+   case MESA_FORMAT_RGBA_ASTC_8x6:
+   case MESA_FORMAT_RGBA_ASTC_8x8:
+   case MESA_FORMAT_RGBA_ASTC_10x5:
+   case MESA_FORMAT_RGBA_ASTC_10x6:
+   case MESA_FORMAT_RGBA_ASTC_10x8:
+   case MESA_FORMAT_RGBA_ASTC_10x10:
+   case MESA_FORMAT_RGBA_ASTC_12x10:
+   case MESA_FORMAT_RGBA_ASTC_12x12: {
+      GLuint brw_fmt = brw_format_for_mesa_format(mesa_format);
+
+      /**
+       * On Gen9+, it is possible to process these formats using the LDR
+       * Profile or the Full Profile mode of the hardware. Because, it isn't
+       * possible to determine if an HDR or LDR texture is being rendered, we
+       * can't determine which mode to enable in the hardware. Therefore, to
+       * handle all cases, always default to Full profile unless we are
+       * processing sRGBs, which are incompatible with this mode.
+       */
+      if (brw->gen >= 9)
+         brw_fmt |= GEN9_SURFACE_ASTC_HDR_FORMAT_BIT;
+
+      return brw_fmt;
+   }
+
    default:
       assert(brw_format_for_mesa_format(mesa_format) != 0);
       return brw_format_for_mesa_format(mesa_format);
@@ -811,5 +898,114 @@ brw_depth_format(struct brw_context *brw, mesa_format format)
       return BRW_DEPTHFORMAT_D32_FLOAT_S8X24_UINT;
    default:
       unreachable("Unexpected depth format.");
+   }
+}
+
+mesa_format
+brw_lower_mesa_image_format(const struct brw_device_info *devinfo,
+                            mesa_format format)
+{
+   switch (format) {
+   /* These are never lowered.  Up to BDW we'll have to fall back to untyped
+    * surface access for 128bpp formats.
+    */
+   case MESA_FORMAT_RGBA_UINT32:
+   case MESA_FORMAT_RGBA_SINT32:
+   case MESA_FORMAT_RGBA_FLOAT32:
+   case MESA_FORMAT_R_UINT32:
+   case MESA_FORMAT_R_SINT32:
+   case MESA_FORMAT_R_FLOAT32:
+      return format;
+
+   /* From HSW to BDW the only 64bpp format supported for typed access is
+    * RGBA_UINT16.  IVB falls back to untyped.
+    */
+   case MESA_FORMAT_RGBA_UINT16:
+   case MESA_FORMAT_RGBA_SINT16:
+   case MESA_FORMAT_RGBA_FLOAT16:
+   case MESA_FORMAT_RG_UINT32:
+   case MESA_FORMAT_RG_SINT32:
+   case MESA_FORMAT_RG_FLOAT32:
+      return (devinfo->gen >= 9 ? format :
+              devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RGBA_UINT16 : MESA_FORMAT_RG_UINT32);
+
+   /* Up to BDW no SINT or FLOAT formats of less than 32 bits per component
+    * are supported.  IVB doesn't support formats with more than one component
+    * for typed access.  For 8 and 16 bpp formats IVB relies on the
+    * undocumented behavior that typed reads from R_UINT8 and R_UINT16
+    * surfaces actually do a 32-bit misaligned read.  The alternative would be
+    * to use two surface state entries with different formats for each image,
+    * one for reading (using R_UINT32) and another one for writing (using
+    * R_UINT8 or R_UINT16), but that would complicate the shaders we generate
+    * even more.
+    */
+   case MESA_FORMAT_RGBA_UINT8:
+   case MESA_FORMAT_RGBA_SINT8:
+      return (devinfo->gen >= 9 ? format :
+              devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RGBA_UINT8 : MESA_FORMAT_R_UINT32);
+
+   case MESA_FORMAT_RG_UINT16:
+   case MESA_FORMAT_RG_SINT16:
+   case MESA_FORMAT_RG_FLOAT16:
+      return (devinfo->gen >= 9 ? format :
+              devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RG_UINT16 : MESA_FORMAT_R_UINT32);
+
+   case MESA_FORMAT_RG_UINT8:
+   case MESA_FORMAT_RG_SINT8:
+      return (devinfo->gen >= 9 ? format :
+              devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RG_UINT8 : MESA_FORMAT_R_UINT16);
+
+   case MESA_FORMAT_R_UINT16:
+   case MESA_FORMAT_R_FLOAT16:
+   case MESA_FORMAT_R_SINT16:
+      return (devinfo->gen >= 9 ? format : MESA_FORMAT_R_UINT16);
+
+   case MESA_FORMAT_R_UINT8:
+   case MESA_FORMAT_R_SINT8:
+      return (devinfo->gen >= 9 ? format : MESA_FORMAT_R_UINT8);
+
+   /* Neither the 2/10/10/10 nor the 11/11/10 packed formats are supported
+    * by the hardware.
+    */
+   case MESA_FORMAT_R10G10B10A2_UINT:
+   case MESA_FORMAT_R10G10B10A2_UNORM:
+   case MESA_FORMAT_R11G11B10_FLOAT:
+      return MESA_FORMAT_R_UINT32;
+
+   /* No normalized fixed-point formats are supported by the hardware. */
+   case MESA_FORMAT_RGBA_UNORM16:
+   case MESA_FORMAT_RGBA_SNORM16:
+      return (devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RGBA_UINT16 : MESA_FORMAT_RG_UINT32);
+
+   case MESA_FORMAT_R8G8B8A8_UNORM:
+   case MESA_FORMAT_R8G8B8A8_SNORM:
+      return (devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RGBA_UINT8 : MESA_FORMAT_R_UINT32);
+
+   case MESA_FORMAT_R16G16_UNORM:
+   case MESA_FORMAT_R16G16_SNORM:
+      return (devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RG_UINT16 : MESA_FORMAT_R_UINT32);
+
+   case MESA_FORMAT_R8G8_UNORM:
+   case MESA_FORMAT_R8G8_SNORM:
+      return (devinfo->gen >= 8 || devinfo->is_haswell ?
+              MESA_FORMAT_RG_UINT8 : MESA_FORMAT_R_UINT16);
+
+   case MESA_FORMAT_R_UNORM16:
+   case MESA_FORMAT_R_SNORM16:
+      return MESA_FORMAT_R_UINT16;
+
+   case MESA_FORMAT_R_UNORM8:
+   case MESA_FORMAT_R_SNORM8:
+      return MESA_FORMAT_R_UINT8;
+
+   default:
+      unreachable("Unknown image format");
    }
 }

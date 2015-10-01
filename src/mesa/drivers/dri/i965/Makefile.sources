@@ -21,7 +21,7 @@ i965_FILES = \
 	brw_conditional_render.c \
 	brw_context.c \
 	brw_context.h \
-	brw_cs.cpp \
+	brw_cs.c \
 	brw_cs.h \
 	brw_cubemap_normalize.cpp \
 	brw_curbe.c \
@@ -60,6 +60,9 @@ i965_FILES = \
 	brw_fs_register_coalesce.cpp \
 	brw_fs_saturate_propagation.cpp \
 	brw_fs_sel_peephole.cpp \
+	brw_fs_surface_builder.cpp \
+	brw_fs_surface_builder.h \
+	brw_fs_validate.cpp \
 	brw_fs_vector_splitting.cpp \
 	brw_fs_visitor.cpp \
 	brw_gs.c \
@@ -86,6 +89,7 @@ i965_FILES = \
 	brw_object_purgeable.c \
 	brw_packed_float.c \
 	brw_performance_monitor.c \
+	brw_pipe_control.c \
 	brw_primitive_restart.c \
 	brw_program.c \
 	brw_program.h \
@@ -112,6 +116,7 @@ i965_FILES = \
 	brw_urb.c \
 	brw_util.c \
 	brw_util.h \
+	brw_vec4_builder.h \
 	brw_vec4_copy_propagation.cpp \
 	brw_vec4.cpp \
 	brw_vec4_cse.cpp \
@@ -122,7 +127,11 @@ i965_FILES = \
 	brw_vec4.h \
 	brw_vec4_live_variables.cpp \
 	brw_vec4_live_variables.h \
+	brw_vec4_nir.cpp \
+	brw_vec4_gs_nir.cpp \
 	brw_vec4_reg_allocate.cpp \
+	brw_vec4_surface_builder.cpp \
+	brw_vec4_surface_builder.h \
 	brw_vec4_visitor.cpp \
 	brw_vec4_vp.cpp \
 	brw_vec4_vs_visitor.cpp \
@@ -130,6 +139,7 @@ i965_FILES = \
 	brw_vs.h \
 	brw_vs_state.c \
 	brw_vs_surface_state.c \
+	brw_vue_map.c \
 	brw_wm.c \
 	brw_wm.h \
 	brw_wm_iz.cpp \
@@ -157,6 +167,7 @@ i965_FILES = \
 	gen6_wm_state.c \
 	gen7_blorp.cpp \
 	gen7_blorp.h \
+	gen7_cs_state.c \
 	gen7_disable.c \
 	gen7_gs_state.c \
 	gen7_misc_state.c \

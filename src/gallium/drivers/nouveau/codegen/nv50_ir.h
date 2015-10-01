@@ -29,8 +29,8 @@
 #include <deque>
 #include <list>
 #include <vector>
-#include <tr1/unordered_set>
 
+#include "codegen/unordered_set.h"
 #include "codegen/nv50_ir_util.h"
 #include "codegen/nv50_ir_graph.h"
 
@@ -106,6 +106,7 @@ enum operation
    OP_MEMBAR, // memory barrier (mfence, lfence, sfence)
    OP_VFETCH, // indirection 0 in attribute space, indirection 1 is vertex base
    OP_PFETCH, // fetch base address of vertex src0 (immediate) [+ src1]
+   OP_AFETCH, // fetch base address of shader input (a[%r1+0x10])
    OP_EXPORT,
    OP_LINTERP,
    OP_PINTERP,
@@ -372,7 +373,8 @@ enum SVSemantic
    SV_SAMPLE_INDEX,
    SV_SAMPLE_POS,
    SV_SAMPLE_MASK,
-   SV_TESS_FACTOR,
+   SV_TESS_OUTER,
+   SV_TESS_INNER,
    SV_TESS_COORD,
    SV_TID,
    SV_CTAID,
@@ -583,10 +585,10 @@ public:
 
    static inline Value *get(Iterator&);
 
-   std::tr1::unordered_set<ValueRef *> uses;
+   unordered_set<ValueRef *> uses;
    std::list<ValueDef *> defs;
-   typedef std::tr1::unordered_set<ValueRef *>::iterator UseIterator;
-   typedef std::tr1::unordered_set<ValueRef *>::const_iterator UseCIterator;
+   typedef unordered_set<ValueRef *>::iterator UseIterator;
+   typedef unordered_set<ValueRef *>::const_iterator UseCIterator;
    typedef std::list<ValueDef *>::iterator DefIterator;
    typedef std::list<ValueDef *>::const_iterator DefCIterator;
 
@@ -822,8 +824,8 @@ private:
 
 enum TexQuery
 {
-   TXQ_DIMS,
-   TXQ_TYPE,
+   TXQ_DIMS, /* x, y, z, levels */
+   TXQ_TYPE, /* ?, ?, samples, ? */
    TXQ_SAMPLE_POSITION,
    TXQ_FILTER,
    TXQ_LOD,

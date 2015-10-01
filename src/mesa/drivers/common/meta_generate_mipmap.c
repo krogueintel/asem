@@ -66,7 +66,7 @@ fallback_required(struct gl_context *ctx, GLenum target,
    if (target == GL_TEXTURE_3D) {
       _mesa_perf_debug(ctx, MESA_DEBUG_SEVERITY_HIGH,
                        "glGenerateMipmap() to %s target\n",
-                       _mesa_lookup_enum_by_nr(target));
+                       _mesa_enum_to_string(target));
       return true;
    }
 
@@ -163,7 +163,6 @@ _mesa_meta_GenerateMipmap(struct gl_context *ctx, GLenum target,
    const GLuint maxLevel = texObj->MaxLevel;
    const GLint maxLevelSave = texObj->MaxLevel;
    const GLboolean genMipmapSave = texObj->GenerateMipmap;
-   const GLuint currentTexUnitSave = ctx->Texture.CurrentUnit;
    const GLboolean use_glsl_version = ctx->Extensions.ARB_vertex_shader &&
                                       ctx->Extensions.ARB_fragment_shader;
    GLenum faceTarget;
@@ -202,8 +201,12 @@ _mesa_meta_GenerateMipmap(struct gl_context *ctx, GLenum target,
    samplerSave = ctx->Texture.Unit[ctx->Texture.CurrentUnit].Sampler ?
       ctx->Texture.Unit[ctx->Texture.CurrentUnit].Sampler->Name : 0;
 
-   if (currentTexUnitSave != 0)
-      _mesa_BindTexture(target, texObj->Name);
+   /* We may have been called from glGenerateTextureMipmap with CurrentUnit
+    * still set to 0, so we don't know when we can skip binding the texture.
+    * Assume that _mesa_BindTexture will be fast if we're rebinding the same
+    * texture.
+    */
+   _mesa_BindTexture(target, texObj->Name);
 
    if (!mipmap->Sampler) {
       _mesa_GenSamplers(1, &mipmap->Sampler);
@@ -317,7 +320,9 @@ _mesa_meta_GenerateMipmap(struct gl_context *ctx, GLenum target,
          /* Setup texture coordinates */
          _mesa_meta_setup_texture_coords(faceTarget,
                                          layer,
-                                         0, 0, 1, /* width, height never used here */
+                                         0, 0, /* xoffset, yoffset */
+                                         srcWidth, srcHeight, /* img size */
+                                         srcWidth, srcHeight, srcDepth,
                                          verts[0].tex,
                                          verts[1].tex,
                                          verts[2].tex,

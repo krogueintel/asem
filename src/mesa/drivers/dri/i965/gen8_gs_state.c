@@ -52,7 +52,9 @@ gen8_upload_gs_state(struct brw_context *brw)
                 ((ALIGN(stage_state->sampler_count, 4)/4) <<
                  GEN6_GS_SAMPLER_COUNT_SHIFT) |
                 ((prog_data->base.binding_table.size_bytes / 4) <<
-                 GEN6_GS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
+                 GEN6_GS_BINDING_TABLE_ENTRY_COUNT_SHIFT) |
+                (prog_data->base.nr_image_params ?
+                 HSW_GS_UAV_ACCESS_ENABLE : 0));
 
       if (brw->gs.prog_data->base.base.total_scratch) {
          OUT_RELOC64(stage_state->scratch_bo,
@@ -87,6 +89,12 @@ gen8_upload_gs_state(struct brw_context *brw)
                       GEN7_GS_ENABLE;
       uint32_t dw8 = brw->gs.prog_data->control_data_format <<
                      HSW_GS_CONTROL_DATA_FORMAT_SHIFT;
+
+      if (brw->gs.prog_data->static_vertex_count != -1) {
+         dw8 |= GEN8_GS_STATIC_OUTPUT |
+                SET_FIELD(brw->gs.prog_data->static_vertex_count,
+                          GEN8_GS_STATIC_VERTEX_COUNT);
+      }
 
       if (brw->gen < 9)
          dw7 |= (brw->max_gs_threads / 2 - 1) << HSW_GS_MAX_THREADS_SHIFT;

@@ -406,7 +406,6 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
    struct pipe_resource *out_buffer = NULL;
    uint8_t *out_map;
    unsigned out_offset, mask;
-   enum pipe_error err;
 
    /* Get a translate object. */
    tr = translate_cache_find(mgr->translate_cache, key);
@@ -454,12 +453,12 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
       assert((ib->buffer || ib->user_buffer) && ib->index_size);
 
       /* Create and map the output buffer. */
-      err = u_upload_alloc(mgr->uploader, 0,
-                           key->output_stride * num_indices,
-                           &out_offset, &out_buffer,
-                           (void**)&out_map);
-      if (err != PIPE_OK)
-         return err;
+      u_upload_alloc(mgr->uploader, 0,
+                     key->output_stride * num_indices,
+                     &out_offset, &out_buffer,
+                     (void**)&out_map);
+      if (!out_buffer)
+         return PIPE_ERROR_OUT_OF_MEMORY;
 
       if (ib->user_buffer) {
          map = (uint8_t*)ib->user_buffer + offset;
@@ -486,13 +485,13 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
       }
    } else {
       /* Create and map the output buffer. */
-      err = u_upload_alloc(mgr->uploader,
-                           key->output_stride * start_vertex,
-                           key->output_stride * num_vertices,
-                           &out_offset, &out_buffer,
-                           (void**)&out_map);
-      if (err != PIPE_OK)
-         return err;
+      u_upload_alloc(mgr->uploader,
+                     key->output_stride * start_vertex,
+                     key->output_stride * num_vertices,
+                     &out_offset, &out_buffer,
+                     (void**)&out_map);
+      if (!out_buffer)
+         return PIPE_ERROR_OUT_OF_MEMORY;
 
       out_offset -= key->output_stride * start_vertex;
 
@@ -781,10 +780,11 @@ u_vbuf_create_vertex_elements(struct u_vbuf *mgr, unsigned count,
    ve->compatible_vb_mask_all = ~ve->incompatible_vb_mask_any & used_buffers;
    ve->incompatible_vb_mask_all = ~ve->compatible_vb_mask_any & used_buffers;
 
-   /* Align the formats to the size of DWORD if needed. */
+   /* Align the formats and offsets to the size of DWORD if needed. */
    if (!mgr->caps.velem_src_offset_unaligned) {
       for (i = 0; i < count; i++) {
          ve->native_format_size[i] = align(ve->native_format_size[i], 4);
+         driver_attribs[i].src_offset = align(ve->ve[i].src_offset, 4);
       }
    }
 
@@ -976,7 +976,6 @@ u_vbuf_upload_buffers(struct u_vbuf *mgr,
       unsigned start, end;
       struct pipe_vertex_buffer *real_vb;
       const uint8_t *ptr;
-      enum pipe_error err;
 
       i = u_bit_scan(&buffer_mask);
 
@@ -987,10 +986,10 @@ u_vbuf_upload_buffers(struct u_vbuf *mgr,
       real_vb = &mgr->real_vertex_buffer[i];
       ptr = mgr->vertex_buffer[i].user_buffer;
 
-      err = u_upload_data(mgr->uploader, start, end - start, ptr + start,
-                          &real_vb->buffer_offset, &real_vb->buffer);
-      if (err != PIPE_OK)
-         return err;
+      u_upload_data(mgr->uploader, start, end - start, ptr + start,
+                    &real_vb->buffer_offset, &real_vb->buffer);
+      if (!real_vb->buffer)
+         return PIPE_ERROR_OUT_OF_MEMORY;
 
       real_vb->buffer_offset -= start;
    }

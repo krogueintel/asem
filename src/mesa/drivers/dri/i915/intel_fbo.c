@@ -216,7 +216,7 @@ intel_alloc_private_renderbuffer_storage(struct gl_context * ctx, struct gl_rend
    intel_miptree_release(&irb->mt);
 
    DBG("%s: %s: %s (%dx%d)\n", __func__,
-       _mesa_lookup_enum_by_nr(internalFormat),
+       _mesa_enum_to_string(internalFormat),
        _mesa_get_format_name(rb->Format), width, height);
 
    if (width == 0 || height == 0)
@@ -657,6 +657,11 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
                                     GLbitfield mask, GLenum filter)
 {
    struct intel_context *intel = intel_context(ctx);
+
+   /* Sync up the state of window system buffers.  We need to do this before
+    * we go looking for the buffers.
+    */
+   intel_prepare_render(intel);
 
    if (mask & GL_COLOR_BUFFER_BIT) {
       GLint i;

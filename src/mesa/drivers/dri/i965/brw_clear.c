@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2003 VMware, Inc.
  * Copyright 2009, 2012 Intel Corporation.
  * All Rights Reserved.
@@ -8,7 +7,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -18,13 +17,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
@@ -184,7 +182,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
     *      must be issued before the rectangle primitive used for the depth
     *      buffer clear operation.
     */
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    if (fb->MaxNumLayers > 0) {
       for (unsigned layer = 0; layer < depth_irb->layer_count; layer++) {
@@ -204,7 +202,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
        *      by a PIPE_CONTROL command with DEPTH_STALL bit set and Then
        *      followed by Depth FLUSH'
       */
-      intel_batchbuffer_emit_mi_flush(brw);
+      brw_emit_mi_flush(brw);
    }
 
    /* Now, the HiZ buffer contains data that needs to be resolved to the depth

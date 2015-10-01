@@ -52,13 +52,21 @@ gen8_upload_ps_extra(struct brw_context *brw,
        _mesa_get_min_invocations_per_fragment(ctx, fp, false) > 1)
       dw1 |= GEN8_PSX_SHADER_IS_PER_SAMPLE;
 
-   if (fp->Base.SystemValuesRead & SYSTEM_BIT_SAMPLE_MASK_IN)
-      dw1 |= GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK;
+   if (fp->Base.SystemValuesRead & SYSTEM_BIT_SAMPLE_MASK_IN) {
+      if (brw->gen >= 9)
+         dw1 |= BRW_PSICMS_INNER << GEN9_PSX_SHADER_NORMAL_COVERAGE_MASK_SHIFT;
+      else
+         dw1 |= GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK;
+   }
 
    if (prog_data->uses_omask)
       dw1 |= GEN8_PSX_OMASK_TO_RENDER_TARGET;
 
-   if (_mesa_active_fragment_shader_has_atomic_ops(&brw->ctx))
+   if (brw->gen >= 9 && prog_data->pulls_bary)
+      dw1 |= GEN9_PSX_SHADER_PULLS_BARY;
+
+   if (_mesa_active_fragment_shader_has_atomic_ops(&brw->ctx) ||
+       prog_data->base.nr_image_params)
       dw1 |= GEN8_PSX_SHADER_HAS_UAV;
 
    BEGIN_BATCH(2);
@@ -114,6 +122,12 @@ upload_wm_state(struct brw_context *brw)
    /* BRW_NEW_FS_PROG_DATA */
    dw1 |= brw->wm.prog_data->barycentric_interp_modes <<
       GEN7_WM_BARYCENTRIC_INTERPOLATION_MODE_SHIFT;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   if (brw->wm.prog_data->early_fragment_tests)
+      dw1 |= GEN7_WM_EARLY_DS_CONTROL_PREPS;
+   else if (brw->wm.prog_data->base.nr_image_params)
+      dw1 |= GEN7_WM_EARLY_DS_CONTROL_PSEXEC;
 
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_WM << 16 | (2 - 2));

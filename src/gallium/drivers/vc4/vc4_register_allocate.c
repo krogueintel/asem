@@ -113,9 +113,12 @@ vc4_alloc_reg_set(struct vc4_context *vc4)
         if (vc4->regs)
                 return;
 
-        vc4->regs = ra_alloc_reg_set(vc4, ARRAY_SIZE(vc4_regs));
+        vc4->regs = ra_alloc_reg_set(vc4, ARRAY_SIZE(vc4_regs), true);
 
         vc4->reg_class_any = ra_alloc_reg_class(vc4->regs);
+        vc4->reg_class_a_or_b_or_acc = ra_alloc_reg_class(vc4->regs);
+        vc4->reg_class_r4_or_a = ra_alloc_reg_class(vc4->regs);
+        vc4->reg_class_a = ra_alloc_reg_class(vc4->regs);
         for (uint32_t i = 0; i < ARRAY_SIZE(vc4_regs); i++) {
                 /* Reserve ra31/rb31 for spilling fixup_raddr_conflict() in
                  * vc4_qpu_emit.c
@@ -126,15 +129,20 @@ vc4_alloc_reg_set(struct vc4_context *vc4)
                 /* R4 can't be written as a general purpose register. (it's
                  * TMU_NOSWAP as a write address).
                  */
-                if (vc4_regs[i].mux == QPU_MUX_R4)
+                if (vc4_regs[i].mux == QPU_MUX_R4) {
+                        ra_class_add_reg(vc4->regs, vc4->reg_class_r4_or_a, i);
+                        ra_class_add_reg(vc4->regs, vc4->reg_class_any, i);
                         continue;
+                }
 
                 ra_class_add_reg(vc4->regs, vc4->reg_class_any, i);
+                ra_class_add_reg(vc4->regs, vc4->reg_class_a_or_b_or_acc, i);
         }
 
-        vc4->reg_class_a = ra_alloc_reg_class(vc4->regs);
-        for (uint32_t i = AB_INDEX; i < AB_INDEX + 64; i += 2)
+        for (uint32_t i = AB_INDEX; i < AB_INDEX + 64; i += 2) {
                 ra_class_add_reg(vc4->regs, vc4->reg_class_a, i);
+                ra_class_add_reg(vc4->regs, vc4->reg_class_r4_or_a, i);
+        }
 
         ra_set_finalize(vc4->regs, NULL);
 }
@@ -153,6 +161,10 @@ node_to_temp_priority(const void *in_a, const void *in_b)
         return a->priority - b->priority;
 }
 
+#define CLASS_BIT_A			(1 << 0)
+#define CLASS_BIT_B_OR_ACC		(1 << 1)
+#define CLASS_BIT_R4			(1 << 2)
+
 /**
  * Returns a mapping from QFILE_TEMP indices to struct qpu_regs.
  *
@@ -165,9 +177,11 @@ vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c)
         uint32_t temp_to_node[c->num_temps];
         uint32_t def[c->num_temps];
         uint32_t use[c->num_temps];
+        uint8_t class_bits[c->num_temps];
         struct qpu_reg *temp_registers = calloc(c->num_temps,
                                                 sizeof(*temp_registers));
-        memset(def, 0, sizeof(def));
+        for (int i = 0; i < ARRAY_SIZE(def); i++)
+                def[i] = ~0;
         memset(use, 0, sizeof(use));
 
         /* If things aren't ever written (undefined values), just read from
@@ -181,16 +195,12 @@ vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c)
         struct ra_graph *g = ra_alloc_interference_graph(vc4->regs,
                                                          c->num_temps);
 
-        for (uint32_t i = 0; i < c->num_temps; i++) {
-                ra_set_node_class(g, i, vc4->reg_class_any);
-        }
-
         /* Compute the live ranges so we can figure out interference.
          */
         uint32_t ip = 0;
         list_for_each_entry(struct qinst, inst, &c->instructions, link) {
                 if (inst->dst.file == QFILE_TEMP) {
-                        def[inst->dst.index] = ip;
+                        def[inst->dst.index] = MIN2(ip, def[inst->dst.index]);
                         use[inst->dst.index] = ip;
                 }
 
@@ -223,8 +233,33 @@ vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c)
                 temp_to_node[map[i].temp] = i;
         }
 
-        /* Figure out our register classes and preallocated registers*/
+        /* Figure out our register classes and preallocated registers.  We
+         * start with any temp being able to be in any file, then instructions
+         * incrementally remove bits that the temp definitely can't be in.
+         */
+        memset(class_bits,
+               CLASS_BIT_A | CLASS_BIT_B_OR_ACC | CLASS_BIT_R4,
+               sizeof(class_bits));
+
+        ip = 0;
         list_for_each_entry(struct qinst, inst, &c->instructions, link) {
+                if (qir_writes_r4(inst)) {
+                        /* This instruction writes r4 (and optionally moves
+                         * its result to a temp), so nothing else can be
+                         * stored in r4 across it.
+                         */
+                        for (int i = 0; i < c->num_temps; i++) {
+                                if (def[i] < ip && use[i] > ip)
+                                        class_bits[i] &= ~CLASS_BIT_R4;
+                        }
+                } else {
+                        /* R4 can't be written as a general purpose
+                         * register. (it's TMU_NOSWAP as a write address).
+                         */
+                        if (inst->dst.file == QFILE_TEMP)
+                                class_bits[inst->dst.index] &= ~CLASS_BIT_R4;
+                }
+
                 switch (inst->op) {
                 case QOP_FRAG_Z:
                         ra_set_node_reg(g, temp_to_node[inst->dst.index],
@@ -236,26 +271,58 @@ vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c)
                                         AB_INDEX + QPU_R_FRAG_PAYLOAD_ZW * 2);
                         break;
 
-                case QOP_TEX_RESULT:
-                case QOP_TLB_COLOR_READ:
-                        assert(vc4_regs[ACC_INDEX + 4].mux == QPU_MUX_R4);
-                        ra_set_node_reg(g, temp_to_node[inst->dst.index],
-                                        ACC_INDEX + 4);
-                        break;
-
-                case QOP_PACK_SCALED:
-                        /* The pack flags require an A-file dst register. */
-                        ra_set_node_class(g, temp_to_node[inst->dst.index],
-                                          vc4->reg_class_a);
-                        break;
-
                 default:
                         break;
                 }
 
+                if (inst->dst.pack && !qir_is_mul(inst)) {
+                        /* The non-MUL pack flags require an A-file dst
+                         * register.
+                         */
+                        class_bits[inst->dst.index] &= CLASS_BIT_A;
+                }
+
                 if (qir_src_needs_a_file(inst)) {
-                        ra_set_node_class(g, temp_to_node[inst->src[0].index],
-                                          vc4->reg_class_a);
+                        switch (inst->op) {
+                        case QOP_UNPACK_8A_F:
+                        case QOP_UNPACK_8B_F:
+                        case QOP_UNPACK_8C_F:
+                        case QOP_UNPACK_8D_F:
+                                /* Special case: these can be done as R4
+                                 * unpacks, as well.
+                                 */
+                                class_bits[inst->src[0].index] &= (CLASS_BIT_A |
+                                                                   CLASS_BIT_R4);
+                                break;
+                        default:
+                                class_bits[inst->src[0].index] &= CLASS_BIT_A;
+                                break;
+                        }
+                }
+                ip++;
+        }
+
+        for (uint32_t i = 0; i < c->num_temps; i++) {
+                int node = temp_to_node[i];
+
+                switch (class_bits[i]) {
+                case CLASS_BIT_A | CLASS_BIT_B_OR_ACC | CLASS_BIT_R4:
+                        ra_set_node_class(g, node, vc4->reg_class_any);
+                        break;
+                case CLASS_BIT_A | CLASS_BIT_B_OR_ACC:
+                        ra_set_node_class(g, node, vc4->reg_class_a_or_b_or_acc);
+                        break;
+                case CLASS_BIT_A | CLASS_BIT_R4:
+                        ra_set_node_class(g, node, vc4->reg_class_r4_or_a);
+                        break;
+                case CLASS_BIT_A:
+                        ra_set_node_class(g, node, vc4->reg_class_a);
+                        break;
+                default:
+                        fprintf(stderr, "temp %d: bad class bits: 0x%x\n",
+                                i, class_bits[i]);
+                        abort();
+                        break;
                 }
         }
 
@@ -270,7 +337,11 @@ vc4_register_allocate(struct vc4_context *vc4, struct vc4_compile *c)
         }
 
         bool ok = ra_allocate(g);
-        assert(ok);
+        if (!ok) {
+                fprintf(stderr, "Failed to register allocate:\n");
+                qir_dump(c);
+                abort();
+        }
 
         for (uint32_t i = 0; i < c->num_temps; i++) {
                 temp_registers[i] = vc4_regs[ra_get_node_reg(g, temp_to_node[i])];

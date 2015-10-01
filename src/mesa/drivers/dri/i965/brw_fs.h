@@ -62,6 +62,27 @@ namespace brw {
    class fs_live_variables;
 }
 
+static inline fs_reg
+offset(fs_reg reg, const brw::fs_builder& bld, unsigned delta)
+{
+   switch (reg.file) {
+   case BAD_FILE:
+      break;
+   case GRF:
+   case MRF:
+   case HW_REG:
+   case ATTR:
+      return byte_offset(reg,
+                         delta * reg.component_size(bld.dispatch_width()));
+   case UNIFORM:
+      reg.reg_offset += delta;
+      break;
+   case IMM:
+      assert(delta == 0);
+   }
+   return reg;
+}
+
 /**
  * The fragment shader front-end.
  *
@@ -70,27 +91,27 @@ namespace brw {
 class fs_visitor : public backend_shader
 {
 public:
-   fs_visitor(struct brw_context *brw,
+   fs_visitor(const struct brw_compiler *compiler, void *log_data,
               void *mem_ctx,
               gl_shader_stage stage,
               const void *key,
               struct brw_stage_prog_data *prog_data,
               struct gl_shader_program *shader_prog,
               struct gl_program *prog,
-              unsigned dispatch_width);
+              unsigned dispatch_width,
+              int shader_time_index);
 
    ~fs_visitor();
 
    fs_reg vgrf(const glsl_type *const type);
    void import_uniforms(fs_visitor *v);
-   void setup_uniform_clipplane_values();
-   void compute_clip_distance();
+   void setup_uniform_clipplane_values(gl_clip_plane *clip_planes);
+   void compute_clip_distance(gl_clip_plane *clip_planes);
 
    uint32_t gather_channel(int orig_chan, uint32_t sampler);
    void swizzle_result(ir_texture_opcode op, int dest_components,
                        fs_reg orig_val, uint32_t sampler);
 
-   int type_size(const struct glsl_type *type);
    fs_inst *get_instruction_generating_reg(fs_inst *start,
 					   fs_inst *end,
 					   const fs_reg &reg);
@@ -102,12 +123,13 @@ public:
                                    uint32_t const_offset);
    void DEP_RESOLVE_MOV(const brw::fs_builder &bld, int grf);
 
-   bool run_fs();
-   bool run_vs();
+   bool run_fs(bool do_rep_send);
+   bool run_vs(gl_clip_plane *clip_planes);
    bool run_cs();
    void optimize();
    void allocate_registers();
-   void assign_binding_table_offsets();
+   void assign_fs_binding_table_offsets();
+   void assign_cs_binding_table_offsets();
    void setup_payload_gen4();
    void setup_payload_gen6();
    void setup_vs_payload();
@@ -125,12 +147,12 @@ public:
    void spill_reg(int spill_reg);
    void split_virtual_grfs();
    bool compact_virtual_grfs();
-   void move_uniform_array_access_to_pull_constants();
    void assign_constant_locations();
    void demote_pull_constants();
    void invalidate_live_intervals();
    void calculate_live_intervals();
    void calculate_register_pressure();
+   void validate();
    bool opt_algebraic();
    bool opt_redundant_discard_jumps();
    bool opt_cse();
@@ -157,10 +179,12 @@ public:
                                                      fs_inst *inst);
    void vfail(const char *msg, va_list args);
    void fail(const char *msg, ...);
-   void no16(const char *msg, ...);
+   void no16(const char *msg);
    void lower_uniform_pull_constant_loads();
    bool lower_load_payload();
+   bool lower_logical_sends();
    bool lower_integer_multiplication();
+   bool lower_simd_width();
    bool opt_combine_constants();
 
    void emit_dummy_fs();
@@ -184,27 +208,6 @@ public:
    void compute_sample_position(fs_reg dst, fs_reg int_sample_pos);
    fs_reg rescale_texcoord(fs_reg coordinate, int coord_components,
                            bool is_rect, uint32_t sampler, int texunit);
-   fs_inst *emit_texture_gen4(ir_texture_opcode op, fs_reg dst,
-                              fs_reg coordinate, int coord_components,
-                              fs_reg shadow_comp,
-                              fs_reg lod, fs_reg lod2, int grad_components,
-                              uint32_t sampler);
-   fs_inst *emit_texture_gen4_simd16(ir_texture_opcode op, fs_reg dst,
-                                     fs_reg coordinate, int vector_elements,
-                                     fs_reg shadow_c, fs_reg lod,
-                                     uint32_t sampler);
-   fs_inst *emit_texture_gen5(ir_texture_opcode op, fs_reg dst,
-                              fs_reg coordinate, int coord_components,
-                              fs_reg shadow_comp,
-                              fs_reg lod, fs_reg lod2, int grad_components,
-                              fs_reg sample_index, uint32_t sampler,
-                              bool has_offset);
-   fs_inst *emit_texture_gen7(ir_texture_opcode op, fs_reg dst,
-                              fs_reg coordinate, int coord_components,
-                              fs_reg shadow_comp,
-                              fs_reg lod, fs_reg lod2, int grad_components,
-                              fs_reg sample_index, fs_reg mcs, fs_reg sampler,
-                              fs_reg offset_value);
    void emit_texture(ir_texture_opcode op,
                      const glsl_type *dest_type,
                      fs_reg coordinate, int components,
@@ -219,11 +222,11 @@ public:
                      uint32_t sampler,
                      fs_reg sampler_reg,
                      int texunit);
-   fs_reg emit_mcs_fetch(fs_reg coordinate, int components, fs_reg sampler);
+   fs_reg emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
+                         const fs_reg &sampler);
    void emit_gen6_gather_wa(uint8_t wa, fs_reg dst);
-   void resolve_source_modifiers(fs_reg *src);
+   fs_reg resolve_source_modifiers(const fs_reg &src);
    void emit_discard_jump();
-   bool try_replace_with_sel();
    bool opt_peephole_sel();
    bool opt_peephole_predicated_break();
    bool opt_saturate_propagation();
@@ -248,48 +251,53 @@ public:
    void nir_emit_block(nir_block *block);
    void nir_emit_instr(nir_instr *instr);
    void nir_emit_alu(const brw::fs_builder &bld, nir_alu_instr *instr);
+   void nir_emit_load_const(const brw::fs_builder &bld,
+                            nir_load_const_instr *instr);
+   void nir_emit_undef(const brw::fs_builder &bld,
+                       nir_ssa_undef_instr *instr);
    void nir_emit_intrinsic(const brw::fs_builder &bld,
                            nir_intrinsic_instr *instr);
+   void nir_emit_ssbo_atomic(const brw::fs_builder &bld,
+                             int op, nir_intrinsic_instr *instr);
    void nir_emit_texture(const brw::fs_builder &bld,
                          nir_tex_instr *instr);
    void nir_emit_jump(const brw::fs_builder &bld,
                       nir_jump_instr *instr);
    fs_reg get_nir_src(nir_src src);
    fs_reg get_nir_dest(nir_dest dest);
+   fs_reg get_nir_image_deref(const nir_deref_var *deref);
    void emit_percomp(const brw::fs_builder &bld, const fs_inst &inst,
                      unsigned wr_mask);
 
    bool optimize_frontfacing_ternary(nir_alu_instr *instr,
                                      const fs_reg &result);
 
-   void setup_color_payload(fs_reg *dst, fs_reg color, unsigned components,
-                            unsigned exec_size, bool use_2nd_half);
    void emit_alpha_test();
    fs_inst *emit_single_fb_write(const brw::fs_builder &bld,
                                  fs_reg color1, fs_reg color2,
-                                 fs_reg src0_alpha, unsigned components,
-                                 unsigned exec_size, bool use_2nd_half = false);
+                                 fs_reg src0_alpha, unsigned components);
    void emit_fb_writes();
    void emit_urb_writes();
    void emit_cs_terminate();
+   fs_reg *emit_cs_local_invocation_id_setup();
+   fs_reg *emit_cs_work_group_id_setup();
 
    void emit_barrier();
 
    void emit_shader_time_begin();
    void emit_shader_time_end();
    void SHADER_TIME_ADD(const brw::fs_builder &bld,
-                        enum shader_time_shader_type type, fs_reg value);
-
-   void emit_untyped_atomic(unsigned atomic_op, unsigned surf_index,
-                            fs_reg dst, fs_reg offset, fs_reg src0,
-                            fs_reg src1);
-
-   void emit_untyped_surface_read(unsigned surf_index, fs_reg dst,
-                                  fs_reg offset);
+                        int shader_time_subindex,
+                        fs_reg value);
 
    fs_reg get_timestamp(const brw::fs_builder &bld);
 
    struct brw_reg interp_reg(int location, int channel);
+
+   virtual void setup_vec4_uniform_value(unsigned param_offset,
+                                         const gl_constant_value *values,
+                                         unsigned n);
+
    int implied_mrf_writes(fs_inst *inst);
 
    virtual void dump_instructions();
@@ -313,9 +321,6 @@ public:
 
    /** Number of uniform variable components visited. */
    unsigned uniforms;
-
-   /** Total number of direct uniforms we can get from NIR */
-   unsigned num_direct_uniforms;
 
    /** Byte-offset for the next available spot in the scratch space buffer. */
    unsigned last_scratch;
@@ -343,7 +348,7 @@ public:
    unsigned max_grf;
 
    fs_reg *nir_locals;
-   fs_reg *nir_globals;
+   fs_reg *nir_ssa_values;
    fs_reg nir_inputs;
    fs_reg nir_outputs;
    fs_reg *nir_system_values;
@@ -357,7 +362,7 @@ public:
    fs_reg result;
 
    /** Register numbers for thread payload fields. */
-   struct {
+   struct thread_payload {
       uint8_t source_depth_reg;
       uint8_t source_w_reg;
       uint8_t aa_dest_stencil_reg;
@@ -365,6 +370,7 @@ public:
       uint8_t sample_pos_reg;
       uint8_t sample_mask_in_reg;
       uint8_t barycentric_coord_reg[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
+      uint8_t local_invocation_id_reg;
 
       /** The number of thread payload registers the hardware will supply. */
       uint8_t num_regs;
@@ -386,6 +392,8 @@ public:
 
    const unsigned dispatch_width; /**< 8 or 16 */
 
+   int shader_time_index;
+
    unsigned promoted_constants;
    brw::fs_builder bld;
 };
@@ -398,7 +406,7 @@ public:
 class fs_generator
 {
 public:
-   fs_generator(struct brw_context *brw,
+   fs_generator(const struct brw_compiler *compiler, void *log_data,
                 void *mem_ctx,
                 const void *key,
                 struct brw_stage_prog_data *prog_data,
@@ -426,6 +434,9 @@ private:
 			 struct brw_reg *src);
    void generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src,
                      struct brw_reg sampler_index);
+   void generate_get_buffer_size(fs_inst *inst, struct brw_reg dst,
+                                 struct brw_reg src,
+                                 struct brw_reg surf_index);
    void generate_math_gen6(fs_inst *inst,
                            struct brw_reg dst,
                            struct brw_reg src0,
@@ -464,10 +475,6 @@ private:
                                           struct brw_reg msg_data,
                                           unsigned msg_type);
 
-   void generate_set_omask(fs_inst *inst,
-                           struct brw_reg dst,
-                           struct brw_reg sample_mask);
-
    void generate_set_sample_id(fs_inst *inst,
                                struct brw_reg dst,
                                struct brw_reg src0,
@@ -493,7 +500,9 @@ private:
 
    bool patch_discard_jumps_to_fb_writes();
 
-   struct brw_context *brw;
+   const struct brw_compiler *compiler;
+   void *log_data; /* Passed to compiler->*_log functions */
+
    const struct brw_device_info *devinfo;
 
    struct brw_codegen *p;
@@ -515,6 +524,3 @@ private:
 
 bool brw_do_channel_expressions(struct exec_list *instructions);
 bool brw_do_vector_splitting(struct exec_list *instructions);
-void brw_setup_tex_for_precompile(struct brw_context *brw,
-                                  struct brw_sampler_prog_key_data *tex,
-                                  struct gl_program *prog);

@@ -43,6 +43,30 @@
 #include "state_tracker/st_format.h"
 #include "state_tracker/st_texture.h"
 
+static boolean
+needs_integer_signed_unsigned_conversion(const struct gl_context *ctx,
+                                         GLenum format, GLenum type)
+{
+   struct gl_renderbuffer *rb =
+      _mesa_get_read_renderbuffer_for_format(ctx, format);
+
+   assert(rb);
+
+   GLenum srcType = _mesa_get_format_datatype(rb->Format);
+
+    if ((srcType == GL_INT &&
+        (type == GL_UNSIGNED_INT ||
+         type == GL_UNSIGNED_SHORT ||
+         type == GL_UNSIGNED_BYTE)) ||
+       (srcType == GL_UNSIGNED_INT &&
+        (type == GL_INT ||
+         type == GL_SHORT ||
+         type == GL_BYTE))) {
+      return TRUE;
+   }
+
+   return FALSE;
+}
 
 /**
  * This uses a blit to copy the read buffer to a texture format which matches
@@ -115,11 +139,15 @@ st_readpixels(struct gl_context *ctx, GLint x, GLint y,
     * in which case the memcpy-based fast path will likely be used and
     * we don't have to blit. */
    if (_mesa_format_matches_format_and_type(rb->Format, format,
-                                            type, pack->SwapBytes)) {
+                                            type, pack->SwapBytes, NULL)) {
       goto fallback;
    }
 
    if (_mesa_readpixels_needs_slow_path(ctx, format, type, GL_TRUE)) {
+      goto fallback;
+   }
+
+   if (needs_integer_signed_unsigned_conversion(ctx, format, type)) {
       goto fallback;
    }
 
@@ -210,9 +238,9 @@ st_readpixels(struct gl_context *ctx, GLint x, GLint y,
       GLuint row;
 
       for (row = 0; row < (unsigned) height; row++) {
-         GLvoid *dest = _mesa_image_address3d(pack, pixels,
+         GLvoid *dest = _mesa_image_address2d(pack, pixels,
                                               width, height, format,
-                                              type, 0, row, 0);
+                                              type, row, 0);
          memcpy(dest, map, bytesPerRow);
          map += tex_xfer->stride;
       }

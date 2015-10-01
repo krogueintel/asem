@@ -494,8 +494,10 @@ _mesa_meta_and_swrast_BlitFramebuffer(struct gl_context *ctx,
 bool
 _mesa_meta_CopyImageSubData_uncompressed(struct gl_context *ctx,
                                          struct gl_texture_image *src_tex_image,
+                                         struct gl_renderbuffer *src_renderbuffer,
                                          int src_x, int src_y, int src_z,
                                          struct gl_texture_image *dst_tex_image,
+                                         struct gl_renderbuffer *dst_renderbuffer,
                                          int dst_x, int dst_y, int dst_z,
                                          int src_width, int src_height);
 
@@ -560,9 +562,11 @@ _mesa_meta_ClearTexSubImage(struct gl_context *ctx,
                             const GLvoid *clearValue);
 
 extern void
-_mesa_meta_GetTexImage(struct gl_context *ctx,
-                       GLenum format, GLenum type, GLvoid *pixels,
-                       struct gl_texture_image *texImage);
+_mesa_meta_GetTexSubImage(struct gl_context *ctx,
+                          GLint xoffset, GLint yoffset, GLint zoffset,
+                          GLsizei width, GLsizei height, GLsizei depth,
+                          GLenum format, GLenum type, GLvoid *pixels,
+                          struct gl_texture_image *texImage);
 
 extern void
 _mesa_meta_DrawTex(struct gl_context *ctx, GLfloat x, GLfloat y, GLfloat z,
@@ -594,9 +598,13 @@ _mesa_meta_alloc_texture(struct temp_texture *tex,
 void
 _mesa_meta_setup_texture_coords(GLenum faceTarget,
                                 GLint slice,
+                                GLint xoffset,
+                                GLint yoffset,
                                 GLint width,
                                 GLint height,
-                                GLint depth,
+                                GLint total_width,
+                                GLint total_height,
+                                GLint total_depth,
                                 GLfloat coords0[4],
                                 GLfloat coords1[4],
                                 GLfloat coords2[4],

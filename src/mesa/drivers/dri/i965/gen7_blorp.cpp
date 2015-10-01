@@ -158,9 +158,9 @@ gen7_blorp_emit_surface_state(struct brw_context *brw,
              surface->brw_surfaceformat << BRW_SURFACE_FORMAT_SHIFT |
              gen7_surface_tiling_mode(tiling);
 
-   if (surface->mt->align_h == 4)
+   if (surface->mt->valign == 4)
       surf[0] |= GEN7_SURFACE_VALIGN_4;
-   if (surface->mt->align_w == 8)
+   if (surface->mt->halign == 8)
       surf[0] |= GEN7_SURFACE_HALIGN_8;
 
    if (surface->array_layout == ALL_SLICES_AT_EACH_LOD)
@@ -645,7 +645,7 @@ gen7_blorp_emit_depth_stencil_config(struct brw_context *brw,
 
    /* 3DSTATE_DEPTH_BUFFER */
    {
-      intel_emit_depth_stall_flushes(brw);
+      brw_emit_depth_stall_flushes(brw);
 
       BEGIN_BATCH(7);
       OUT_BATCH(GEN7_3DSTATE_DEPTH_BUFFER << 16 | (7 - 2));
@@ -696,7 +696,7 @@ gen7_blorp_emit_depth_stencil_config(struct brw_context *brw,
 static void
 gen7_blorp_emit_depth_disable(struct brw_context *brw)
 {
-   intel_emit_depth_stall_flushes(brw);
+   brw_emit_depth_stall_flushes(brw);
 
    BEGIN_BATCH(7);
    OUT_BATCH(GEN7_3DSTATE_DEPTH_BUFFER << 16 | (7 - 2));
@@ -794,6 +794,8 @@ gen7_blorp_exec(struct brw_context *brw,
    }
    depthstencil_offset = gen6_blorp_emit_depth_stencil_state(brw, params);
    gen7_blorp_emit_depth_stencil_state_pointers(brw, depthstencil_offset);
+   if (brw->use_resource_streamer)
+      gen7_disable_hw_binding_tables(brw);
    if (params->use_wm_prog) {
       uint32_t wm_surf_offset_renderbuffer;
       uint32_t wm_surf_offset_texture = 0;

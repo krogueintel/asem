@@ -28,7 +28,9 @@
 #ifndef ILO_STATE_H
 #define ILO_STATE_H
 
+#include "core/ilo_builder_3d.h" /* for gen6_3dprimitive_info */
 #include "core/ilo_state_cc.h"
+#include "core/ilo_state_compute.h"
 #include "core/ilo_state_raster.h"
 #include "core/ilo_state_sampler.h"
 #include "core/ilo_state_sbe.h"
@@ -147,31 +149,27 @@ struct ilo_shader_state;
 
 struct ilo_ve_state {
    unsigned vb_mapping[PIPE_MAX_ATTRIBS];
-   unsigned instance_divisors[PIPE_MAX_ATTRIBS];
    unsigned vb_count;
 
    /* these are not valid until the state is finalized */
-   uint32_t vf_data[PIPE_MAX_ATTRIBS][2];
+   uint32_t vf_data[PIPE_MAX_ATTRIBS][4];
    struct ilo_state_vf_params_info vf_params;
    struct ilo_state_vf vf;
 };
 
 struct ilo_vb_state {
    struct pipe_vertex_buffer states[PIPE_MAX_ATTRIBS];
+   struct ilo_state_vertex_buffer vb[PIPE_MAX_ATTRIBS];
    uint32_t enabled_mask;
 };
 
 struct ilo_ib_state {
-   struct pipe_resource *buffer;
-   const void *user_buffer;
-   unsigned offset;
-   unsigned index_size;
+   struct pipe_index_buffer state;
 
    /* these are not valid until the state is finalized */
    struct pipe_resource *hw_resource;
    unsigned hw_index_size;
-   /* an offset to be added to pipe_draw_info::start */
-   int64_t draw_start_offset;
+   struct ilo_state_index_buffer ib;
 };
 
 struct ilo_cbuf_cso {
@@ -204,7 +202,7 @@ struct ilo_cbuf_state {
 };
 
 struct ilo_resource_state {
-   struct pipe_surface *states[PIPE_MAX_SHADER_RESOURCES];
+   struct pipe_surface *states[PIPE_MAX_SHADER_IMAGES];
    unsigned count;
 };
 
@@ -219,10 +217,18 @@ struct ilo_view_state {
    unsigned count;
 };
 
+struct ilo_stream_output_target {
+   struct pipe_stream_output_target base;
+
+   struct ilo_state_sol_buffer sb;
+};
+
 struct ilo_so_state {
    struct pipe_stream_output_target *states[ILO_MAX_SO_BUFFERS];
    unsigned count;
    unsigned append_bitmask;
+
+   struct ilo_state_sol_buffer dummy_sb;
 
    bool enabled;
 };
@@ -332,6 +338,7 @@ struct ilo_global_binding {
 
 struct ilo_state_vector {
    const struct pipe_draw_info *draw;
+   struct gen6_3dprimitive_info draw_info;
 
    uint32_t dirty;
 

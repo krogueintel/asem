@@ -695,7 +695,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
     * in which case the memcpy-based fast path will likely be used and
     * we don't have to blit. */
    if (_mesa_format_matches_format_and_type(texImage->TexFormat, format,
-                                            type, unpack->SwapBytes)) {
+                                            type, unpack->SwapBytes, NULL)) {
       goto fallback;
    }
 
@@ -896,7 +896,7 @@ st_CompressedTexImage(struct gl_context *ctx, GLuint dims,
 
 
 /**
- * Called via ctx->Driver.GetTexImage()
+ * Called via ctx->Driver.GetTexSubImage()
  *
  * This uses a blit to copy the texture to a texture format which matches
  * the format and type combo and then a fast read-back is done using memcpy.
@@ -910,16 +910,15 @@ st_CompressedTexImage(struct gl_context *ctx, GLuint dims,
  *       we do here should be free in such cases.
  */
 static void
-st_GetTexImage(struct gl_context * ctx,
-               GLenum format, GLenum type, GLvoid * pixels,
-               struct gl_texture_image *texImage)
+st_GetTexSubImage(struct gl_context * ctx,
+                  GLint xoffset, GLint yoffset, GLint zoffset,
+                  GLsizei width, GLsizei height, GLint depth,
+                  GLenum format, GLenum type, GLvoid * pixels,
+                  struct gl_texture_image *texImage)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
    struct pipe_screen *screen = pipe->screen;
-   GLuint width = texImage->Width;
-   GLuint height = texImage->Height;
-   GLuint depth = texImage->Depth;
    struct st_texture_image *stImage = st_texture_image(texImage);
    struct st_texture_object *stObj = st_texture_object(texImage->TexObject);
    struct pipe_resource *src = stObj->pt;
@@ -964,7 +963,7 @@ st_GetTexImage(struct gl_context * ctx,
    /* See if the texture format already matches the format and type,
     * in which case the memcpy-based fast path will be used. */
    if (_mesa_format_matches_format_and_type(texImage->TexFormat, format,
-                                            type, ctx->Pack.SwapBytes)) {
+                                            type, ctx->Pack.SwapBytes, NULL)) {
       goto fallback;
    }
 
@@ -1054,7 +1053,7 @@ st_GetTexImage(struct gl_context * ctx,
       }
    }
 
-   /* create the destination texture */
+   /* create the destination texture of size (width X height X depth) */
    memset(&dst_templ, 0, sizeof(dst_templ));
    dst_templ.target = pipe_target;
    dst_templ.format = dst_format;
@@ -1072,9 +1071,15 @@ st_GetTexImage(struct gl_context * ctx,
 
    /* From now on, we need the gallium representation of dimensions. */
    if (gl_target == GL_TEXTURE_1D_ARRAY) {
+      zoffset = yoffset;
+      yoffset = 0;
       depth = height;
       height = 1;
    }
+
+   assert(texImage->Face == 0 ||
+          texImage->TexObject->MinLayer == 0 ||
+          zoffset == 0);
 
    memset(&blit, 0, sizeof(blit));
    blit.src.resource = src;
@@ -1083,9 +1088,11 @@ st_GetTexImage(struct gl_context * ctx,
    blit.dst.resource = dst;
    blit.dst.level = 0;
    blit.dst.format = dst->format;
-   blit.src.box.x = blit.dst.box.x = 0;
-   blit.src.box.y = blit.dst.box.y = 0;
-   blit.src.box.z = texImage->Face + texImage->TexObject->MinLayer;
+   blit.src.box.x = xoffset;
+   blit.dst.box.x = 0;
+   blit.src.box.y = yoffset;
+   blit.dst.box.y = 0;
+   blit.src.box.z = texImage->Face + texImage->TexObject->MinLayer + zoffset;
    blit.dst.box.z = 0;
    blit.src.box.width = blit.dst.box.width = width;
    blit.src.box.height = blit.dst.box.height = height;
@@ -1109,7 +1116,7 @@ st_GetTexImage(struct gl_context * ctx,
 
    /* copy/pack data into user buffer */
    if (_mesa_format_matches_format_and_type(mesa_format, format, type,
-                                            ctx->Pack.SwapBytes)) {
+                                            ctx->Pack.SwapBytes, NULL)) {
       /* memcpy */
       const uint bytesPerRow = width * util_format_get_blocksize(dst_format);
       GLuint row, slice;
@@ -1206,7 +1213,9 @@ end:
 
 fallback:
    if (!done) {
-      _mesa_GetTexImage_sw(ctx, format, type, pixels, texImage);
+      _mesa_GetTexSubImage_sw(ctx, xoffset, yoffset, zoffset,
+                              width, height, depth,
+                              format, type, pixels, texImage);
    }
 }
 
@@ -1864,6 +1873,54 @@ st_TextureView(struct gl_context *ctx,
    return GL_TRUE;
 }
 
+/* HACK: this is only enough for the most basic uses of CopyImage. Must fix
+ * before actually exposing the extension.
+ */
+static void
+st_CopyImageSubData(struct gl_context *ctx,
+                    struct gl_texture_image *src_image,
+                    struct gl_renderbuffer *src_renderbuffer,
+                    int src_x, int src_y, int src_z,
+                    struct gl_texture_image *dst_image,
+                    struct gl_renderbuffer *dst_renderbuffer,
+                    int dst_x, int dst_y, int dst_z,
+                    int src_width, int src_height)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_context *pipe = st->pipe;
+   struct pipe_resource *src_res, *dst_res;
+   struct pipe_box box;
+   int src_level, dst_level;
+
+   if (src_image) {
+      struct st_texture_image *src = st_texture_image(src_image);
+      src_res = src->pt;
+      src_level = src_image->Level;
+   }
+   else {
+      struct st_renderbuffer *src = st_renderbuffer(src_renderbuffer);
+      src_res = src->texture;
+      src_level = 0;
+   }
+
+   if (dst_image) {
+      struct st_texture_image *dst = st_texture_image(dst_image);
+      dst_res = dst->pt;
+      dst_level = dst_image->Level;
+   }
+   else {
+      struct st_renderbuffer *dst = st_renderbuffer(dst_renderbuffer);
+      dst_res = dst->texture;
+      dst_level = 0;
+   }
+
+   u_box_2d_zslice(src_x, src_y, src_z, src_width, src_height, &box);
+   pipe->resource_copy_region(pipe, dst_res, dst_level,
+                              dst_x, dst_y, dst_z,
+                              src_res, src_level,
+                              &box);
+}
+
 
 void
 st_init_texture_functions(struct dd_function_table *functions)
@@ -1876,11 +1933,11 @@ st_init_texture_functions(struct dd_function_table *functions)
    functions->CopyTexSubImage = st_CopyTexSubImage;
    functions->GenerateMipmap = st_generate_mipmap;
 
-   functions->GetTexImage = st_GetTexImage;
+   functions->GetTexSubImage = st_GetTexSubImage;
 
    /* compressed texture functions */
    functions->CompressedTexImage = st_CompressedTexImage;
-   functions->GetCompressedTexImage = _mesa_GetCompressedTexImage_sw;
+   functions->GetCompressedTexSubImage = _mesa_GetCompressedTexSubImage_sw;
 
    functions->NewTextureObject = st_NewTextureObject;
    functions->NewTextureImage = st_NewTextureImage;
@@ -1896,4 +1953,6 @@ st_init_texture_functions(struct dd_function_table *functions)
 
    functions->AllocTextureStorage = st_AllocTextureStorage;
    functions->TextureView = st_TextureView;
+
+   functions->CopyImageSubData = st_CopyImageSubData;
 }

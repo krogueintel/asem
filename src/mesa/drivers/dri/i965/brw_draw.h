@@ -1,5 +1,4 @@
- /**************************************************************************
- *
+/*
  * Copyright 2005 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,13 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #ifndef BRW_DRAW_H
 #define BRW_DRAW_H
@@ -34,7 +32,7 @@
 struct brw_context;
 
 
-void brw_draw_prims( struct gl_context *ctx,
+void brw_draw_prims(struct gl_context *ctx,
 		     const struct _mesa_prim *prims,
 		     GLuint nr_prims,
 		     const struct _mesa_index_buffer *ib,
@@ -42,6 +40,7 @@ void brw_draw_prims( struct gl_context *ctx,
 		     GLuint min_index,
 		     GLuint max_index,
 		     struct gl_transform_feedback_object *unused_tfb_object,
+                     unsigned stream,
 		     struct gl_buffer_object *indirect );
 
 void brw_draw_init( struct brw_context *brw );

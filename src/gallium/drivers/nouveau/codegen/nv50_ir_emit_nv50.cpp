@@ -499,10 +499,14 @@ CodeEmitterNV50::emitForm_MAD(const Instruction *i)
    setSrc(i, 2, 2);
 
    if (i->getIndirect(0, 0)) {
-      assert(!i->getIndirect(1, 0));
+      assert(!i->srcExists(1) || !i->getIndirect(1, 0));
+      assert(!i->srcExists(2) || !i->getIndirect(2, 0));
       setAReg16(i, 0);
-   } else {
+   } else if (i->srcExists(1) && i->getIndirect(1, 0)) {
+      assert(!i->srcExists(2) || !i->getIndirect(2, 0));
       setAReg16(i, 1);
+   } else {
+      setAReg16(i, 2);
    }
 }
 
@@ -546,7 +550,7 @@ CodeEmitterNV50::emitForm_MUL(const Instruction *i)
 }
 
 // usual immediate form
-// - 1 to 3 sources where last is immediate (rir, gir)
+// - 1 to 3 sources where second is immediate (rir, gir)
 // - no address or predicate possible
 void
 CodeEmitterNV50::emitForm_IMM(const Instruction *i)
@@ -562,7 +566,7 @@ CodeEmitterNV50::emitForm_IMM(const Instruction *i)
    if (Target::operationSrcNr[i->op] > 1) {
       setSrc(i, 0, 0);
       setImmediate(i, 1);
-      setSrc(i, 2, 1);
+      // If there is another source, it has to be the same as the dest reg.
    } else {
       setImmediate(i, 0);
    }
@@ -880,7 +884,7 @@ CodeEmitterNV50::emitINTERP(const Instruction *i)
    defId(i->def(0), 2);
    srcAddr8(i->src(0), 16);
 
-   if (i->getInterpMode() == NV50_IR_INTERP_FLAT) {
+   if (i->encSize != 8 && i->getInterpMode() == NV50_IR_INTERP_FLAT) {
       code[0] |= 1 << 8;
    } else {
       if (i->op == OP_PINTERP) {
@@ -892,10 +896,11 @@ CodeEmitterNV50::emitINTERP(const Instruction *i)
    }
 
    if (i->encSize == 8) {
-      code[1] =
-         (code[0] & (3 << 24)) >> (24 - 16) |
-         (code[0] & (1 <<  8)) << (18 -  8);
-      code[0] &= ~0x03000100;
+      if (i->getInterpMode() == NV50_IR_INTERP_FLAT)
+         code[1] = 4 << 16;
+      else
+         code[1] = (code[0] & (3 << 24)) >> (24 - 16);
+      code[0] &= ~0x03000000;
       code[0] |= 1;
       emitFlagsRd(i);
    }

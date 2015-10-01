@@ -324,6 +324,7 @@ protected:
 enum ir_variable_mode {
    ir_var_auto = 0,     /**< Function local variables and globals. */
    ir_var_uniform,      /**< Variable declared as a uniform. */
+   ir_var_shader_storage,   /**< Variable declared as an ssbo. */
    ir_var_shader_in,
    ir_var_shader_out,
    ir_var_function_in,
@@ -441,11 +442,23 @@ public:
    glsl_interp_qualifier determine_interpolation_mode(bool flat_shade);
 
    /**
-    * Determine whether or not a variable is part of a uniform block.
+    * Determine whether or not a variable is part of a uniform or
+    * shader storage block.
     */
-   inline bool is_in_uniform_block() const
+   inline bool is_in_buffer_block() const
    {
-      return this->data.mode == ir_var_uniform && this->interface_type != NULL;
+      return (this->data.mode == ir_var_uniform ||
+              this->data.mode == ir_var_shader_storage) &&
+             this->interface_type != NULL;
+   }
+
+   /**
+    * Determine whether or not a variable is part of a shader storage block.
+    */
+   inline bool is_in_shader_storage_block() const
+   {
+      return this->data.mode == ir_var_shader_storage &&
+             this->interface_type != NULL;
    }
 
    /**
@@ -618,6 +631,7 @@ public:
       unsigned read_only:1;
       unsigned centroid:1;
       unsigned sample:1;
+      unsigned patch:1;
       unsigned invariant:1;
       unsigned precise:1;
 
@@ -773,6 +787,11 @@ public:
       unsigned image_restrict:1;
 
       /**
+       * ARB_shader_storage_buffer_object
+       */
+      unsigned from_ssbo_unsized_array:1; /**< unsized array buffer variable. */
+
+      /**
        * Emit a warning if this variable is accessed.
        */
    private:
@@ -814,6 +833,8 @@ public:
        *   - Fragment shader output: one of the values from \c gl_frag_result.
        *   - Uniforms: Per-stage uniform slot number for default uniform block.
        *   - Uniforms: Index within the uniform block definition for UBO members.
+       *   - Non-UBO Uniforms: explicit location until linking then reused to
+       *     store uniform slot number.
        *   - Other: This field is not currently used.
        *
        * If the variable is a uniform, shader input, or shader output, and the
@@ -1121,6 +1142,21 @@ public:
     * List of ir_function_signature for each overloaded function with this name.
     */
    struct exec_list signatures;
+
+   /**
+    * is this function a subroutine type declaration
+    * e.g. subroutine void type1(float arg1);
+    */
+   bool is_subroutine;
+
+   /**
+    * is this function associated to a subroutine type
+    * e.g. subroutine (type1, type2) function_name { function_body };
+    * would have num_subroutine_types 2,
+    * and pointers to the type1 and type2 types.
+    */
+   int num_subroutine_types;
+   const struct glsl_type **subroutine_types;
 };
 
 inline const char *ir_function_signature::function_name() const
@@ -1380,6 +1416,7 @@ enum ir_expression_operation {
 
    ir_unop_noise,
 
+   ir_unop_subroutine_to_int,
    /**
     * Interpolate fs input at centroid
     *
@@ -1388,9 +1425,26 @@ enum ir_expression_operation {
    ir_unop_interpolate_at_centroid,
 
    /**
+    * Ask the driver for the total size of a buffer block.
+    *
+    * operand0 is the ir_constant buffer block index in the linked shader.
+    */
+   ir_unop_get_buffer_size,
+
+   /**
+    * Calculate length of an unsized array inside a buffer block.
+    * This opcode is going to be replaced in a lowering pass inside
+    * the linker.
+    *
+    * operand0 is the unsized array's ir_value for the calculation
+    * of its length.
+    */
+   ir_unop_ssbo_unsized_array_length,
+
+   /**
     * A sentinel marking the last of the unary operations.
     */
-   ir_last_unop = ir_unop_interpolate_at_centroid,
+   ir_last_unop = ir_unop_ssbo_unsized_array_length,
 
    ir_binop_add,
    ir_binop_sub,
@@ -1691,7 +1745,18 @@ public:
    ir_call(ir_function_signature *callee,
 	   ir_dereference_variable *return_deref,
 	   exec_list *actual_parameters)
-      : ir_instruction(ir_type_call), return_deref(return_deref), callee(callee)
+      : ir_instruction(ir_type_call), return_deref(return_deref), callee(callee), sub_var(NULL), array_idx(NULL)
+   {
+      assert(callee->return_type != NULL);
+      actual_parameters->move_nodes_to(& this->actual_parameters);
+      this->use_builtin = callee->is_builtin();
+   }
+
+   ir_call(ir_function_signature *callee,
+	   ir_dereference_variable *return_deref,
+	   exec_list *actual_parameters,
+	   ir_variable *var, ir_rvalue *array_idx)
+      : ir_instruction(ir_type_call), return_deref(return_deref), callee(callee), sub_var(var), array_idx(array_idx)
    {
       assert(callee->return_type != NULL);
       actual_parameters->move_nodes_to(& this->actual_parameters);
@@ -1739,6 +1804,14 @@ public:
 
    /** Should this call only bind to a built-in function? */
    bool use_builtin;
+
+   /*
+    * ARB_shader_subroutine support -
+    * the subroutine uniform variable and array index
+    * rvalue to be used in the lowering pass later.
+    */
+   ir_variable *sub_var;
+   ir_rvalue *array_idx;
 };
 
 
@@ -1874,7 +1947,8 @@ enum ir_texture_opcode {
    ir_txs,		/**< Texture size */
    ir_lod,		/**< Texture lod query */
    ir_tg4,		/**< Texture gather */
-   ir_query_levels      /**< Texture levels query */
+   ir_query_levels,     /**< Texture levels query */
+   ir_texture_samples,  /**< Texture samples query */
 };
 
 
@@ -2473,6 +2547,9 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
 				struct _mesa_glsl_parse_state *state);
 
 extern void
+_mesa_glsl_initialize_derived_variables(gl_shader *shader);
+
+extern void
 _mesa_glsl_initialize_functions(_mesa_glsl_parse_state *state);
 
 extern void
@@ -2483,11 +2560,13 @@ _mesa_glsl_find_builtin_function(_mesa_glsl_parse_state *state,
                                  const char *name, exec_list *actual_parameters);
 
 extern ir_function *
-_mesa_glsl_find_builtin_function_by_name(_mesa_glsl_parse_state *state,
-                                         const char *name);
+_mesa_glsl_find_builtin_function_by_name(const char *name);
 
 extern gl_shader *
 _mesa_glsl_get_builtin_function_shader(void);
+
+extern ir_function_signature *
+_mesa_get_main_function_signature(gl_shader *sh);
 
 extern void
 _mesa_glsl_release_functions(void);

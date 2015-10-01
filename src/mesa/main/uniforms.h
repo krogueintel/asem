@@ -225,6 +225,10 @@ _mesa_UniformBlockBinding(GLuint program,
 			  GLuint uniformBlockIndex,
 			  GLuint uniformBlockBinding);
 void GLAPIENTRY
+_mesa_ShaderStorageBlockBinding(GLuint program,
+                                GLuint shaderStorageBlockIndex,
+                                GLuint shaderStorageBlockBinding);
+void GLAPIENTRY
 _mesa_GetActiveAtomicCounterBufferiv(GLuint program, GLuint bufferIndex,
                                      GLenum pname, GLint *params);
 void GLAPIENTRY
@@ -343,10 +347,6 @@ void GLAPIENTRY
 _mesa_ProgramUniformMatrix4x3dv(GLuint program, GLint location, GLsizei count,
                                 GLboolean transpose, const GLdouble *value);
 
-unsigned
-_mesa_get_uniform_location(struct gl_shader_program *shProg,
-			   const GLchar *name, unsigned *offset);
-
 void
 _mesa_uniform(struct gl_context *ctx, struct gl_shader_program *shader_program,
 	      GLint location, GLsizei count,
@@ -359,7 +359,7 @@ _mesa_uniform_matrix(struct gl_context *ctx, struct gl_shader_program *shProg,
 		     GLuint cols, GLuint rows,
                      GLint location, GLsizei count,
                      GLboolean transpose,
-                     const GLvoid *values, GLenum type);
+                     const GLvoid *values, enum glsl_base_type basicType);
 
 void
 _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,

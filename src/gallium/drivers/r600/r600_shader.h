@@ -78,13 +78,9 @@ struct r600_shader {
 	/* Temporarily workaround SB not handling CF_INDEX_[01] index registers */
 	boolean			uses_index_registers;
 
-	/* geometry shader properties */
-	unsigned		gs_input_prim;
-	unsigned		gs_output_prim;
-	unsigned		gs_max_out_vertices;
-	unsigned		gs_num_invocations;
-	/* size in bytes of a data item in the ring (single vertex data) */
-	unsigned		ring_item_size;
+	/* Size in bytes of a data item in the ring(s) (single vertex data).
+	   Stages with only one ring items 123 will be set to 0. */
+	unsigned		ring_item_sizes[4];
 
 	unsigned		indirect_files;
 	unsigned		max_arrays;
@@ -93,15 +89,21 @@ struct r600_shader {
 	unsigned		vs_as_gs_a;
 	unsigned                ps_prim_id_input;
 	struct r600_shader_array * arrays;
+
+	boolean			uses_doubles;
 };
 
-struct r600_shader_key {
-	unsigned color_two_side:1;
-	unsigned alpha_to_one:1;
-	unsigned nr_cbufs:4;
-	unsigned vs_as_es:1;
-	unsigned vs_as_gs_a:1;
-	unsigned vs_prim_id_out:8;
+union r600_shader_key {
+	struct {
+		unsigned	nr_cbufs:4;
+		unsigned	color_two_side:1;
+		unsigned	alpha_to_one:1;
+	} ps;
+	struct {
+		unsigned	prim_id_out:8;
+		unsigned	as_es:1; /* export shader */
+		unsigned	as_gs_a:1;
+	} vs;
 };
 
 struct r600_shader_array {
@@ -122,9 +124,10 @@ struct r600_pipe_shader {
 	unsigned		flatshade;
 	unsigned		pa_cl_vs_out_cntl;
 	unsigned		nr_ps_color_outputs;
-	struct r600_shader_key	key;
+	union r600_shader_key	key;
 	unsigned		db_shader_control;
 	unsigned		ps_depth_export;
+	unsigned		enabled_stream_buffers_mask;
 };
 
 /* return the table index 0-5 for TGSI_INTERPOLATE_LINEAR/PERSPECTIVE and

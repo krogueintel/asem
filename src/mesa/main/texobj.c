@@ -37,6 +37,7 @@
 #include "hash.h"
 #include "imports.h"
 #include "macros.h"
+#include "shaderimage.h"
 #include "teximage.h"
 #include "texobj.h"
 #include "texstate.h"
@@ -1255,7 +1256,7 @@ create_textures(struct gl_context *ctx, GLenum target,
          if (targetIndex < 0) { /* Bad Target */
             mtx_unlock(&ctx->Shared->Mutex);
             _mesa_error(ctx, GL_INVALID_ENUM, "gl%sTextures(target = %s)",
-                        func, _mesa_lookup_enum_by_nr(texObj->Target));
+                        func, _mesa_enum_to_string(texObj->Target));
             return;
          }
          assert(targetIndex < NUM_TEXTURE_TARGETS);
@@ -1411,8 +1412,10 @@ unbind_texobj_from_image_units(struct gl_context *ctx,
    for (i = 0; i < ctx->Const.MaxImageUnits; i++) {
       struct gl_image_unit *unit = &ctx->ImageUnits[i];
 
-      if (texObj == unit->TexObj)
+      if (texObj == unit->TexObj) {
          _mesa_reference_texobj(&unit->TexObj, NULL);
+         *unit = _mesa_default_image_unit(ctx);
+      }
    }
 }
 
@@ -1606,10 +1609,11 @@ _mesa_tex_target_to_index(const struct gl_context *ctx, GLenum target)
       return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_cube_map_array
          ? TEXTURE_CUBE_ARRAY_INDEX : -1;
    case GL_TEXTURE_2D_MULTISAMPLE:
-      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample
-         ? TEXTURE_2D_MULTISAMPLE_INDEX: -1;
+      return ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample) ||
+              _mesa_is_gles31(ctx)) ? TEXTURE_2D_MULTISAMPLE_INDEX: -1;
    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample
+      return ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample) ||
+              _mesa_is_gles31(ctx))
          ? TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX: -1;
    default:
       return -1;
@@ -1642,7 +1646,7 @@ _mesa_BindTexture( GLenum target, GLuint texName )
 
    if (MESA_VERBOSE & (VERBOSE_API|VERBOSE_TEXTURE))
       _mesa_debug(ctx, "glBindTexture %s %d\n",
-                  _mesa_lookup_enum_by_nr(target), (GLint) texName);
+                  _mesa_enum_to_string(target), (GLint) texName);
 
    targetIndex = _mesa_tex_target_to_index(ctx, target);
    if (targetIndex < 0) {
@@ -1742,10 +1746,10 @@ _mesa_BindTexture( GLenum target, GLuint texName )
  * texture object will be decremented.  It'll be deleted if the
  * count hits zero.
  */
-void
-_mesa_bind_texture_unit(struct gl_context *ctx,
-                        GLuint unit,
-                        struct gl_texture_object *texObj)
+static void
+bind_texture_unit(struct gl_context *ctx,
+                  GLuint unit,
+                  struct gl_texture_object *texObj)
 {
    struct gl_texture_unit *texUnit;
 
@@ -1806,7 +1810,7 @@ _mesa_BindTextureUnit(GLuint unit, GLuint texture)
 
    if (MESA_VERBOSE & (VERBOSE_API|VERBOSE_TEXTURE))
       _mesa_debug(ctx, "glBindTextureUnit %s %d\n",
-                  _mesa_lookup_enum_by_nr(GL_TEXTURE0+unit), (GLint) texture);
+                  _mesa_enum_to_string(GL_TEXTURE0+unit), (GLint) texture);
 
    /* Section 8.1 (Texture Objects) of the OpenGL 4.5 core profile spec
     * (20141030) says:
@@ -1834,7 +1838,7 @@ _mesa_BindTextureUnit(GLuint unit, GLuint texture)
    }
    assert(valid_texture_object(texObj));
 
-   _mesa_bind_texture_unit(ctx, unit, texObj);
+   bind_texture_unit(ctx, unit, texObj);
 }
 
 

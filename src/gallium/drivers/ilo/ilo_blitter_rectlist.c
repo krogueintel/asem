@@ -45,9 +45,9 @@ ilo_blitter_set_invariants(struct ilo_blitter *blitter)
       return true;
 
    /* a rectangle has 3 vertices in a RECTLIST */
-   util_draw_init_info(&blitter->draw);
-   blitter->draw.mode = ILO_PRIM_RECTANGLES;
-   blitter->draw.count = 3;
+   blitter->draw_info.topology = GEN6_3DPRIM_RECTLIST;
+   blitter->draw_info.vertex_count = 3;
+   blitter->draw_info.instance_count = 1;
 
    memset(&elem, 0, sizeof(elem));
    /* only vertex X and Y */
@@ -318,7 +318,7 @@ hiz_can_clear_zs(const struct ilo_blitter *blitter,
     * The truth is when HiZ is enabled, separate stencil is also enabled on
     * all GENs.  The depth buffer format cannot be combined depth/stencil.
     */
-   switch (tex->image.format) {
+   switch (tex->image_format) {
    case PIPE_FORMAT_Z16_UNORM:
       if (ilo_dev_gen(blitter->ilo->dev) == ILO_GEN(6) &&
           tex->base.width0 % 16)
@@ -355,7 +355,7 @@ ilo_blitter_rectlist_clear_zs(struct ilo_blitter *blitter,
    if (ilo_dev_gen(blitter->ilo->dev) >= ILO_GEN(8))
       clear_value = fui(depth);
    else
-      clear_value = util_pack_z(tex->image.format, depth);
+      clear_value = util_pack_z(tex->image_format, depth);
 
    ilo_blit_resolve_surface(blitter->ilo, zs,
          ILO_TEXTURE_RENDER_WRITE | ILO_TEXTURE_CLEAR);

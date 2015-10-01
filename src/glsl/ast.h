@@ -304,6 +304,16 @@ private:
     * Is this function call actually a constructor?
     */
    bool cons;
+   ir_rvalue *
+   handle_method(exec_list *instructions,
+                 struct _mesa_glsl_parse_state *state);
+};
+
+class ast_subroutine_list : public ast_node
+{
+public:
+   virtual void print(void) const;
+   exec_list declarations;
 };
 
 class ast_array_specifier : public ast_node {
@@ -434,7 +444,9 @@ struct ast_type_qualifier {
 	 unsigned out:1;
 	 unsigned centroid:1;
          unsigned sample:1;
+	 unsigned patch:1;
 	 unsigned uniform:1;
+	 unsigned buffer:1;
 	 unsigned smooth:1;
 	 unsigned flat:1;
 	 unsigned noperspective:1;
@@ -479,6 +491,7 @@ struct ast_type_qualifier {
 	 /** \name Layout qualifiers for GL_ARB_uniform_buffer_object */
 	 /** \{ */
          unsigned std140:1;
+         unsigned std430:1;
          unsigned shared:1;
          unsigned packed:1;
          unsigned column_major:1;
@@ -514,6 +527,23 @@ struct ast_type_qualifier {
          unsigned stream:1; /**< Has stream value assigned  */
          unsigned explicit_stream:1; /**< stream value assigned explicitly by shader code */
          /** \} */
+
+	 /** \name Layout qualifiers for GL_ARB_tessellation_shader */
+	 /** \{ */
+	 /* tess eval input layout */
+	 /* gs prim_type reused for primitive mode */
+	 unsigned vertex_spacing:1;
+	 unsigned ordering:1;
+	 unsigned point_mode:1;
+	 /* tess control output layout */
+	 unsigned vertices:1;
+	 /** \} */
+
+         /** \name Qualifiers for GL_ARB_shader_subroutine */
+	 /** \{ */
+         unsigned subroutine:1;  /**< Is this marked 'subroutine' */
+         unsigned subroutine_def:1; /**< Is this marked 'subroutine' with a list of types */
+	 /** \} */
       }
       /** \brief Set of flags, accessed by name. */
       q;
@@ -549,7 +579,10 @@ struct ast_type_qualifier {
    /** Stream in GLSL 1.50 geometry shaders. */
    unsigned stream;
 
-   /** Input or output primitive type in GLSL 1.50 geometry shaders */
+   /**
+    * Input or output primitive type in GLSL 1.50 geometry shaders
+    * and tessellation shaders.
+    */
    GLenum prim_type;
 
    /**
@@ -576,6 +609,18 @@ struct ast_type_qualifier {
     */
    int local_size[3];
 
+   /** Tessellation evaluation shader: vertex spacing (equal, fractional even/odd) */
+   GLenum vertex_spacing;
+
+   /** Tessellation evaluation shader: vertex ordering (CW or CCW) */
+   GLenum ordering;
+
+   /** Tessellation evaluation shader: point mode */
+   bool point_mode;
+
+   /** Tessellation control shader: number of output vertices */
+   int vertices;
+
    /**
     * Image format specified with an ARB_shader_image_load_store
     * layout qualifier.
@@ -594,6 +639,9 @@ struct ast_type_qualifier {
     * This field is only valid if \c explicit_image_format is set.
     */
    glsl_base_type image_base_type;
+
+   /** Flag to know if this represents a default value for a qualifier */
+   bool is_default_qualifier;
 
    /**
     * Return true if and only if an interpolation qualifier is present.
@@ -631,11 +679,17 @@ struct ast_type_qualifier {
 			_mesa_glsl_parse_state *state,
 			ast_type_qualifier q);
 
+   bool merge_out_qualifier(YYLTYPE *loc,
+                           _mesa_glsl_parse_state *state,
+                           ast_type_qualifier q,
+                           ast_node* &node);
+
    bool merge_in_qualifier(YYLTYPE *loc,
                            _mesa_glsl_parse_state *state,
                            ast_type_qualifier q,
                            ast_node* &node);
 
+   ast_subroutine_list *subroutine_list;
 };
 
 class ast_declarator_list;
@@ -1031,6 +1085,27 @@ public:
 
 
 /**
+ * AST node representing a declaration of the output layout for tessellation
+ * control shaders.
+ */
+class ast_tcs_output_layout : public ast_node
+{
+public:
+   ast_tcs_output_layout(const struct YYLTYPE &locp, int vertices)
+      : vertices(vertices)
+   {
+      set_location(locp);
+   }
+
+   virtual ir_rvalue *hir(exec_list *instructions,
+                          struct _mesa_glsl_parse_state *state);
+
+private:
+   const int vertices;
+};
+
+
+/**
  * AST node representing a declaration of the input layout for geometry
  * shaders.
  */
@@ -1097,5 +1172,10 @@ emit_function(_mesa_glsl_parse_state *state, ir_function *f);
 extern void
 check_builtin_array_max_size(const char *name, unsigned size,
                              YYLTYPE loc, struct _mesa_glsl_parse_state *state);
+
+extern void _mesa_ast_process_interface_block(YYLTYPE *locp,
+                                              _mesa_glsl_parse_state *state,
+                                              ast_interface_block *const block,
+                                              const struct ast_type_qualifier q);
 
 #endif /* AST_H */

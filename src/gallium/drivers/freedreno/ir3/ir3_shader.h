@@ -29,25 +29,38 @@
 #ifndef IR3_SHADER_H_
 #define IR3_SHADER_H_
 
+#include "pipe/p_state.h"
+#include "glsl/shader_enums.h"
+
 #include "ir3.h"
 #include "disasm.h"
 
-typedef uint16_t ir3_semantic;  /* semantic name + index */
-static inline ir3_semantic
-ir3_semantic_name(uint8_t name, uint16_t index)
-{
-	return (name << 8) | (index & 0xff);
-}
+/* driver param indices: */
+enum ir3_driver_param {
+	IR3_DP_VTXID_BASE = 0,
+	IR3_DP_VTXCNT_MAX = 1,
+	/* user-clip-plane components, up to 8x vec4's: */
+	IR3_DP_UCP0_X     = 4,
+	/* .... */
+	IR3_DP_UCP7_W     = 35,
+	IR3_DP_COUNT      = 36   /* must be aligned to vec4 */
+};
 
-static inline uint8_t sem2name(ir3_semantic sem)
-{
-	return sem >> 8;
-}
-
-static inline uint16_t sem2idx(ir3_semantic sem)
-{
-	return sem & 0xff;
-}
+/* Layout of constant registers:
+ *
+ *    num_uniform * vec4  -  user consts
+ *    4 * vec4            -  UBO addresses
+ *    if (vertex shader) {
+ *        N * vec4        -  driver params (IR3_DP_*)
+ *        1 * vec4        -  stream-out addresses
+ *    }
+ *
+ * TODO this could be made more dynamic, to at least skip sections
+ * that we don't need..
+ */
+#define IR3_UBOS_OFF         0  /* UBOs after user consts */
+#define IR3_DRIVER_PARAM_OFF 4  /* driver params after UBOs */
+#define IR3_TFBOS_OFF       (IR3_DRIVER_PARAM_OFF + IR3_DP_COUNT/4)
 
 /* Configuration key used to identify a shader variant.. different
  * shader variants can be used to implement features not supported
@@ -56,6 +69,11 @@ static inline uint16_t sem2idx(ir3_semantic sem)
 struct ir3_shader_key {
 	union {
 		struct {
+			/*
+			 * Combined Vertex/Fragment shader parameters:
+			 */
+			unsigned ucp_enables : 8;
+
 			/* do we need to check {v,f}saturate_{s,t,r}? */
 			unsigned has_per_samp : 1;
 
@@ -69,8 +87,8 @@ struct ir3_shader_key {
 			 */
 			unsigned color_two_side : 1;
 			unsigned half_precision : 1;
-			/* used when shader needs to handle flat varyings (a4xx),
-			 * for TGSI_INTERPOLATE_COLOR:
+			/* used when shader needs to handle flat varyings (a4xx)
+			 * for front/back color inputs to frag shader:
 			 */
 			unsigned rasterflat : 1;
 		};
@@ -86,10 +104,6 @@ struct ir3_shader_key {
 	 * shader:
 	 */
 	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
-
-	/* bitmask of sampler which produces integer outputs:
-	 */
-	uint16_t vinteger_s, finteger_s;
 };
 
 static inline bool
@@ -103,6 +117,9 @@ ir3_shader_key_equal(struct ir3_shader_key *a, struct ir3_shader_key *b)
 
 struct ir3_shader_variant {
 	struct fd_bo *bo;
+
+	/* variant id (for debug) */
+	uint32_t id;
 
 	struct ir3_shader_key key;
 
@@ -135,10 +152,16 @@ struct ir3_shader_variant {
 	uint8_t pos_regid;
 	bool frag_coord, frag_face, color0_mrt;
 
+	/* NOTE: for input/outputs, slot is:
+	 *   gl_vert_attrib  - for VS inputs
+	 *   gl_varying_slot - for VS output / FS input
+	 *   gl_frag_result  - for FS output
+	 */
+
 	/* varyings/outputs: */
 	unsigned outputs_count;
 	struct {
-		ir3_semantic semantic;
+		uint8_t slot;
 		uint8_t regid;
 	} outputs[16 + 2];  /* +POSITION +PSIZE */
 	bool writes_pos, writes_psize;
@@ -146,7 +169,7 @@ struct ir3_shader_variant {
 	/* vertices/inputs: */
 	unsigned inputs_count;
 	struct {
-		ir3_semantic semantic;
+		uint8_t slot;
 		uint8_t regid;
 		uint8_t compmask;
 		uint8_t ncomp;
@@ -162,8 +185,12 @@ struct ir3_shader_variant {
 		 * spots where inloc is used.
 		 */
 		uint8_t inloc;
-		uint8_t bary;
-		uint8_t interpolate;
+		/* vertex shader specific: */
+		bool    sysval     : 1;   /* slot is a gl_system_value */
+		/* fragment shader specific: */
+		bool    bary       : 1;   /* fetched varying (vs one loaded into reg) */
+		bool    rasterflat : 1;   /* special handling for emit->rasterflat */
+		enum glsl_interp_qualifier interpolate;
 	} inputs[16 + 2];  /* +POSITION +FACE */
 
 	unsigned total_in;       /* sum of inputs (scalar) */
@@ -196,37 +223,58 @@ struct ir3_shader_variant {
 struct ir3_shader {
 	enum shader_t type;
 
+	/* shader id (for debug): */
+	uint32_t id;
+	uint32_t variant_count;
+
+	struct ir3_compiler *compiler;
+
 	struct pipe_context *pctx;
 	const struct tgsi_token *tokens;
+	struct pipe_stream_output_info stream_output;
 
 	struct ir3_shader_variant *variants;
-
-	/* so far, only used for blit_prog shader.. values for
-	 * VPC_VARYING_PS_REPL[i].MODE
-	 */
-	uint32_t vpsrepl[8];
 };
 
 void * ir3_shader_assemble(struct ir3_shader_variant *v, uint32_t gpu_id);
 
 struct ir3_shader * ir3_shader_create(struct pipe_context *pctx,
-		const struct tgsi_token *tokens, enum shader_t type);
+		const struct pipe_shader_state *cso, enum shader_t type);
 void ir3_shader_destroy(struct ir3_shader *shader);
-uint32_t ir3_shader_gpuid(struct ir3_shader *shader);
 struct ir3_shader_variant * ir3_shader_variant(struct ir3_shader *shader,
 		struct ir3_shader_key key);
+void ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin);
+
+struct fd_ringbuffer;
+void ir3_emit_consts(struct ir3_shader_variant *v, struct fd_ringbuffer *ring,
+		const struct pipe_draw_info *info, uint32_t dirty);
+
+static inline const char *
+ir3_shader_stage(struct ir3_shader *shader)
+{
+	switch (shader->type) {
+	case SHADER_VERTEX:     return "VERT";
+	case SHADER_FRAGMENT:   return "FRAG";
+	case SHADER_COMPUTE:    return "CL";
+	default:
+		unreachable("invalid type");
+		return NULL;
+	}
+}
 
 /*
  * Helper/util:
  */
 
+#include "pipe/p_shader_tokens.h"
+
 static inline int
-ir3_find_output(const struct ir3_shader_variant *so, ir3_semantic semantic)
+ir3_find_output(const struct ir3_shader_variant *so, gl_varying_slot slot)
 {
 	int j;
 
 	for (j = 0; j < so->outputs_count; j++)
-		if (so->outputs[j].semantic == semantic)
+		if (so->outputs[j].slot == slot)
 			return j;
 
 	/* it seems optional to have a OUT.BCOLOR[n] for each OUT.COLOR[n]
@@ -236,18 +284,20 @@ ir3_find_output(const struct ir3_shader_variant *so, ir3_semantic semantic)
 	 * OUT.COLOR[n] to IN.BCOLOR[n].  And visa versa if there is only
 	 * a OUT.BCOLOR[n] but no matching OUT.COLOR[n]
 	 */
-	if (sem2name(semantic) == TGSI_SEMANTIC_BCOLOR) {
-		unsigned idx = sem2idx(semantic);
-		semantic = ir3_semantic_name(TGSI_SEMANTIC_COLOR, idx);
-	} else if (sem2name(semantic) == TGSI_SEMANTIC_COLOR) {
-		unsigned idx = sem2idx(semantic);
-		semantic = ir3_semantic_name(TGSI_SEMANTIC_BCOLOR, idx);
+	if (slot == VARYING_SLOT_BFC0) {
+		slot = VARYING_SLOT_COL0;
+	} else if (slot == VARYING_SLOT_BFC1) {
+		slot = VARYING_SLOT_COL1;
+	} else if (slot == VARYING_SLOT_COL0) {
+		slot = VARYING_SLOT_BFC0;
+	} else if (slot == VARYING_SLOT_COL1) {
+		slot = VARYING_SLOT_BFC1;
 	} else {
 		return 0;
 	}
 
 	for (j = 0; j < so->outputs_count; j++)
-		if (so->outputs[j].semantic == semantic)
+		if (so->outputs[j].slot == slot)
 			return j;
 
 	debug_assert(0);
@@ -265,11 +315,11 @@ ir3_next_varying(const struct ir3_shader_variant *so, int i)
 }
 
 static inline uint32_t
-ir3_find_output_regid(const struct ir3_shader_variant *so, ir3_semantic semantic)
+ir3_find_output_regid(const struct ir3_shader_variant *so, unsigned slot)
 {
 	int j;
 	for (j = 0; j < so->outputs_count; j++)
-		if (so->outputs[j].semantic == semantic)
+		if (so->outputs[j].slot == slot)
 			return so->outputs[j].regid;
 	return regid(63, 0);
 }

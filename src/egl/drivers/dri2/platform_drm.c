@@ -68,7 +68,7 @@ release_buffer(struct gbm_surface *_surf, struct gbm_bo *bo)
 {
    struct gbm_dri_surface *surf = (struct gbm_dri_surface *) _surf;
    struct dri2_egl_surface *dri2_surf = surf->dri_private;
-   int i;
+   unsigned i;
 
    for (i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
       if (dri2_surf->color_buffers[i].bo == bo) {
@@ -82,7 +82,7 @@ has_free_buffers(struct gbm_surface *_surf)
 {
    struct gbm_dri_surface *surf = (struct gbm_dri_surface *) _surf;
    struct dri2_egl_surface *dri2_surf = surf->dri_private;
-   int i;
+   unsigned i;
 
    for (i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++)
       if (!dri2_surf->color_buffers[i].locked)
@@ -115,8 +115,11 @@ dri2_drm_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
 
    switch (type) {
    case EGL_WINDOW_BIT:
-      if (!window)
-         return NULL;
+      if (!window) {
+         _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_create_surface");
+         goto cleanup_surf;
+      }
+
       surf = gbm_dri_surface(window);
       dri2_surf->gbm_surf = surf;
       dri2_surf->base.Width =  surf->base.width;
@@ -128,10 +131,13 @@ dri2_drm_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
    }
 
    if (dri2_dpy->dri2) {
+      const __DRIconfig *config =
+         dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
+                             dri2_surf->base.GLColorspace);
+
       dri2_surf->dri_drawable =
-         (*dri2_dpy->dri2->createNewDrawable) (dri2_dpy->dri_screen,
-                                               dri2_conf->dri_double_config,
-                                               dri2_surf->gbm_surf);
+         (*dri2_dpy->dri2->createNewDrawable)(dri2_dpy->dri_screen, config,
+                                              dri2_surf->gbm_surf);
 
    } else {
       assert(dri2_dpy->swrast != NULL);
@@ -183,7 +189,7 @@ dri2_drm_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
-   int i;
+   unsigned i;
 
    if (!_eglPutSurface(surf))
       return EGL_TRUE;
@@ -212,7 +218,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
    struct gbm_dri_surface *surf = dri2_surf->gbm_surf;
-   int i;
+   unsigned i;
 
    if (dri2_surf->back == NULL) {
       for (i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
@@ -408,7 +414,7 @@ dri2_drm_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
-   int i;
+   unsigned i;
 
    if (dri2_dpy->swrast) {
       (*dri2_dpy->core->swapBuffers)(dri2_surf->dri_drawable);
@@ -611,33 +617,25 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
       char buf[64];
       int n = snprintf(buf, sizeof(buf), DRM_DEV_NAME, DRM_DIR_NAME, 0);
       if (n != -1 && n < sizeof(buf))
-         fd = open(buf, O_RDWR);
+         fd = loader_open_device(buf);
       if (fd < 0)
-         fd = open("/dev/dri/card0", O_RDWR);
+         fd = loader_open_device("/dev/dri/card0");
       dri2_dpy->own_device = 1;
       gbm = gbm_create_device(fd);
       if (gbm == NULL)
-         return EGL_FALSE;
+         goto cleanup;
+   } else {
+      fd = fcntl(gbm_device_get_fd(gbm), F_DUPFD_CLOEXEC, 3);
+      if (fd < 0)
+         goto cleanup;
    }
 
-   if (strcmp(gbm_device_get_backend_name(gbm), "drm") != 0) {
-      free(dri2_dpy);
-      return EGL_FALSE;
-   }
+   if (strcmp(gbm_device_get_backend_name(gbm), "drm") != 0)
+      goto cleanup;
 
    dri2_dpy->gbm_dri = gbm_dri_device(gbm);
-   if (dri2_dpy->gbm_dri->base.type != GBM_DRM_DRIVER_TYPE_DRI) {
-      free(dri2_dpy);
-      return EGL_FALSE;
-   }
-
-   if (fd < 0) {
-      fd = dup(gbm_device_get_fd(gbm));
-      if (fd < 0) {
-         free(dri2_dpy);
-         return EGL_FALSE;
-      }
-   }
+   if (dri2_dpy->gbm_dri->base.type != GBM_DRM_DRIVER_TYPE_DRI)
+      goto cleanup;
 
    dri2_dpy->fd = fd;
    dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
@@ -721,4 +719,11 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
    dri2_dpy->vtbl = &dri2_drm_display_vtbl;
 
    return EGL_TRUE;
+
+cleanup:
+   if (fd >= 0)
+      close(fd);
+
+   free(dri2_dpy);
+   return EGL_FALSE;
 }

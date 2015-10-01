@@ -71,9 +71,7 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
    char *sample_map_str = rzalloc_size(mem_ctx, 1);
    char *sample_map_expr = rzalloc_size(mem_ctx, 1);
    char *texel_fetch_macro = rzalloc_size(mem_ctx, 1);
-   const char *vs_source;
    const char *sampler_array_suffix = "";
-   const char *texcoord_type = "vec2";
    float y_scale;
    enum blit_msaa_shader shader_index;
 
@@ -82,7 +80,7 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
    y_scale = samples * 0.5;
 
    /* We expect only power of 2 samples in source multisample buffer. */
-   assert(samples > 0 && is_power_of_two(samples));
+   assert(samples > 0 && _mesa_is_pow_two(samples));
    while (samples >> (shader_offset + 1)) {
       shader_offset++;
    }
@@ -99,7 +97,6 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
       shader_index += BLIT_2X_MSAA_SHADER_2D_MULTISAMPLE_ARRAY_SCALED_RESOLVE -
                       BLIT_2X_MSAA_SHADER_2D_MULTISAMPLE_SCALED_RESOLVE;
       sampler_array_suffix = "Array";
-      texcoord_type = "vec3";
    }
 
    if (blit->msaa_shaders[shader_index]) {
@@ -150,28 +147,37 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
                           "   const int sample_map[%d] = int[%d](%s);\n",
                           samples, samples, sample_map_str);
 
-   ralloc_asprintf_append(&texel_fetch_macro,
-                          "#define TEXEL_FETCH(coord) texelFetch(texSampler, i%s(coord), %s);\n",
-                          texcoord_type, sample_number);
+   if (target == GL_TEXTURE_2D_MULTISAMPLE) {
+      ralloc_asprintf_append(&texel_fetch_macro,
+                             "#define TEXEL_FETCH(coord) texelFetch(texSampler, ivec2(coord), %s);\n",
+                             sample_number);
+   } else {
+      ralloc_asprintf_append(&texel_fetch_macro,
+                             "#define TEXEL_FETCH(coord) texelFetch(texSampler, ivec3(coord, layer), %s);\n",
+                             sample_number);
+   }
 
-   vs_source = ralloc_asprintf(mem_ctx,
+   static const char vs_source[] =
                                "#version 130\n"
                                "in vec2 position;\n"
-                               "in %s textureCoords;\n"
-                               "out %s texCoords;\n"
+                               "in vec3 textureCoords;\n"
+                               "out vec2 texCoords;\n"
+                               "flat out int layer;\n"
                                "void main()\n"
                                "{\n"
-                               "   texCoords = textureCoords;\n"
+                               "   texCoords = textureCoords.xy;\n"
+                               "   layer = int(textureCoords.z);\n"
                                "   gl_Position = vec4(position, 0.0, 1.0);\n"
-                               "}\n",
-                               texcoord_type,
-                               texcoord_type);
+                               "}\n"
+      ;
+
    fs_source = ralloc_asprintf(mem_ctx,
                                "#version 130\n"
                                "#extension GL_ARB_texture_multisample : enable\n"
                                "uniform sampler2DMS%s texSampler;\n"
                                "uniform float src_width, src_height;\n"
-                               "in %s texCoords;\n"
+                               "in vec2 texCoords;\n"
+                               "flat in int layer;\n"
                                "out vec4 out_color;\n"
                                "\n"
                                "void main()\n"
@@ -187,8 +193,8 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
                                "   vec2 tex_coord = texCoords - s_0_offset;\n"
                                "\n"
                                "   tex_coord *= scale;\n"
-                               "   clamp(tex_coord.x, 0.0f, scale.x * src_width - 1.0f);\n"
-                               "   clamp(tex_coord.y, 0.0f, scale.y * src_height - 1.0f);\n"
+                               "   tex_coord.x = clamp(tex_coord.x, 0.0f, scale.x * src_width - 1.0f);\n"
+                               "   tex_coord.y = clamp(tex_coord.y, 0.0f, scale.y * src_height - 1.0f);\n"
                                "   interp = fract(tex_coord);\n"
                                "   tex_coord = ivec2(tex_coord) * scale_inv;\n"
                                "\n"
@@ -212,7 +218,6 @@ setup_glsl_msaa_blit_scaled_shader(struct gl_context *ctx,
                                "   out_color = mix(x_0_color, x_1_color, interp.y);\n"
                                "}\n",
                                sampler_array_suffix,
-                               texcoord_type,
                                sample_map_expr,
                                y_scale,
                                1.0f / y_scale,
@@ -263,7 +268,7 @@ setup_glsl_msaa_blit_shader(struct gl_context *ctx,
    }
 
    /* We expect only power of 2 samples in source multisample buffer. */
-   assert(samples > 0 && is_power_of_two(samples));
+   assert(samples > 0 && _mesa_is_pow_two(samples));
    while (samples >> (shader_offset + 1)) {
       shader_offset++;
    }
@@ -312,7 +317,7 @@ setup_glsl_msaa_blit_shader(struct gl_context *ctx,
       break;
    default:
       _mesa_problem(ctx, "Unkown texture target %s\n",
-                    _mesa_lookup_enum_by_nr(target));
+                    _mesa_enum_to_string(target));
       shader_index = BLIT_2X_MSAA_SHADER_2D_MULTISAMPLE_RESOLVE;
    }
 
@@ -434,7 +439,7 @@ setup_glsl_msaa_blit_shader(struct gl_context *ctx,
           * (so the floating point exponent just gets increased), rather than
           * doing a naive sum and dividing.
           */
-         assert(is_power_of_two(samples));
+         assert(_mesa_is_pow_two(samples));
          /* Fetch each individual sample. */
          sample_resolve = rzalloc_size(mem_ctx, 1);
          for (i = 0; i < samples; i++) {

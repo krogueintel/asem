@@ -226,6 +226,7 @@ init_program_struct(struct gl_program *prog, GLenum target, GLuint id)
    assert(prog);
 
    memset(prog, 0, sizeof(*prog));
+   mtx_init(&prog->Mutex, mtx_plain);
    prog->Id = id;
    prog->Target = target;
    prog->RefCount = 1;
@@ -286,6 +287,38 @@ _mesa_init_compute_program(struct gl_context *ctx,
 
 
 /**
+ * Initialize a new tessellation control program object.
+ */
+struct gl_program *
+_mesa_init_tess_ctrl_program(struct gl_context *ctx,
+                             struct gl_tess_ctrl_program *prog,
+                             GLenum target, GLuint id)
+{
+   if (prog) {
+      init_program_struct(&prog->Base, target, id);
+      return &prog->Base;
+   }
+   return NULL;
+}
+
+
+/**
+ * Initialize a new tessellation evaluation program object.
+ */
+struct gl_program *
+_mesa_init_tess_eval_program(struct gl_context *ctx,
+                             struct gl_tess_eval_program *prog,
+                             GLenum target, GLuint id)
+{
+   if (prog) {
+      init_program_struct(&prog->Base, target, id);
+      return &prog->Base;
+   }
+   return NULL;
+}
+
+
+/**
  * Initialize a new geometry program object.
  */
 struct gl_program *
@@ -333,6 +366,16 @@ _mesa_new_program(struct gl_context *ctx, GLenum target, GLuint id)
                                          CALLOC_STRUCT(gl_geometry_program),
                                          target, id);
       break;
+   case GL_TESS_CONTROL_PROGRAM_NV:
+      prog = _mesa_init_tess_ctrl_program(ctx,
+                                          CALLOC_STRUCT(gl_tess_ctrl_program),
+                                          target, id);
+      break;
+   case GL_TESS_EVALUATION_PROGRAM_NV:
+      prog = _mesa_init_tess_eval_program(ctx,
+                                         CALLOC_STRUCT(gl_tess_eval_program),
+                                         target, id);
+      break;
    case GL_COMPUTE_PROGRAM_NV:
       prog = _mesa_init_compute_program(ctx,
                                         CALLOC_STRUCT(gl_compute_program),
@@ -376,6 +419,7 @@ _mesa_delete_program(struct gl_context *ctx, struct gl_program *prog)
       ralloc_free(prog->nir);
    }
 
+   mtx_destroy(&prog->Mutex);
    free(prog);
 }
 
@@ -421,24 +465,18 @@ _mesa_reference_program_(struct gl_context *ctx,
 
    if (*ptr) {
       GLboolean deleteFlag;
+      struct gl_program *oldProg = *ptr;
 
-      /*mtx_lock(&(*ptr)->Mutex);*/
-#if 0
-      printf("Program %p ID=%u Target=%s  Refcount-- to %d\n",
-             *ptr, (*ptr)->Id,
-             ((*ptr)->Target == GL_VERTEX_PROGRAM_ARB ? "VP" :
-              ((*ptr)->Target == GL_GEOMETRY_PROGRAM_NV ? "GP" : "FP")),
-             (*ptr)->RefCount - 1);
-#endif
-      assert((*ptr)->RefCount > 0);
-      (*ptr)->RefCount--;
+      mtx_lock(&oldProg->Mutex);
+      assert(oldProg->RefCount > 0);
+      oldProg->RefCount--;
 
-      deleteFlag = ((*ptr)->RefCount == 0);
-      /*mtx_lock(&(*ptr)->Mutex);*/
+      deleteFlag = (oldProg->RefCount == 0);
+      mtx_unlock(&oldProg->Mutex);
 
       if (deleteFlag) {
          assert(ctx);
-         ctx->Driver.DeleteProgram(ctx, *ptr);
+         ctx->Driver.DeleteProgram(ctx, oldProg);
       }
 
       *ptr = NULL;
@@ -446,16 +484,9 @@ _mesa_reference_program_(struct gl_context *ctx,
 
    assert(!*ptr);
    if (prog) {
-      /*mtx_lock(&prog->Mutex);*/
+      mtx_lock(&prog->Mutex);
       prog->RefCount++;
-#if 0
-      printf("Program %p ID=%u Target=%s  Refcount++ to %d\n",
-             prog, prog->Id,
-             (prog->Target == GL_VERTEX_PROGRAM_ARB ? "VP" :
-              (prog->Target == GL_GEOMETRY_PROGRAM_NV ? "GP" : "FP")),
-             prog->RefCount);
-#endif
-      /*mtx_unlock(&prog->Mutex);*/
+      mtx_unlock(&prog->Mutex);
    }
 
    *ptr = prog;
@@ -552,6 +583,23 @@ _mesa_clone_program(struct gl_context *ctx, const struct gl_program *prog)
          gpc->OutputType = gp->OutputType;
          gpc->UsesEndPrimitive = gp->UsesEndPrimitive;
          gpc->UsesStreams = gp->UsesStreams;
+      }
+      break;
+   case GL_TESS_CONTROL_PROGRAM_NV:
+      {
+         const struct gl_tess_ctrl_program *tcp = gl_tess_ctrl_program_const(prog);
+         struct gl_tess_ctrl_program *tcpc = gl_tess_ctrl_program(clone);
+         tcpc->VerticesOut = tcp->VerticesOut;
+      }
+      break;
+   case GL_TESS_EVALUATION_PROGRAM_NV:
+      {
+         const struct gl_tess_eval_program *tep = gl_tess_eval_program_const(prog);
+         struct gl_tess_eval_program *tepc = gl_tess_eval_program(clone);
+         tepc->PrimitiveMode = tep->PrimitiveMode;
+         tepc->Spacing = tep->Spacing;
+         tepc->VertexOrder = tep->VertexOrder;
+         tepc->PointMode = tep->PointMode;
       }
       break;
    default:

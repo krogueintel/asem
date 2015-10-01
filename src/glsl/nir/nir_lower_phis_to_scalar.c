@@ -75,6 +75,7 @@ is_phi_src_scalarizable(nir_phi_src *src,
       return should_lower_phi(nir_instr_as_phi(src_instr), state);
 
    case nir_instr_type_load_const:
+   case nir_instr_type_ssa_undef:
       /* These are trivially scalarizable */
       return true;
 
@@ -93,6 +94,8 @@ is_phi_src_scalarizable(nir_phi_src *src,
       case nir_intrinsic_load_uniform_indirect:
       case nir_intrinsic_load_ubo:
       case nir_intrinsic_load_ubo_indirect:
+      case nir_intrinsic_load_ssbo:
+      case nir_intrinsic_load_ssbo_indirect:
       case nir_intrinsic_load_input:
       case nir_intrinsic_load_input_indirect:
          return true;
@@ -241,8 +244,7 @@ lower_phis_to_scalar_block(nir_block *block, void *void_state)
       nir_instr_insert_after(&last_phi->instr, &vec->instr);
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
-                               nir_src_for_ssa(&vec->dest.dest.ssa),
-                               state->mem_ctx);
+                               nir_src_for_ssa(&vec->dest.dest.ssa));
 
       ralloc_steal(state->dead_ctx, phi);
       nir_instr_remove(&phi->instr);

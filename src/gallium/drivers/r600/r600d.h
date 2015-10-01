@@ -3428,7 +3428,6 @@
 #define   S_0085F0_SO3_DEST_BASE_ENA(x)                (((x) & 0x1) << 5)
 #define   G_0085F0_SO3_DEST_BASE_ENA(x)                (((x) >> 5) & 0x1)
 #define   C_0085F0_SO3_DEST_BASE_ENA                   0xFFFFFFDF
-#define   S_0085F0_CB0_DEST_BASE_ENA_SHIFT             6
 #define   S_0085F0_CB0_DEST_BASE_ENA(x)                (((x) & 0x1) << 6)
 #define   G_0085F0_CB0_DEST_BASE_ENA(x)                (((x) >> 6) & 0x1)
 #define   C_0085F0_CB0_DEST_BASE_ENA                   0xFFFFFFBF
@@ -3784,4 +3783,15 @@
 #define DMA_PACKET_CONSTANT_FILL	0xd /* 7xx only */
 #define DMA_PACKET_NOP			0xf
 
+
+/* Resource IDs:
+ *   PS: 0   .. +160
+ *   VS: 160 .. +160
+ *   FS: 320 .. +16
+ *   GS: 336 .. +160
+ */
+#define R600_FETCH_CONSTANTS_OFFSET_PS 0
+#define R600_FETCH_CONSTANTS_OFFSET_VS 160
+#define R600_FETCH_CONSTANTS_OFFSET_FS 320
+#define R600_FETCH_CONSTANTS_OFFSET_GS 336
 #endif

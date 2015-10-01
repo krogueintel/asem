@@ -94,6 +94,8 @@ static void r300_destroy_context(struct pipe_context* context)
 
     if (r300->cs)
         r300->rws->cs_destroy(r300->cs);
+    if (r300->ctx)
+        r300->rws->ctx_destroy(r300->ctx);
 
     rc_destroy_regalloc_state(&r300->fs_regalloc_state);
 
@@ -361,7 +363,7 @@ static void r300_init_states(struct pipe_context *pipe)
 }
 
 struct pipe_context* r300_create_context(struct pipe_screen* screen,
-                                         void *priv)
+                                         void *priv, unsigned flags)
 {
     struct r300_context* r300 = CALLOC_STRUCT(r300_context);
     struct r300_screen* r300screen = r300_screen(screen);
@@ -382,7 +384,11 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
                      sizeof(struct pipe_transfer), 64,
                      UTIL_SLAB_SINGLETHREADED);
 
-    r300->cs = rws->cs_create(rws, RING_GFX, r300_flush_callback, r300, NULL);
+    r300->ctx = rws->ctx_create(rws);
+    if (!r300->ctx)
+        goto fail;
+
+    r300->cs = rws->cs_create(r300->ctx, RING_GFX, r300_flush_callback, r300, NULL);
     if (r300->cs == NULL)
         goto fail;
 

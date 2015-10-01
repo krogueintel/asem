@@ -382,7 +382,7 @@ static void r300_clear(struct pipe_context* pipe,
             r300_get_num_cs_end_dwords(r300);
 
         /* Reserve CS space. */
-        if (dwords > (RADEON_MAX_CMDBUF_DWORDS - r300->cs->cdw)) {
+        if (dwords > (r300->cs->max_dw - r300->cs->cdw)) {
             r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         }
 
@@ -667,7 +667,8 @@ static void r300_resource_copy_region(struct pipe_context *pipe,
     r300_blitter_begin(r300, R300_COPY);
     util_blitter_blit_generic(r300->blitter, dst_view, &dstbox,
                               src_view, src_box, src_width0, src_height0,
-                              PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL);
+                              PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
+                              FALSE);
     r300_blitter_end(r300);
 
     pipe_surface_reference(&dst_view, NULL);

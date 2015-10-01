@@ -48,7 +48,7 @@ static unsigned
 get_uniform_block_index(const gl_shader_program *shProg,
                         const char *uniformBlockName)
 {
-   for (unsigned i = 0; i < shProg->NumUniformBlocks; i++) {
+   for (unsigned i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
       if (!strcmp(shProg->UniformBlocks[i].Name, uniformBlockName))
 	 return i;
    }
@@ -89,6 +89,7 @@ copy_constant_to_storage(union gl_constant_value *storage,
       case GLSL_TYPE_ATOMIC_UINT:
       case GLSL_TYPE_INTERFACE:
       case GLSL_TYPE_VOID:
+      case GLSL_TYPE_SUBROUTINE:
       case GLSL_TYPE_ERROR:
 	 /* All other types should have already been filtered by other
 	  * paths in the caller.
@@ -99,8 +100,13 @@ copy_constant_to_storage(union gl_constant_value *storage,
    }
 }
 
+/**
+ * Initialize an opaque uniform from the value of an explicit binding
+ * qualifier specified in the shader.  Atomic counters are different because
+ * they have no storage and should be handled elsewhere.
+ */
 void
-set_sampler_binding(gl_shader_program *prog, const char *name, int binding)
+set_opaque_binding(gl_shader_program *prog, const char *name, int binding)
 {
    struct gl_uniform_storage *const storage =
       get_storage(prog->UniformStorage, prog->NumUniformStorage, name);
@@ -126,11 +132,20 @@ set_sampler_binding(gl_shader_program *prog, const char *name, int binding)
    for (int sh = 0; sh < MESA_SHADER_STAGES; sh++) {
       gl_shader *shader = prog->_LinkedShaders[sh];
 
-      if (shader && storage->sampler[sh].active) {
-         for (unsigned i = 0; i < elements; i++) {
-            unsigned index = storage->sampler[sh].index + i;
+      if (shader) {
+         if (storage->type->base_type == GLSL_TYPE_SAMPLER &&
+             storage->sampler[sh].active) {
+            for (unsigned i = 0; i < elements; i++) {
+               const unsigned index = storage->sampler[sh].index + i;
+               shader->SamplerUnits[index] = storage->storage[i].i;
+            }
 
-            shader->SamplerUnits[index] = storage->storage[i].i;
+         } else if (storage->type->base_type == GLSL_TYPE_IMAGE &&
+                    storage->image[sh].active) {
+            for (unsigned i = 0; i < elements; i++) {
+               const unsigned index = storage->image[sh].index + i;
+               shader->ImageUnits[index] = storage->storage[i].i;
+            }
          }
       }
    }
@@ -256,7 +271,8 @@ link_set_uniform_initializers(struct gl_shader_program *prog,
       foreach_in_list(ir_instruction, node, shader->ir) {
 	 ir_variable *const var = node->as_variable();
 
-	 if (!var || var->data.mode != ir_var_uniform)
+	 if (!var || (var->data.mode != ir_var_uniform &&
+	     var->data.mode != ir_var_shader_storage))
 	    continue;
 
 	 if (!mem_ctx)
@@ -265,9 +281,10 @@ link_set_uniform_initializers(struct gl_shader_program *prog,
          if (var->data.explicit_binding) {
             const glsl_type *const type = var->type;
 
-            if (type->without_array()->is_sampler()) {
-               linker::set_sampler_binding(prog, var->name, var->data.binding);
-            } else if (var->is_in_uniform_block()) {
+            if (type->without_array()->is_sampler() ||
+                type->without_array()->is_image()) {
+               linker::set_opaque_binding(prog, var->name, var->data.binding);
+            } else if (var->is_in_buffer_block()) {
                const glsl_type *const iface_type = var->get_interface_type();
 
                /* If the variable is an array and it is an interface instance,
@@ -280,7 +297,7 @@ link_set_uniform_initializers(struct gl_shader_program *prog,
                 *         float f[4];
                 *     };
                 *
-                * In this case "f" would pass is_in_uniform_block (above) and
+                * In this case "f" would pass is_in_buffer_block (above) and
                 * type->is_array(), but it will fail is_interface_instance().
                 */
                if (var->is_interface_instance() && var->type->is_array()) {

@@ -311,6 +311,14 @@ dri_open_driver(struct gbm_dri_device *dri)
    if (search_paths == NULL)
       search_paths = DEFAULT_DRIVER_DIR;
 
+   /* Temporarily work around dri driver libs that need symbols in libglapi
+    * but don't automatically link it in.
+    */
+   /* XXX: Library name differs on per platforms basis. Update this as
+    * osx/cygwin/windows/bsd gets support for GBM..
+    */
+   dlopen("libglapi.so.0", RTLD_LAZY | RTLD_GLOBAL);
+
    dri->driver = NULL;
    end = search_paths + strlen(search_paths);
    for (p = search_paths; p < end && dri->driver == NULL; p = next + 1) {
@@ -698,14 +706,30 @@ gbm_dri_bo_import(struct gbm_device *gbm,
    {
       struct gbm_import_fd_data *fd_data = buffer;
       int stride = fd_data->stride, offset = 0;
+      int dri_format;
+
+      switch (fd_data->format) {
+      case GBM_BO_FORMAT_XRGB8888:
+         dri_format = GBM_FORMAT_XRGB8888;
+         break;
+      case GBM_BO_FORMAT_ARGB8888:
+         dri_format = GBM_FORMAT_ARGB8888;
+         break;
+      default:
+         dri_format = fd_data->format;
+      }
 
       image = dri->image->createImageFromFds(dri->screen,
                                              fd_data->width,
                                              fd_data->height,
-                                             fd_data->format,
+                                             dri_format,
                                              &fd_data->fd, 1,
                                              &stride, &offset,
                                              NULL);
+      if (image == NULL) {
+         errno = EINVAL;
+         return NULL;
+      }
       gbm_format = fd_data->format;
       break;
    }

@@ -95,7 +95,7 @@ int bc_parser::decode_shader() {
 		if ((r = decode_cf(i, eop)))
 			return r;
 
-	} while (!eop || (i >> 1) <= max_cf);
+	} while (!eop || (i >> 1) < max_cf);
 
 	return 0;
 }
@@ -757,10 +757,22 @@ int bc_parser::prepare_ir() {
 			c->bc.end_of_program = eop;
 
 		} else if (flags & CF_EMIT) {
-			c->flags |= NF_DONT_KILL | NF_DONT_HOIST | NF_DONT_MOVE;
+			/* quick peephole */
+			cf_node *prev = static_cast<cf_node *>(c->prev);
+			if (c->bc.op == CF_OP_CUT_VERTEX &&
+				prev && prev->is_valid() &&
+				prev->bc.op == CF_OP_EMIT_VERTEX &&
+				c->bc.count == prev->bc.count) {
+				prev->bc.set_op(CF_OP_EMIT_CUT_VERTEX);
+				prev->bc.end_of_program = c->bc.end_of_program;
+				c->remove();
+			}
+			else {
+				c->flags |= NF_DONT_KILL | NF_DONT_HOIST | NF_DONT_MOVE;
 
-			c->src.push_back(sh->get_special_value(SV_GEOMETRY_EMIT));
-			c->dst.push_back(sh->get_special_value(SV_GEOMETRY_EMIT));
+				c->src.push_back(sh->get_special_value(SV_GEOMETRY_EMIT));
+				c->dst.push_back(sh->get_special_value(SV_GEOMETRY_EMIT));
+			}
 		}
 	}
 
@@ -769,6 +781,7 @@ int bc_parser::prepare_ir() {
 }
 
 int bc_parser::prepare_loop(cf_node* c) {
+	assert(c->bc.addr-1 < cf_map.size());
 
 	cf_node *end = cf_map[c->bc.addr - 1];
 	assert(end->bc.op == CF_OP_LOOP_END);
@@ -788,7 +801,11 @@ int bc_parser::prepare_loop(cf_node* c) {
 }
 
 int bc_parser::prepare_if(cf_node* c) {
+	assert(c->bc.addr-1 < cf_map.size());
 	cf_node *c_else = NULL, *end = cf_map[c->bc.addr];
+
+	if (!end)
+		return 0; // not quite sure how this happens, malformed input?
 
 	BCP_DUMP(
 		sblog << "parsing JUMP @" << c->bc.id;
@@ -815,7 +832,7 @@ int bc_parser::prepare_if(cf_node* c) {
 	if (c_else->parent != c->parent)
 		c_else = NULL;
 
-	if (end->parent != c->parent)
+	if (end && end->parent != c->parent)
 		end = NULL;
 
 	region_node *reg = sh->create_region();

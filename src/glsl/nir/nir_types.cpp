@@ -112,6 +112,13 @@ glsl_get_struct_elem_name(const struct glsl_type *type, unsigned index)
    return type->fields.structure[index].name;
 }
 
+unsigned
+glsl_get_record_location_offset(const struct glsl_type *type,
+                                unsigned length)
+{
+   return type->record_location_offset(length);
+}
+
 bool
 glsl_type_is_void(const glsl_type *type)
 {
@@ -152,6 +159,12 @@ const glsl_type *
 glsl_vec4_type(void)
 {
    return glsl_type::vec4_type;
+}
+
+const glsl_type *
+glsl_uint_type(void)
+{
+   return glsl_type::uint_type;
 }
 
 const glsl_type *

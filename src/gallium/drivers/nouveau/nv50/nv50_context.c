@@ -64,12 +64,12 @@ nv50_memory_barrier(struct pipe_context *pipe, unsigned flags)
          if (!nv50->vtxbuf[i].buffer)
             continue;
          if (nv50->vtxbuf[i].buffer->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-            nv50->base.vbo_dirty = TRUE;
+            nv50->base.vbo_dirty = true;
       }
 
       if (nv50->idxbuf.buffer &&
           nv50->idxbuf.buffer->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-         nv50->base.vbo_dirty = TRUE;
+         nv50->base.vbo_dirty = true;
 
       for (s = 0; s < 3 && !nv50->cb_dirty; ++s) {
          uint32_t valid = nv50->constbuf_valid[s];
@@ -87,7 +87,7 @@ nv50_memory_barrier(struct pipe_context *pipe, unsigned flags)
                continue;
 
             if (res->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-               nv50->cb_dirty = TRUE;
+               nv50->cb_dirty = true;
          }
       }
    }
@@ -100,9 +100,9 @@ nv50_default_kick_notify(struct nouveau_pushbuf *push)
 
    if (screen) {
       nouveau_fence_next(&screen->base);
-      nouveau_fence_update(&screen->base, TRUE);
+      nouveau_fence_update(&screen->base, true);
       if (screen->cur_ctx)
-         screen->cur_ctx->state.flushed = TRUE;
+         screen->cur_ctx->state.flushed = true;
    }
 }
 
@@ -199,9 +199,13 @@ nv50_invalidate_resource_storage(struct nouveau_context *ctx,
          }
       }
 
-      if (nv50->idxbuf.buffer == res)
+      if (nv50->idxbuf.buffer == res) {
+         /* Just rebind to the bufctx as there is no separate dirty bit */
+         nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_INDEX);
+         BCTX_REFN(nv50->bufctx_3d, INDEX, nv04_resource(res), RD);
          if (!--ref)
             return ref;
+      }
 
       for (s = 0; s < 3; ++s) {
       assert(nv50->num_textures[s] <= PIPE_MAX_SAMPLERS);
@@ -240,7 +244,7 @@ nv50_context_get_sample_position(struct pipe_context *, unsigned, unsigned,
                                  float *);
 
 struct pipe_context *
-nv50_create(struct pipe_screen *pscreen, void *priv)
+nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
 {
    struct nv50_screen *screen = nv50_screen(pscreen);
    struct nv50_context *nv50;
@@ -310,7 +314,7 @@ nv50_create(struct pipe_screen *pscreen, void *priv)
    nv50->base.invalidate_resource_storage = nv50_invalidate_resource_storage;
 
    if (screen->base.device->chipset < 0x84 ||
-       debug_get_bool_option("NOUVEAU_PMPEG", FALSE)) {
+       debug_get_bool_option("NOUVEAU_PMPEG", false)) {
       /* PMPEG */
       nouveau_context_init_vdec(&nv50->base);
    } else if (screen->base.device->chipset < 0x98 ||
@@ -351,7 +355,7 @@ out_err:
 }
 
 void
-nv50_bufctx_fence(struct nouveau_bufctx *bufctx, boolean on_flush)
+nv50_bufctx_fence(struct nouveau_bufctx *bufctx, bool on_flush)
 {
    struct nouveau_list *list = on_flush ? &bufctx->current : &bufctx->pending;
    struct nouveau_list *it;

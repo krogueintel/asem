@@ -88,13 +88,14 @@ struct tgsi_interp_coef
    float dady[TGSI_NUM_CHANNELS];
 };
 
-enum tgsi_sampler_control {
-   tgsi_sampler_lod_none,
-   tgsi_sampler_lod_bias,
-   tgsi_sampler_lod_explicit,
-   tgsi_sampler_lod_zero,
-   tgsi_sampler_derivs_explicit,
-   tgsi_sampler_gather,
+enum tgsi_sampler_control
+{
+   TGSI_SAMPLER_LOD_NONE,
+   TGSI_SAMPLER_LOD_BIAS,
+   TGSI_SAMPLER_LOD_EXPLICIT,
+   TGSI_SAMPLER_LOD_ZERO,
+   TGSI_SAMPLER_DERIVS_EXPLICIT,
+   TGSI_SAMPLER_GATHER,
 };
 
 /**
@@ -138,6 +139,16 @@ struct tgsi_sampler
                      const int j[TGSI_QUAD_SIZE], const int k[TGSI_QUAD_SIZE],
                      const int lod[TGSI_QUAD_SIZE], const int8_t offset[3],
                      float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
+   void (*query_lod)(const struct tgsi_sampler *tgsi_sampler,
+                     const unsigned sview_index,
+                     const unsigned sampler_index,
+                     const float s[TGSI_QUAD_SIZE],
+                     const float t[TGSI_QUAD_SIZE],
+                     const float p[TGSI_QUAD_SIZE],
+                     const float c0[TGSI_QUAD_SIZE],
+                     const enum tgsi_sampler_control control,
+                     float mipmap[TGSI_QUAD_SIZE],
+                     float lod[TGSI_QUAD_SIZE]);
 };
 
 #define TGSI_EXEC_NUM_TEMPS       4096
@@ -213,7 +224,7 @@ struct tgsi_sampler
  * input register files, this is the stride between two 1D
  * arrays.
  */
-#define TGSI_EXEC_MAX_INPUT_ATTRIBS PIPE_MAX_SHADER_INPUTS
+#define TGSI_EXEC_MAX_INPUT_ATTRIBS 32
 
 /* The maximum number of bytes per constant buffer.
  */
@@ -386,7 +397,7 @@ boolean
 tgsi_check_soa_dependencies(const struct tgsi_full_instruction *inst);
 
 
-static INLINE void
+static inline void
 tgsi_set_kill_mask(struct tgsi_exec_machine *mach, unsigned mask)
 {
    mach->Temps[TGSI_EXEC_TEMP_KILMASK_I].xyzw[TGSI_EXEC_TEMP_KILMASK_C].u[0] =
@@ -395,7 +406,7 @@ tgsi_set_kill_mask(struct tgsi_exec_machine *mach, unsigned mask)
 
 
 /** Set execution mask values prior to executing the shader */
-static INLINE void
+static inline void
 tgsi_set_exec_mask(struct tgsi_exec_machine *mach,
                    boolean ch0, boolean ch1, boolean ch2, boolean ch3)
 {
@@ -414,7 +425,7 @@ tgsi_exec_set_constant_buffers(struct tgsi_exec_machine *mach,
                                const unsigned *buf_sizes);
 
 
-static INLINE int
+static inline int
 tgsi_exec_get_shader_param(enum pipe_shader_cap param)
 {
    switch(param) {

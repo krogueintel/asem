@@ -34,7 +34,7 @@ extern "C" {
 namespace brw {
 
 struct brw_reg
-vec4_instruction::get_dst(void)
+vec4_instruction::get_dst(unsigned gen)
 {
    struct brw_reg brw_reg;
 
@@ -46,6 +46,7 @@ vec4_instruction::get_dst(void)
       break;
 
    case MRF:
+      assert(((dst.reg + dst.reg_offset) & ~(1 << 7)) < BRW_MAX_MRF(gen));
       brw_reg = brw_message_reg(dst.reg + dst.reg_offset);
       brw_reg = retype(brw_reg, dst.type);
       brw_reg.dw1.bits.writemask = dst.writemask;
@@ -134,7 +135,8 @@ vec4_instruction::get_src(const struct brw_vue_prog_data *prog_data, int i)
    return brw_reg;
 }
 
-vec4_generator::vec4_generator(struct brw_context *brw,
+vec4_generator::vec4_generator(const struct brw_compiler *compiler,
+                               void *log_data,
                                struct gl_shader_program *shader_prog,
                                struct gl_program *prog,
                                struct brw_vue_prog_data *prog_data,
@@ -142,13 +144,13 @@ vec4_generator::vec4_generator(struct brw_context *brw,
                                bool debug_flag,
                                const char *stage_name,
                                const char *stage_abbrev)
-   : brw(brw), devinfo(brw->intelScreen->devinfo),
+   : compiler(compiler), log_data(log_data), devinfo(compiler->devinfo),
      shader_prog(shader_prog), prog(prog), prog_data(prog_data),
      mem_ctx(mem_ctx), stage_name(stage_name), stage_abbrev(stage_abbrev),
      debug_flag(debug_flag)
 {
    p = rzalloc(mem_ctx, struct brw_codegen);
-   brw_init_codegen(brw->intelScreen->devinfo, p, mem_ctx);
+   brw_init_codegen(devinfo, p, mem_ctx);
 }
 
 vec4_generator::~vec4_generator()
@@ -284,6 +286,9 @@ vec4_generator::generate_tex(vec4_instruction *inst,
          } else {
             msg_type = GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO;
          }
+         break;
+      case SHADER_OPCODE_SAMPLEINFO:
+         msg_type = GEN6_SAMPLER_MESSAGE_SAMPLE_SAMPLEINFO;
          break;
       default:
 	 unreachable("should not get here: invalid vec4 texture opcode");
@@ -485,7 +490,7 @@ vec4_generator::generate_gs_urb_write_allocate(vec4_instruction *inst)
    brw_push_insn_state(p);
    brw_set_default_access_mode(p, BRW_ALIGN_1);
    brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-   brw_MOV(p, get_element_ud(inst->get_dst(), 0),
+   brw_MOV(p, get_element_ud(inst->get_dst(devinfo->gen), 0),
            get_element_ud(inst->get_src(this->prog_data, 0), 0));
    brw_set_default_access_mode(p, BRW_ALIGN_16);
    brw_pop_insn_state(p);
@@ -500,7 +505,7 @@ vec4_generator::generate_gs_thread_end(vec4_instruction *inst)
                  inst->base_mrf, /* starting mrf reg nr */
                  src,
                  BRW_URB_WRITE_EOT | inst->urb_write_flags,
-                 devinfo->gen >= 8 ? 2 : 1,/* message len */
+                 inst->mlen,
                  0,              /* response len */
                  0,              /* urb destination offset */
                  BRW_URB_SWIZZLE_INTERLEAVE);
@@ -536,8 +541,13 @@ vec4_generator::generate_gs_set_write_offset(struct brw_reg dst,
           src1.file == BRW_IMMEDIATE_VALUE &&
           src1.type == BRW_REGISTER_TYPE_UD &&
           src1.dw1.ud <= USHRT_MAX);
-   brw_MUL(p, suboffset(stride(dst, 2, 2, 1), 3), stride(src0, 8, 2, 4),
-           retype(src1, BRW_REGISTER_TYPE_UW));
+   if (src0.file == IMM) {
+      brw_MOV(p, suboffset(stride(dst, 2, 2, 1), 3),
+              brw_imm_ud(src0.dw1.ud * src1.dw1.ud));
+   } else {
+      brw_MUL(p, suboffset(stride(dst, 2, 2, 1), 3), stride(src0, 8, 2, 4),
+              retype(src1, BRW_REGISTER_TYPE_UW));
+   }
    brw_set_default_access_mode(p, BRW_ALIGN_16);
    brw_pop_insn_state(p);
 }
@@ -1028,6 +1038,32 @@ vec4_generator::generate_pull_constant_load(vec4_instruction *inst,
 }
 
 void
+vec4_generator::generate_get_buffer_size(vec4_instruction *inst,
+                                         struct brw_reg dst,
+                                         struct brw_reg src,
+                                         struct brw_reg surf_index)
+{
+   assert(devinfo->gen >= 7);
+   assert(surf_index.type == BRW_REGISTER_TYPE_UD &&
+          surf_index.file == BRW_IMMEDIATE_VALUE);
+
+   brw_SAMPLE(p,
+              dst,
+              inst->base_mrf,
+              src,
+              surf_index.dw1.ud,
+              0,
+              GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO,
+              1, /* response length */
+              inst->mlen,
+              inst->header_size > 0,
+              BRW_SAMPLER_SIMD_MODE_SIMD4X2,
+              BRW_SAMPLER_RETURN_FORMAT_SINT32);
+
+   brw_mark_surface_used(&prog_data->base, surf_index.dw1.ud);
+}
+
+void
 vec4_generator::generate_pull_constant_load_gen7(vec4_instruction *inst,
                                                  struct brw_reg dst,
                                                  struct brw_reg surf_index,
@@ -1121,7 +1157,7 @@ vec4_generator::generate_code(const cfg_t *cfg)
       for (unsigned int i = 0; i < 3; i++) {
 	 src[i] = inst->get_src(this->prog_data, i);
       }
-      dst = inst->get_dst();
+      dst = inst->get_dst(devinfo->gen);
 
       brw_set_default_predicate_control(p, inst->predicate);
       brw_set_default_predicate_inverse(p, inst->predicate_inverse);
@@ -1129,6 +1165,9 @@ vec4_generator::generate_code(const cfg_t *cfg)
       brw_set_default_saturate(p, inst->saturate);
       brw_set_default_mask_control(p, inst->force_writemask_all);
       brw_set_default_acc_write_control(p, inst->writes_accumulator);
+
+      assert(inst->base_mrf + inst->mlen <= BRW_MAX_MRF(devinfo->gen));
+      assert(inst->mlen <= BRW_MAX_MSG_LENGTH);
 
       unsigned pre_emit_nr_insn = p->nr_insn;
 
@@ -1373,6 +1412,7 @@ vec4_generator::generate_code(const cfg_t *cfg)
       case SHADER_OPCODE_TXS:
       case SHADER_OPCODE_TG4:
       case SHADER_OPCODE_TG4_OFFSET:
+      case SHADER_OPCODE_SAMPLEINFO:
          generate_tex(inst, dst, src[0], src[1]);
          break;
 
@@ -1398,6 +1438,11 @@ vec4_generator::generate_code(const cfg_t *cfg)
 
       case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
          generate_set_simd4x2_header_gen9(inst, dst);
+         break;
+
+
+      case VS_OPCODE_GET_BUFFER_SIZE:
+         generate_get_buffer_size(inst, dst, src[0], src[1]);
          break;
 
       case GS_OPCODE_URB_WRITE:
@@ -1464,19 +1509,15 @@ vec4_generator::generate_code(const cfg_t *cfg)
          break;
 
       case SHADER_OPCODE_UNTYPED_ATOMIC:
-         assert(src[1].file == BRW_IMMEDIATE_VALUE &&
-                src[2].file == BRW_IMMEDIATE_VALUE);
+         assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_untyped_atomic(p, dst, src[0], src[1], src[2].dw1.ud, inst->mlen,
                             !inst->dst.is_null());
-         brw_mark_surface_used(&prog_data->base, src[1].dw1.ud);
          break;
 
       case SHADER_OPCODE_UNTYPED_SURFACE_READ:
-         assert(src[1].file == BRW_IMMEDIATE_VALUE &&
-                src[2].file == BRW_IMMEDIATE_VALUE);
+         assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_untyped_surface_read(p, dst, src[0], src[1], inst->mlen,
                                   src[2].dw1.ud);
-         brw_mark_surface_used(&prog_data->base, src[1].dw1.ud);
          break;
 
       case SHADER_OPCODE_UNTYPED_SURFACE_WRITE:
@@ -1548,7 +1589,7 @@ vec4_generator::generate_code(const cfg_t *cfg)
           *
           * where they pack the four bytes from the low and high four DW.
           */
-         assert(is_power_of_two(dst.dw1.bits.writemask) &&
+         assert(_mesa_is_pow_two(dst.dw1.bits.writemask) &&
                 dst.dw1.bits.writemask != 0);
          unsigned offset = __builtin_ctz(dst.dw1.bits.writemask);
 
@@ -1626,16 +1667,11 @@ vec4_generator::generate_code(const cfg_t *cfg)
       ralloc_free(annotation.ann);
    }
 
-   static GLuint msg_id = 0;
-   _mesa_gl_debug(&brw->ctx, &msg_id,
-                  MESA_DEBUG_SOURCE_SHADER_COMPILER,
-                  MESA_DEBUG_TYPE_OTHER,
-                  MESA_DEBUG_SEVERITY_NOTIFICATION,
-                  "%s vec4 shader: %d inst, %d loops, "
-                  "compacted %d to %d bytes.\n",
-                  stage_abbrev,
-                  before_size / 16, loop_count,
-                  before_size, after_size);
+   compiler->shader_debug_log(log_data,
+                              "%s vec4 shader: %d inst, %d loops, "
+                              "compacted %d to %d bytes.\n",
+                              stage_abbrev, before_size / 16, loop_count,
+                              before_size, after_size);
 }
 
 const unsigned *

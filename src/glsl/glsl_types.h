@@ -59,6 +59,7 @@ enum glsl_base_type {
    GLSL_TYPE_INTERFACE,
    GLSL_TYPE_ARRAY,
    GLSL_TYPE_VOID,
+   GLSL_TYPE_SUBROUTINE,
    GLSL_TYPE_ERROR
 };
 
@@ -76,7 +77,8 @@ enum glsl_sampler_dim {
 enum glsl_interface_packing {
    GLSL_INTERFACE_PACKING_STD140,
    GLSL_INTERFACE_PACKING_SHARED,
-   GLSL_INTERFACE_PACKING_PACKED
+   GLSL_INTERFACE_PACKING_PACKED,
+   GLSL_INTERFACE_PACKING_STD430
 };
 
 enum glsl_matrix_layout {
@@ -264,6 +266,11 @@ struct glsl_type {
 						  const char *block_name);
 
    /**
+    * Get the instance of an subroutine type
+    */
+   static const glsl_type *get_subroutine_instance(const char *subroutine_name);
+
+   /**
     * Get the type resulting from a multiplication of \p type_a * \p type_b
     */
    static const glsl_type *get_mul_type(const glsl_type *type_a,
@@ -284,6 +291,14 @@ struct glsl_type {
     * might occupy.
     */
    unsigned component_slots() const;
+
+   /**
+    * Calculate offset between the base location of the struct in
+    * uniform storage and a struct member.
+    * For the initial call, length is the index of the member to find the
+    * offset for.
+    */
+   unsigned record_location_offset(unsigned length) const;
 
    /**
     * Calculate the number of unique values from glGetUniformLocation for the
@@ -318,6 +333,25 @@ struct glsl_type {
     * elements in the array)
     */
    unsigned std140_size(bool row_major) const;
+
+   /**
+    * Alignment in bytes of the start of this type in a std430 shader
+    * storage block.
+    */
+   unsigned std430_base_alignment(bool row_major) const;
+
+   /**
+    * Calculate array stride in bytes of this type in a std430 shader storage
+    * block.
+    */
+   unsigned std430_array_stride(bool row_major) const;
+
+   /**
+    * Size in bytes of this type in a std430 shader storage block.
+    *
+    * Note that this is not GL_BUFFER_SIZE
+    */
+   unsigned std430_size(bool row_major) const;
 
    /**
     * \brief Can this type be implicitly converted to another?
@@ -514,6 +548,13 @@ struct glsl_type {
    /**
     * Query if a type is unnamed/anonymous (named by the parser)
     */
+
+   bool is_subroutine() const
+   {
+      return base_type == GLSL_TYPE_SUBROUTINE;
+   }
+   bool contains_subroutine() const;
+
    bool is_anonymous() const
    {
       return !strncmp(name, "#anon", 5);
@@ -534,6 +575,25 @@ struct glsl_type {
          t = t->fields.array;
 
       return t;
+   }
+
+   /**
+    * Return the total number of elements in an array including the elements
+    * in arrays of arrays.
+    */
+   unsigned arrays_of_arrays_size() const
+   {
+      if (!is_array())
+         return 0;
+
+      unsigned size = length;
+      const glsl_type *base_type = fields.array;
+
+      while (base_type->is_array()) {
+         size = size * base_type->length;
+         base_type = base_type->fields.array;
+      }
+      return size;
    }
 
    /**
@@ -600,7 +660,7 @@ struct glsl_type {
    const glsl_type *field_type(const char *name) const;
 
    /**
-    * Get the location of a filed within a record type
+    * Get the location of a field within a record type
     */
    int field_index(const char *name) const;
 
@@ -679,6 +739,9 @@ private:
    /** Constructor for array types */
    glsl_type(const glsl_type *array, unsigned length);
 
+   /** Constructor for subroutine types */
+   glsl_type(const char *name);
+
    /** Hash table containing the known array types. */
    static struct hash_table *array_types;
 
@@ -688,7 +751,10 @@ private:
    /** Hash table containing the known interface types. */
    static struct hash_table *interface_types;
 
-   static int record_key_compare(const void *a, const void *b);
+   /** Hash table containing the known subroutine types. */
+   static struct hash_table *subroutine_types;
+
+   static bool record_key_compare(const void *a, const void *b);
    static unsigned record_key_hash(const void *key);
 
    /**
@@ -752,10 +818,40 @@ struct glsl_struct_field {
    unsigned matrix_layout:2;
 
    /**
+    * For interface blocks, 1 if this variable is a per-patch input or output
+    * (as in ir_variable::patch). 0 otherwise.
+    */
+   unsigned patch:1;
+
+   /**
     * For interface blocks, it has a value if this variable uses multiple vertex
     * streams (as in ir_variable::stream). -1 otherwise.
     */
    int stream;
+
+
+   /**
+    * Image qualifiers, applicable to buffer variables defined in shader
+    * storage buffer objects (SSBOs)
+    */
+   unsigned image_read_only:1;
+   unsigned image_write_only:1;
+   unsigned image_coherent:1;
+   unsigned image_volatile:1;
+   unsigned image_restrict:1;
+
+   glsl_struct_field(const struct glsl_type *_type, const char *_name)
+      : type(_type), name(_name), location(-1), interpolation(0), centroid(0),
+        sample(0), matrix_layout(GLSL_MATRIX_LAYOUT_INHERITED), patch(0),
+        stream(-1)
+   {
+      /* empty */
+   }
+
+   glsl_struct_field()
+   {
+      /* empty */
+   }
 };
 
 static inline unsigned int

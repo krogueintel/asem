@@ -43,17 +43,52 @@ gen7_upload_constant_state(struct brw_context *brw,
    int dwords = brw->gen >= 8 ? 11 : 7;
    BEGIN_BATCH(dwords);
    OUT_BATCH(opcode << 16 | (dwords - 2));
-   OUT_BATCH(active ? stage_state->push_const_size : 0);
-   OUT_BATCH(0);
+
+   /* Workaround for SKL+ (we use option #2 until we have a need for more
+    * constant buffers). This comes from the documentation for 3DSTATE_CONSTANT_*
+    *
+    * The driver must ensure The following case does not occur without a flush
+    * to the 3D engine: 3DSTATE_CONSTANT_* with buffer 3 read length equal to
+    * zero committed followed by a 3DSTATE_CONSTANT_* with buffer 0 read length
+    * not equal to zero committed. Possible ways to avoid this condition
+    * include:
+    *     1. always force buffer 3 to have a non zero read length
+    *     2. always force buffer 0 to a zero read length
+    */
+   if (brw->gen >= 9 && active) {
+      OUT_BATCH(0);
+      OUT_BATCH(stage_state->push_const_size);
+   } else {
+      OUT_BATCH(active ? stage_state->push_const_size : 0);
+      OUT_BATCH(0);
+   }
+
    /* Pointer to the constant buffer.  Covered by the set of state flags
     * from gen6_prepare_wm_contants
     */
-   OUT_BATCH(active ? (stage_state->push_const_offset | mocs) : 0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   if (brw->gen >= 8) {
+   if (brw->gen >= 9 && active) {
       OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      /* XXX: When using buffers other than 0, you need to specify the
+       * graphics virtual address regardless of INSPM/debug bits
+       */
+      OUT_RELOC64(brw->batch.bo, I915_GEM_DOMAIN_RENDER, 0,
+                  stage_state->push_const_offset);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+   } else if (brw->gen>= 8) {
+      OUT_BATCH(active ? (stage_state->push_const_offset | mocs) : 0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+   } else {
+      OUT_BATCH(active ? (stage_state->push_const_offset | mocs) : 0);
       OUT_BATCH(0);
       OUT_BATCH(0);
       OUT_BATCH(0);
@@ -61,14 +96,13 @@ gen7_upload_constant_state(struct brw_context *brw,
 
    ADVANCE_BATCH();
 
-  /* On SKL+ the new constants don't take effect until the next corresponding
-   * 3DSTATE_BINDING_TABLE_POINTER_* command is parsed so we need to ensure
-   * that is sent
-   */
+   /* On SKL+ the new constants don't take effect until the next corresponding
+    * 3DSTATE_BINDING_TABLE_POINTER_* command is parsed so we need to ensure
+    * that is sent
+    */
    if (brw->gen >= 9)
       brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
 }
-
 
 static void
 upload_vs_state(struct brw_context *brw)
@@ -77,6 +111,7 @@ upload_vs_state(struct brw_context *brw)
    uint32_t floating_point_mode = 0;
    const int max_threads_shift = brw->is_haswell ?
       HSW_VS_MAX_THREADS_SHIFT : GEN6_VS_MAX_THREADS_SHIFT;
+   const struct brw_vue_prog_data *prog_data = &brw->vs.prog_data->base;
 
    if (!brw->is_haswell && !brw->is_baytrail)
       gen7_emit_vs_workaround_flush(brw);
@@ -91,19 +126,21 @@ upload_vs_state(struct brw_context *brw)
 	     ((ALIGN(stage_state->sampler_count, 4)/4) <<
               GEN6_VS_SAMPLER_COUNT_SHIFT) |
              ((brw->vs.prog_data->base.base.binding_table.size_bytes / 4) <<
-              GEN6_VS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
+              GEN6_VS_BINDING_TABLE_ENTRY_COUNT_SHIFT) |
+             (brw->is_haswell && prog_data->base.nr_image_params ?
+              HSW_VS_UAV_ACCESS_ENABLE : 0));
 
-   if (brw->vs.prog_data->base.base.total_scratch) {
+   if (prog_data->base.total_scratch) {
       OUT_RELOC(stage_state->scratch_bo,
 		I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-		ffs(brw->vs.prog_data->base.base.total_scratch) - 11);
+		ffs(prog_data->base.total_scratch) - 11);
    } else {
       OUT_BATCH(0);
    }
 
-   OUT_BATCH((brw->vs.prog_data->base.base.dispatch_grf_start_reg <<
+   OUT_BATCH((prog_data->base.dispatch_grf_start_reg <<
               GEN6_VS_DISPATCH_START_GRF_SHIFT) |
-	     (brw->vs.prog_data->base.urb_read_length << GEN6_VS_URB_READ_LENGTH_SHIFT) |
+	     (prog_data->urb_read_length << GEN6_VS_URB_READ_LENGTH_SHIFT) |
 	     (0 << GEN6_VS_URB_ENTRY_READ_OFFSET_SHIFT));
 
    OUT_BATCH(((brw->max_vs_threads - 1) << max_threads_shift) |

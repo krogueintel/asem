@@ -53,7 +53,7 @@ struct nv50_program {
    struct pipe_shader_state pipe;
 
    ubyte type;
-   boolean translated;
+   bool translated;
 
    uint32_t *code;
    unsigned code_size;
@@ -76,6 +76,7 @@ struct nv50_program {
       ubyte psiz;        /* output slot of point size */
       ubyte bfc[2];      /* indices into varying for FFC (FP) or BFC (VP) */
       ubyte edgeflag;
+      ubyte vertexid;
       ubyte clpd[2];     /* output slot of clip distance[i]'s 1st component */
       ubyte clpd_nr;
    } vp;
@@ -104,8 +105,8 @@ struct nv50_program {
    struct nv50_stream_output_state *so;
 };
 
-boolean nv50_program_translate(struct nv50_program *, uint16_t chipset);
-boolean nv50_program_upload_code(struct nv50_context *, struct nv50_program *);
+bool nv50_program_translate(struct nv50_program *, uint16_t chipset);
+bool nv50_program_upload_code(struct nv50_context *, struct nv50_program *);
 void nv50_program_destroy(struct nv50_context *, struct nv50_program *);
 
 #endif /* __NV50_PROG_H__ */

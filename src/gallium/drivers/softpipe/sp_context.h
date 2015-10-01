@@ -203,7 +203,7 @@ struct softpipe_context {
 };
 
 
-static INLINE struct softpipe_context *
+static inline struct softpipe_context *
 softpipe_context( struct pipe_context *pipe )
 {
    return (struct softpipe_context *)pipe;
@@ -211,7 +211,7 @@ softpipe_context( struct pipe_context *pipe )
 
 
 struct pipe_context *
-softpipe_create_context( struct pipe_screen *, void *priv );
+softpipe_create_context(struct pipe_screen *, void *priv, unsigned flags);
 
 struct pipe_resource *
 softpipe_user_buffer_create(struct pipe_screen *screen,

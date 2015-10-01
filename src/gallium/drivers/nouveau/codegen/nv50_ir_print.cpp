@@ -135,6 +135,7 @@ const char *operationStr[OP_LAST + 1] =
    "membar",
    "vfetch",
    "pfetch",
+   "afetch",
    "export",
    "linterp",
    "pinterp",
@@ -258,7 +259,8 @@ static const char *SemanticStr[SV_LAST + 1] =
    "SAMPLE_INDEX",
    "SAMPLE_POS",
    "SAMPLE_MASK",
-   "TESS_FACTOR",
+   "TESS_OUTER",
+   "TESS_INNER",
    "TESS_COORD",
    "TID",
    "CTAID",
@@ -409,7 +411,7 @@ int ImmediateValue::print(char *buf, size_t size, DataType ty) const
    case TYPE_U64:
    case TYPE_S64:
    default:
-      PRINT("0x%016"PRIx64, reg.data.u64);
+      PRINT("0x%016" PRIx64, reg.data.u64);
       break;
    }
    return pos;

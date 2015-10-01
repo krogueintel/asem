@@ -43,19 +43,26 @@
 
 
 uint64_t
-driParseDebugString( const char * debug, 
-		     const struct dri_debug_control * control  )
+driParseDebugString(const char *debug,
+                    const struct dri_debug_control *control)
 {
    uint64_t flag = 0;
 
-   if ( debug != NULL ) {
-      while( control->string != NULL ) {
-	 if ( !strcmp( debug, "all" ) ||
-	      strstr( debug, control->string ) != NULL ) {
-	    flag |= control->flag;
-	 }
+   if (debug != NULL) {
+      for (; control->string != NULL; control++) {
+         if (!strcmp(debug, "all")) {
+            flag |= control->flag;
 
-	 control++;
+         } else {
+            const char *s = debug;
+            unsigned n;
+
+            for (; n = strcspn(s, ", "), *s; s += MAX2(1, n)) {
+               if (strlen(control->string) == n &&
+                   !strncmp(control->string, s, n))
+                  flag |= control->flag;
+            }
+         }
       }
    }
 
@@ -213,6 +220,7 @@ driCreateConfigs(mesa_format format,
       masks = masks_table[0];
       break;
    case MESA_FORMAT_B8G8R8X8_UNORM:
+   case MESA_FORMAT_B8G8R8X8_SRGB:
       masks = masks_table[1];
       break;
    case MESA_FORMAT_B8G8R8A8_UNORM:
@@ -451,7 +459,7 @@ int
 driGetConfigAttrib(const __DRIconfig *config,
 		   unsigned int attrib, unsigned int *value)
 {
-    int i;
+    unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(attribMap); i++)
 	if (attribMap[i].attrib == attrib)

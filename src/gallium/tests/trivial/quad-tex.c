@@ -100,7 +100,7 @@ static void init_prog(struct program *p)
 	assert(p->screen);
 
 	/* create the pipe driver context and cso context */
-	p->pipe = p->screen->context_create(p->screen, NULL);
+	p->pipe = p->screen->context_create(p->screen, NULL, 0);
 	p->cso = cso_create_context(p->pipe);
 
 	/* set clear color */
@@ -270,7 +270,9 @@ static void init_prog(struct program *p)
 	}
 
 	/* fragment shader */
-	p->fs = util_make_fragment_tex_shader(p->pipe, TGSI_TEXTURE_2D, TGSI_INTERPOLATE_LINEAR);
+	p->fs = util_make_fragment_tex_shader(p->pipe, TGSI_TEXTURE_2D,
+	                                      TGSI_INTERPOLATE_LINEAR,
+	                                      TGSI_RETURN_TYPE_FLOAT);
 }
 
 static void close_prog(struct program *p)
@@ -295,6 +297,8 @@ static void close_prog(struct program *p)
 
 static void draw(struct program *p)
 {
+	const struct pipe_sampler_state *samplers[] = {&p->sampler};
+
 	/* set the render target */
 	cso_set_framebuffer(p->cso, &p->framebuffer);
 
@@ -308,8 +312,7 @@ static void draw(struct program *p)
 	cso_set_viewport(p->cso, &p->viewport);
 
 	/* sampler */
-	cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 0, &p->sampler);
-	cso_single_sampler_done(p->cso, PIPE_SHADER_FRAGMENT);
+	cso_set_samplers(p->cso, PIPE_SHADER_FRAGMENT, 1, samplers);
 
 	/* texture sampler view */
 	cso_set_sampler_views(p->cso, PIPE_SHADER_FRAGMENT, 1, &p->view);

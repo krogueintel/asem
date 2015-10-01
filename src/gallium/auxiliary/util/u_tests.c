@@ -373,7 +373,8 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
 
    /* Fragment shader. */
    fs = util_make_fragment_tex_shader(ctx, tgsi_tex_target,
-                                      TGSI_INTERPOLATE_LINEAR);
+                                      TGSI_INTERPOLATE_LINEAR,
+                                      TGSI_RETURN_TYPE_FLOAT);
    cso_set_fragment_shader_handle(cso, fs);
 
    /* Vertex shader. */
@@ -456,7 +457,7 @@ null_constant_buffer(struct pipe_context *ctx)
 void
 util_run_tests(struct pipe_screen *screen)
 {
-   struct pipe_context *ctx = screen->context_create(screen, NULL);
+   struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
 
    tgsi_vs_window_space_position(ctx);
    null_sampler_view(ctx, TGSI_TEXTURE_2D);

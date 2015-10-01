@@ -368,6 +368,7 @@ st_visual_to_context_mode(const struct st_visual *visual,
 
       mode->rgbBits = mode->redBits +
          mode->greenBits + mode->blueBits + mode->alphaBits;
+      mode->sRGBCapable = util_format_is_srgb(visual->color_format);
    }
 
    if (visual->depth_stencil_format != PIPE_FORMAT_NONE) {
@@ -656,7 +657,7 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
       break;
    }
 
-   pipe = smapi->screen->context_create(smapi->screen, NULL);
+   pipe = smapi->screen->context_create(smapi->screen, NULL, 0);
    if (!pipe) {
       *error = ST_CONTEXT_ERROR_NO_MEMORY;
       return NULL;

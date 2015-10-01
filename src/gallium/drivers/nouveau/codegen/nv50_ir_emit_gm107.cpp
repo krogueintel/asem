@@ -174,6 +174,7 @@ private:
    void emitALD();
    void emitAST();
    void emitISBERD();
+   void emitAL2P();
    void emitIPA();
 
    void emitPIXLD();
@@ -817,6 +818,7 @@ CodeEmitterGM107::emitI2F()
    emitField(0x31, 1, (insn->op == OP_ABS) || insn->src(0).mod.abs());
    emitCC   (0x2f);
    emitField(0x2d, 1, (insn->op == OP_NEG) || insn->src(0).mod.neg());
+   emitField(0x29, 2, insn->subOp);
    emitRND  (0x27, rnd, -1);
    emitField(0x0d, 1, isSignedType(insn->sType));
    emitField(0x0a, 2, util_logbase2(typeSizeof(insn->sType)));
@@ -849,6 +851,7 @@ CodeEmitterGM107::emitI2I()
    emitField(0x31, 1, (insn->op == OP_ABS) || insn->src(0).mod.abs());
    emitCC   (0x2f);
    emitField(0x2d, 1, (insn->op == OP_NEG) || insn->src(0).mod.neg());
+   emitField(0x29, 2, insn->subOp);
    emitField(0x0d, 1, isSignedType(insn->sType));
    emitField(0x0c, 1, isSignedType(insn->dType));
    emitField(0x0a, 2, util_logbase2(typeSizeof(insn->sType)));
@@ -2204,6 +2207,17 @@ CodeEmitterGM107::emitISBERD()
 }
 
 void
+CodeEmitterGM107::emitAL2P()
+{
+   emitInsn (0xefa00000);
+   emitField(0x2f, 2, (insn->getDef(0)->reg.size / 4) - 1);
+   emitO    (0x20);
+   emitField(0x14, 11, insn->src(0).get()->reg.data.offset);
+   emitGPR  (0x08, insn->src(0).getIndirect(0));
+   emitGPR  (0x00, insn->def(0));
+}
+
+void
 CodeEmitterGM107::emitIPA()
 {
    int ipam = 0, ipas = 0;
@@ -2441,8 +2455,14 @@ CodeEmitterGM107::emitTXQ()
       break;
    }
 
-   emitInsn (0xdf4a0000);
-   emitField(0x24, 13, insn->tex.r);
+   if (insn->tex.rIndirectSrc >= 0) {
+      emitInsn (0xdf500000);
+   } else {
+      emitInsn (0xdf480000);
+      emitField(0x24, 13, insn->tex.r);
+   }
+
+   emitField(0x31, 1, insn->tex.liveOnly);
    emitField(0x1f, 4, insn->tex.mask);
    emitField(0x16, 6, type);
    emitGPR  (0x08, insn->src(0));
@@ -2752,6 +2772,9 @@ CodeEmitterGM107::emitInstruction(Instruction *i)
       break;
    case OP_PFETCH:
       emitISBERD();
+      break;
+   case OP_AFETCH:
+      emitAL2P();
       break;
    case OP_LINTERP:
    case OP_PINTERP:

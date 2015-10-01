@@ -128,7 +128,7 @@ brw_bind_rep_write_shader(struct brw_context *brw, float *color)
    _mesa_AttachShader(clear->shader_prog, vs);
    _mesa_DeleteShader(vs);
    _mesa_BindAttribLocation(clear->shader_prog, 0, "position");
-   _mesa_ObjectLabel(GL_PROGRAM, clear->shader_prog, -1, "meta clear");
+   _mesa_ObjectLabel(GL_PROGRAM, clear->shader_prog, -1, "meta repclear");
    _mesa_LinkProgram(clear->shader_prog);
 
    clear->color_location =
@@ -200,11 +200,11 @@ brw_draw_rectlist(struct gl_context *ctx, struct rect *rect, int num_instances)
 
    brw_draw_prims(ctx, &prim, 1, NULL,
                   GL_TRUE, start, start + count - 1,
-                  NULL, NULL);
+                  NULL, 0, NULL);
 }
 
 static void
-get_fast_clear_rect(struct brw_context *brw, struct gl_framebuffer *fb,
+get_fast_clear_rect(struct gl_framebuffer *fb,
                     struct intel_renderbuffer *irb, struct rect *rect)
 {
    unsigned int x_align, y_align;
@@ -226,7 +226,7 @@ get_fast_clear_rect(struct brw_context *brw, struct gl_framebuffer *fb,
        * alignment size returned by intel_get_non_msrt_mcs_alignment(), but
        * with X alignment multiplied by 16 and Y alignment multiplied by 32.
        */
-      intel_get_non_msrt_mcs_alignment(brw, irb->mt, &x_align, &y_align);
+      intel_get_non_msrt_mcs_alignment(irb->mt, &x_align, &y_align);
       x_align *= 16;
       y_align *= 32;
 
@@ -339,15 +339,16 @@ is_color_fast_clear_compatible(struct brw_context *brw,
                                mesa_format format,
                                const union gl_color_union *color)
 {
-   if (_mesa_is_format_integer_color(format))
+   if (_mesa_is_format_integer_color(format)) {
       if (brw->gen >= 8) {
          perf_debug("Integer fast clear not enabled for (%s)",
                     _mesa_get_format_name(format));
       }
       return false;
+   }
 
    for (int i = 0; i < 4; i++) {
-      if (color->f[i] != 0.0 && color->f[i] != 1.0 &&
+      if (color->f[i] != 0.0f && color->f[i] != 1.0f &&
           _mesa_format_has_color_component(format, i)) {
          return false;
       }
@@ -365,7 +366,7 @@ compute_fast_clear_color_bits(const union gl_color_union *color)
    uint32_t bits = 0;
    for (int i = 0; i < 4; i++) {
       /* Testing for non-0 works for integer and float colors */
-      if (color->f[i] != 0.0)
+      if (color->f[i] != 0.0f)
          bits |= 1 << (GEN7_SURFACE_CLEAR_COLOR_SHIFT + (3 - i));
    }
    return bits;
@@ -515,7 +516,7 @@ brw_meta_fast_clear(struct brw_context *brw, struct gl_framebuffer *fb,
          irb->mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_RESOLVED;
          irb->need_downsample = true;
          fast_clear_buffers |= 1 << index;
-         get_fast_clear_rect(brw, fb, irb, &fast_clear_rect);
+         get_fast_clear_rect(fb, irb, &fast_clear_rect);
          break;
 
       case REP_CLEAR:
@@ -622,7 +623,7 @@ brw_meta_fast_clear(struct brw_context *brw, struct gl_framebuffer *fb,
     *     write-flush must be issued before sending any DRAW commands on that
     *     render target.
     */
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    /* If we had to fall back to plain clear for any buffers, clear those now
     * by calling into meta.
@@ -652,7 +653,7 @@ get_resolve_rect(struct brw_context *brw,
     * by 8 and 16 and 8 and 8 for SKL.
     */
 
-   intel_get_non_msrt_mcs_alignment(brw, mt, &x_align, &y_align);
+   intel_get_non_msrt_mcs_alignment(mt, &x_align, &y_align);
    if (brw->gen >= 9) {
       x_scaledown = x_align * 8;
       y_scaledown = y_align * 8;
@@ -676,7 +677,7 @@ brw_meta_resolve_color(struct brw_context *brw,
    GLuint fbo, rbo;
    struct rect rect;
 
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    _mesa_meta_begin(ctx, MESA_META_ALL);
 

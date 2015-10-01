@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,13 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #include <sys/errno.h>
 
@@ -92,8 +90,10 @@ get_hw_prim_for_gl_prim(int mode)
 {
    if (mode >= BRW_PRIM_OFFSET)
       return mode - BRW_PRIM_OFFSET;
-   else
+   else {
+      assert(mode < ARRAY_SIZE(prim_to_hw_prim));
       return prim_to_hw_prim[mode];
+   }
 }
 
 
@@ -102,13 +102,13 @@ get_hw_prim_for_gl_prim(int mode)
  * programs be immune to the active primitive (ie. cope with all
  * possibilities).  That may not be realistic however.
  */
-static void brw_set_prim(struct brw_context *brw,
-                         const struct _mesa_prim *prim)
+static void
+brw_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 {
    struct gl_context *ctx = &brw->ctx;
    uint32_t hw_prim = get_hw_prim_for_gl_prim(prim->mode);
 
-   DBG("PRIM: %s\n", _mesa_lookup_enum_by_nr(prim->mode));
+   DBG("PRIM: %s\n", _mesa_enum_to_string(prim->mode));
 
    /* Slight optimization to avoid the GS program when not needed:
     */
@@ -136,15 +136,12 @@ static void brw_set_prim(struct brw_context *brw,
    }
 }
 
-static void gen6_set_prim(struct brw_context *brw,
-                          const struct _mesa_prim *prim)
+static void
+gen6_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 {
-   uint32_t hw_prim;
+   DBG("PRIM: %s\n", _mesa_enum_to_string(prim->mode));
 
-   DBG("PRIM: %s\n", _mesa_lookup_enum_by_nr(prim->mode));
-
-   hw_prim = get_hw_prim_for_gl_prim(prim->mode);
-
+   const uint32_t hw_prim = get_hw_prim_for_gl_prim(prim->mode);
    if (hw_prim != brw->primitive) {
       brw->primitive = hw_prim;
       brw->ctx.NewDriverState |= BRW_NEW_PRIMITIVE;
@@ -160,7 +157,8 @@ static void gen6_set_prim(struct brw_context *brw,
  * quads so that those dangling vertices won't get drawn when we convert to
  * trifans/tristrips.
  */
-static GLuint trim(GLenum prim, GLuint length)
+static GLuint
+trim(GLenum prim, GLuint length)
 {
    if (prim == GL_QUAD_STRIP)
       return length > 3 ? (length - length % 2) : 0;
@@ -171,16 +169,16 @@ static GLuint trim(GLenum prim, GLuint length)
 }
 
 
-static void brw_emit_prim(struct brw_context *brw,
-			  const struct _mesa_prim *prim,
-			  uint32_t hw_prim)
+static void
+brw_emit_prim(struct brw_context *brw,
+              const struct _mesa_prim *prim,
+              uint32_t hw_prim)
 {
    int verts_per_instance;
    int vertex_access_type;
    int indirect_flag;
-   int predicate_enable;
 
-   DBG("PRIM: %s %d %d\n", _mesa_lookup_enum_by_nr(prim->mode),
+   DBG("PRIM: %s %d %d\n", _mesa_enum_to_string(prim->mode),
        prim->start, prim->count);
 
    int start_vertex_location = prim->start;
@@ -214,9 +212,8 @@ static void brw_emit_prim(struct brw_context *brw,
     * and missed flushes of the render cache as it heads to other parts of
     * the besides the draw code.
     */
-   if (brw->always_flush_cache) {
-      intel_batchbuffer_emit_mi_flush(brw);
-   }
+   if (brw->always_flush_cache)
+      brw_emit_mi_flush(brw);
 
    /* If indirect, emit a bunch of loads from the indirect BO. */
    if (prim->is_indirect) {
@@ -254,22 +251,20 @@ static void brw_emit_prim(struct brw_context *brw,
          OUT_BATCH(0);
          ADVANCE_BATCH();
       }
-   }
-   else {
+   } else {
       indirect_flag = 0;
    }
 
-   if (brw->gen >= 7) {
-      if (brw->predicate.state == BRW_PREDICATE_STATE_USE_BIT)
-         predicate_enable = GEN7_3DPRIM_PREDICATE_ENABLE;
-      else
-         predicate_enable = 0;
+   BEGIN_BATCH(brw->gen >= 7 ? 7 : 6);
 
-      BEGIN_BATCH(7);
+   if (brw->gen >= 7) {
+      const int predicate_enable =
+         (brw->predicate.state == BRW_PREDICATE_STATE_USE_BIT)
+         ? GEN7_3DPRIM_PREDICATE_ENABLE : 0;
+
       OUT_BATCH(CMD_3D_PRIM << 16 | (7 - 2) | indirect_flag | predicate_enable);
       OUT_BATCH(hw_prim | vertex_access_type);
    } else {
-      BEGIN_BATCH(6);
       OUT_BATCH(CMD_3D_PRIM << 16 | (6 - 2) |
                 hw_prim << GEN4_3DPRIM_TOPOLOGY_TYPE_SHIFT |
                 vertex_access_type);
@@ -281,14 +276,14 @@ static void brw_emit_prim(struct brw_context *brw,
    OUT_BATCH(base_vertex_location);
    ADVANCE_BATCH();
 
-   if (brw->always_flush_cache) {
-      intel_batchbuffer_emit_mi_flush(brw);
-   }
+   if (brw->always_flush_cache)
+      brw_emit_mi_flush(brw);
 }
 
 
-static void brw_merge_inputs( struct brw_context *brw,
-		       const struct gl_client_array *arrays[])
+static void
+brw_merge_inputs(struct brw_context *brw,
+                 const struct gl_client_array *arrays[])
 {
    const struct gl_context *ctx = &brw->ctx;
    GLuint i;
@@ -357,7 +352,8 @@ static void brw_merge_inputs( struct brw_context *brw,
  * Also mark any render targets which will be textured as needing a render
  * cache flush.
  */
-static void brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
+static void
+brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
@@ -385,7 +381,7 @@ static void brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
       brw_render_cache_set_add_bo(brw, stencil_irb->mt->bo);
    }
 
-   for (int i = 0; i < fb->_NumColorDrawBuffers; i++) {
+   for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
       struct intel_renderbuffer *irb =
          intel_renderbuffer(fb->_ColorDrawBuffers[i]);
 
@@ -397,21 +393,22 @@ static void brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
 /* May fail if out of video memory for texture or vbo upload, or on
  * fallback conditions.
  */
-static void brw_try_draw_prims( struct gl_context *ctx,
-				     const struct gl_client_array *arrays[],
-				     const struct _mesa_prim *prims,
-				     GLuint nr_prims,
-				     const struct _mesa_index_buffer *ib,
-				     GLuint min_index,
-				     GLuint max_index,
-				     struct gl_buffer_object *indirect)
+static void
+brw_try_draw_prims(struct gl_context *ctx,
+                   const struct gl_client_array *arrays[],
+                   const struct _mesa_prim *prims,
+                   GLuint nr_prims,
+                   const struct _mesa_index_buffer *ib,
+                   GLuint min_index,
+                   GLuint max_index,
+                   struct gl_buffer_object *indirect)
 {
    struct brw_context *brw = brw_context(ctx);
    GLuint i;
    bool fail_next = false;
 
    if (ctx->NewState)
-      _mesa_update_state( ctx );
+      _mesa_update_state(ctx);
 
    /* Find the highest sampler unit used by each shader program.  A bit-count
     * won't work since ARB programs use the texture unit number as the sampler
@@ -431,7 +428,7 @@ static void brw_try_draw_prims( struct gl_context *ctx,
     * software fallback will segfault if it attempts to access any
     * texture level other than level 0.
     */
-   brw_validate_textures( brw );
+   brw_validate_textures(brw);
 
    intel_prepare_render(brw);
 
@@ -443,7 +440,7 @@ static void brw_try_draw_prims( struct gl_context *ctx,
 
    /* Bind all inputs, derive varying and size information:
     */
-   brw_merge_inputs( brw, arrays );
+   brw_merge_inputs(brw, arrays);
 
    brw->ib.ib = ib;
    brw->ctx.NewDriverState |= BRW_NEW_INDICES;
@@ -551,15 +548,17 @@ retry:
    return;
 }
 
-void brw_draw_prims( struct gl_context *ctx,
-		     const struct _mesa_prim *prims,
-		     GLuint nr_prims,
-		     const struct _mesa_index_buffer *ib,
-		     GLboolean index_bounds_valid,
-		     GLuint min_index,
-		     GLuint max_index,
-		     struct gl_transform_feedback_object *unused_tfb_object,
-		     struct gl_buffer_object *indirect )
+void
+brw_draw_prims(struct gl_context *ctx,
+               const struct _mesa_prim *prims,
+               GLuint nr_prims,
+               const struct _mesa_index_buffer *ib,
+               GLboolean index_bounds_valid,
+               GLuint min_index,
+               GLuint max_index,
+               struct gl_transform_feedback_object *unused_tfb_object,
+               unsigned stream,
+               struct gl_buffer_object *indirect)
 {
    struct brw_context *brw = brw_context(ctx);
    const struct gl_client_array **arrays = ctx->Array._DrawArrays;
@@ -580,11 +579,11 @@ void brw_draw_prims( struct gl_context *ctx,
     */
    if (ctx->RenderMode != GL_RENDER) {
       perf_debug("%s render mode not supported in hardware\n",
-                 _mesa_lookup_enum_by_nr(ctx->RenderMode));
+                 _mesa_enum_to_string(ctx->RenderMode));
       _swsetup_Wakeup(ctx);
       _tnl_wakeup(ctx);
       _tnl_draw_prims(ctx, prims, nr_prims, ib,
-                      index_bounds_valid, min_index, max_index, NULL, NULL);
+                      index_bounds_valid, min_index, max_index, NULL, 0, NULL);
       return;
    }
 
@@ -602,28 +601,30 @@ void brw_draw_prims( struct gl_context *ctx,
     * manage it.  swrast doesn't support our featureset, so we can't fall back
     * to it.
     */
-   brw_try_draw_prims(ctx, arrays, prims, nr_prims, ib, min_index, max_index, indirect);
+   brw_try_draw_prims(ctx, arrays, prims, nr_prims, ib, min_index, max_index,
+                      indirect);
 }
 
-void brw_draw_init( struct brw_context *brw )
+void
+brw_draw_init(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct vbo_context *vbo = vbo_context(ctx);
-   int i;
 
    /* Register our drawing function:
     */
    vbo->draw_prims = brw_draw_prims;
 
-   for (i = 0; i < VERT_ATTRIB_MAX; i++)
+   for (int i = 0; i < VERT_ATTRIB_MAX; i++)
       brw->vb.inputs[i].buffer = -1;
    brw->vb.nr_buffers = 0;
    brw->vb.nr_enabled = 0;
 }
 
-void brw_draw_destroy( struct brw_context *brw )
+void
+brw_draw_destroy(struct brw_context *brw)
 {
-   int i;
+   unsigned i;
 
    for (i = 0; i < brw->vb.nr_buffers; i++) {
       drm_intel_bo_unreference(brw->vb.buffers[i].bo);

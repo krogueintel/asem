@@ -50,13 +50,13 @@
  */
 void
 brw_upload_pull_constants(struct brw_context *brw,
-                          GLbitfield brw_new_constbuf,
+                          GLbitfield64 brw_new_constbuf,
                           const struct gl_program *prog,
                           struct brw_stage_state *stage_state,
                           const struct brw_stage_prog_data *prog_data,
                           bool dword_pitch)
 {
-   int i;
+   unsigned i;
    uint32_t surf_index = prog_data->binding_table.pull_constants_start;
 
    if (!prog_data->nr_pull_params) {
@@ -190,4 +190,29 @@ const struct brw_tracked_state brw_vs_abo_surfaces = {
              BRW_NEW_VS_PROG_DATA,
    },
    .emit = brw_upload_vs_abo_surfaces,
+};
+
+static void
+brw_upload_vs_image_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* BRW_NEW_VERTEX_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX];
+
+   if (prog) {
+      /* BRW_NEW_VS_PROG_DATA, BRW_NEW_IMAGE_UNITS */
+      brw_upload_image_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_VERTEX],
+                                &brw->vs.base, &brw->vs.prog_data->base.base);
+   }
+}
+
+const struct brw_tracked_state brw_vs_image_surfaces = {
+   .dirty = {
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_IMAGE_UNITS |
+             BRW_NEW_VERTEX_PROGRAM |
+             BRW_NEW_VS_PROG_DATA,
+   },
+   .emit = brw_upload_vs_image_surfaces,
 };

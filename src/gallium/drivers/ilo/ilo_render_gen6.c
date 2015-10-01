@@ -33,6 +33,7 @@
 
 #include "ilo_blitter.h"
 #include "ilo_query.h"
+#include "ilo_resource.h"
 #include "ilo_shader.h"
 #include "ilo_state.h"
 #include "ilo_render_gen.h"
@@ -413,30 +414,25 @@ gen6_draw_vf(struct ilo_render *r,
 {
    if (ilo_dev_gen(r->dev) >= ILO_GEN(7.5)) {
       /* 3DSTATE_INDEX_BUFFER */
-      if (DIRTY(IB) || r->batch_bo_changed) {
-         gen6_3DSTATE_INDEX_BUFFER(r->builder,
-               &vec->ib, false);
-      }
+      if ((session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_INDEX_BUFFER) ||
+          DIRTY(IB) || r->batch_bo_changed)
+         gen6_3DSTATE_INDEX_BUFFER(r->builder, &vec->ve->vf, &vec->ib.ib);
 
       /* 3DSTATE_VF */
-      if (session->primitive_restart_changed) {
-         gen75_3DSTATE_VF(r->builder, vec->draw->primitive_restart,
-               vec->draw->restart_index);
-      }
-   }
-   else {
+      if (session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VF)
+         gen75_3DSTATE_VF(r->builder, &vec->ve->vf);
+   } else {
       /* 3DSTATE_INDEX_BUFFER */
-      if (DIRTY(IB) || session->primitive_restart_changed ||
-          r->batch_bo_changed) {
-         gen6_3DSTATE_INDEX_BUFFER(r->builder,
-               &vec->ib, vec->draw->primitive_restart);
-      }
+      if ((session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_INDEX_BUFFER) ||
+          DIRTY(IB) || r->batch_bo_changed)
+         gen6_3DSTATE_INDEX_BUFFER(r->builder, &vec->ve->vf, &vec->ib.ib);
    }
 
    /* 3DSTATE_VERTEX_BUFFERS */
-   if (DIRTY(VB) || DIRTY(VE) || r->batch_bo_changed) {
-      gen6_3DSTATE_VERTEX_BUFFERS(r->builder, &vec->vb, vec->ve->vb_mapping,
-            vec->ve->instance_divisors, vec->ve->vb_count);
+   if ((session->vf_delta.dirty & ILO_STATE_VF_3DSTATE_VERTEX_BUFFERS) ||
+       DIRTY(VB) || DIRTY(VE) || r->batch_bo_changed) {
+      gen6_3DSTATE_VERTEX_BUFFERS(r->builder, &vec->ve->vf,
+            vec->vb.vb, vec->ve->vb_count);
    }
 
    /* 3DSTATE_VERTEX_ELEMENTS */
@@ -810,7 +806,7 @@ ilo_render_emit_draw_commands_gen6(struct ilo_render *render,
    gen6_draw_sf_rect(render, vec, session);
    gen6_draw_vf(render, vec, session);
 
-   ilo_render_3dprimitive(render, vec->draw, &vec->ib);
+   ilo_render_3dprimitive(render, &vec->draw_info);
 }
 
 static void
@@ -930,7 +926,7 @@ ilo_render_emit_rectlist_commands_gen6(struct ilo_render *r,
    gen6_3DSTATE_DRAWING_RECTANGLE(r->builder, 0, 0,
          blitter->fb.width, blitter->fb.height);
 
-   ilo_render_3dprimitive(r, &blitter->draw, NULL);
+   ilo_render_3dprimitive(r, &blitter->draw_info);
 }
 
 int

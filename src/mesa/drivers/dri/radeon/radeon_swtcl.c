@@ -353,10 +353,7 @@ void r100_swtcl_flush(struct gl_context *ctx, uint32_t current_offset)
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0
 #define HAVE_TRI_FANS    1
-#define HAVE_QUADS       0
-#define HAVE_QUAD_STRIPS 0
 #define HAVE_POLYGONS    0
 /* \todo: is it possible to make "ELTS" work with t_vertex code ? */
 #define HAVE_ELTS        0
@@ -442,11 +439,11 @@ static GLboolean radeon_run_render( struct gl_context *ctx,
 
       radeon_print(RADEON_SWRENDER, RADEON_NORMAL,
 	  "radeon_render.c: prim %s %d..%d\n",
-		 _mesa_lookup_enum_by_nr(prim & PRIM_MODE_MASK), 
+		 _mesa_enum_to_string(prim & PRIM_MODE_MASK), 
 		 start, start+length);
 
       if (length)
-	 tab[prim & PRIM_MODE_MASK]( ctx, start, start + length, prim );
+         tab[prim & PRIM_MODE_MASK](ctx, start, length, prim);
    }
 
    tnl->Driver.Render.Finish( ctx );

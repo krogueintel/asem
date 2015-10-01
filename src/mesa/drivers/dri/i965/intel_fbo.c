@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,14 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
-
+ */
 
 #include "main/enums.h"
 #include "main/imports.h"
@@ -310,7 +307,7 @@ intel_alloc_private_renderbuffer_storage(struct gl_context * ctx, struct gl_rend
    intel_miptree_release(&irb->mt);
 
    DBG("%s: %s: %s (%dx%d)\n", __func__,
-       _mesa_lookup_enum_by_nr(internalFormat),
+       _mesa_enum_to_string(internalFormat),
        _mesa_get_format_name(rb->Format), width, height);
 
    if (width == 0 || height == 0)
@@ -415,6 +412,7 @@ static GLboolean
 intel_alloc_window_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
                            GLenum internalFormat, GLuint width, GLuint height)
 {
+   (void) ctx;
    assert(rb->Name == 0);
    rb->Width = width;
    rb->Height = height;
@@ -428,6 +426,10 @@ static GLboolean
 intel_nop_alloc_storage(struct gl_context * ctx, struct gl_renderbuffer *rb,
                         GLenum internalFormat, GLuint width, GLuint height)
 {
+   (void) rb;
+   (void) internalFormat;
+   (void) width;
+   (void) height;
    _mesa_problem(ctx, "intel_nop_alloc_storage should never be called.");
    return false;
 }
@@ -551,10 +553,12 @@ intel_renderbuffer_update_wrapper(struct brw_context *brw,
 
    irb->mt_layer = layer_multiplier * layer;
 
-   if (layered) {
-      irb->layer_count = image->TexObject->NumLayers ?: mt->level[level].depth / layer_multiplier;
-   } else {
+   if (!layered) {
       irb->layer_count = 1;
+   } else if (image->TexObject->NumLayers > 0) {
+      irb->layer_count = image->TexObject->NumLayers;
+   } else {
+      irb->layer_count = mt->level[level].depth / layer_multiplier;
    }
 
    intel_miptree_reference(&irb->mt, mt);
@@ -660,7 +664,7 @@ intel_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
    struct intel_renderbuffer *stencilRb =
       intel_get_renderbuffer(fb, BUFFER_STENCIL);
    struct intel_mipmap_tree *depth_mt = NULL, *stencil_mt = NULL;
-   int i;
+   unsigned i;
 
    DBG("%s() on fb %p (%s)\n", __func__,
        fb, (fb == ctx->DrawBuffer ? "drawbuffer" :
@@ -785,7 +789,7 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
                                     GLint srcX1, GLint srcY1,
                                     GLint dstX0, GLint dstY0,
                                     GLint dstX1, GLint dstY1,
-                                    GLbitfield mask, GLenum filter)
+                                    GLbitfield mask)
 {
    struct brw_context *brw = brw_context(ctx);
 
@@ -795,7 +799,7 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
    intel_prepare_render(brw);
 
    if (mask & GL_COLOR_BUFFER_BIT) {
-      GLint i;
+      unsigned i;
       struct gl_renderbuffer *src_rb = readFb->_ColorReadBuffer;
       struct intel_renderbuffer *src_irb = intel_renderbuffer(src_rb);
 
@@ -905,7 +909,7 @@ intel_blit_framebuffer(struct gl_context *ctx,
    mask = intel_blit_framebuffer_with_blitter(ctx, readFb, drawFb,
                                               srcX0, srcY0, srcX1, srcY1,
                                               dstX0, dstY0, dstX1, dstY1,
-                                              mask, filter);
+                                              mask);
    if (mask == 0x0)
       return;
 
@@ -943,7 +947,7 @@ gen4_blit_framebuffer(struct gl_context *ctx,
    mask = intel_blit_framebuffer_with_blitter(ctx, readFb, drawFb,
                                               srcX0, srcY0, srcX1, srcY1,
                                               dstX0, dstY0, dstX1, dstY1,
-                                              mask, filter);
+                                              mask);
    if (mask == 0x0)
       return;
 
@@ -1020,7 +1024,10 @@ intel_renderbuffer_move_to_temp(struct brw_context *brw,
    struct intel_mipmap_tree *new_mt;
    int width, height, depth;
 
-   intel_miptree_get_dimensions_for_image(rb->TexImage, &width, &height, &depth);
+   uint32_t layout_flags = MIPTREE_LAYOUT_ACCELERATED_UPLOAD |
+                           MIPTREE_LAYOUT_TILING_ANY;
+
+   intel_get_image_dims(rb->TexImage, &width, &height, &depth);
 
    new_mt = intel_miptree_create(brw, rb->TexImage->TexObject->Target,
                                  intel_image->base.Base.TexFormat,
@@ -1028,8 +1035,7 @@ intel_renderbuffer_move_to_temp(struct brw_context *brw,
                                  intel_image->base.Base.Level,
                                  width, height, depth,
                                  irb->mt->num_samples,
-                                 INTEL_MIPTREE_TILING_ANY,
-                                 MIPTREE_LAYOUT_ACCELERATED_UPLOAD);
+                                 layout_flags);
 
    if (intel_miptree_wants_hiz_buffer(brw, new_mt)) {
       intel_miptree_alloc_hiz(brw, new_mt);
@@ -1076,7 +1082,7 @@ brw_render_cache_set_check_flush(struct brw_context *brw, drm_intel_bo *bo)
    if (!_mesa_set_search(brw->render_cache, bo))
       return;
 
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 }
 
 /**

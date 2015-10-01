@@ -22,12 +22,16 @@
  */
 
 #include "ir.h"
+#include "ir_builder.h"
+#include "linker.h"
 #include "glsl_parser_extras.h"
 #include "glsl_symbol_table.h"
 #include "main/core.h"
 #include "main/uniforms.h"
 #include "program/prog_statevars.h"
 #include "program/prog_instruction.h"
+
+using namespace ir_builder;
 
 static const struct gl_builtin_uniform_element gl_NumSamples_elements[] = {
    {NULL, {STATE_NUM_SAMPLES, 0, 0}, SWIZZLE_XXXX}
@@ -322,6 +326,7 @@ per_vertex_accumulator::add_field(int slot, const glsl_type *type,
    this->fields[this->num_fields].interpolation = INTERP_QUALIFIER_NONE;
    this->fields[this->num_fields].centroid = 0;
    this->fields[this->num_fields].sample = 0;
+   this->fields[this->num_fields].patch = 0;
    this->num_fields++;
 }
 
@@ -343,6 +348,8 @@ public:
    void generate_constants();
    void generate_uniforms();
    void generate_vs_special_vars();
+   void generate_tcs_special_vars();
+   void generate_tes_special_vars();
    void generate_gs_special_vars();
    void generate_fs_special_vars();
    void generate_cs_special_vars();
@@ -380,8 +387,7 @@ private:
    ir_variable *add_uniform(const glsl_type *type, const char *name);
    ir_variable *add_const(const char *name, int value);
    ir_variable *add_const_ivec3(const char *name, int x, int y, int z);
-   void add_varying(int slot, const glsl_type *type, const char *name,
-                    const char *name_as_gs_input);
+   void add_varying(int slot, const glsl_type *type, const char *name);
 
    exec_list * const instructions;
    struct _mesa_glsl_parse_state * const state;
@@ -396,10 +402,12 @@ private:
 
    const glsl_type * const bool_t;
    const glsl_type * const int_t;
+   const glsl_type * const uint_t;
    const glsl_type * const float_t;
    const glsl_type * const vec2_t;
    const glsl_type * const vec3_t;
    const glsl_type * const vec4_t;
+   const glsl_type * const uvec3_t;
    const glsl_type * const mat3_t;
    const glsl_type * const mat4_t;
 
@@ -413,8 +421,10 @@ builtin_variable_generator::builtin_variable_generator(
    : instructions(instructions), state(state), symtab(state->symbols),
      compatibility(!state->is_version(140, 100)),
      bool_t(glsl_type::bool_type), int_t(glsl_type::int_type),
+     uint_t(glsl_type::uint_type),
      float_t(glsl_type::float_type), vec2_t(glsl_type::vec2_type),
      vec3_t(glsl_type::vec3_type), vec4_t(glsl_type::vec4_type),
+     uvec3_t(glsl_type::uvec3_type),
      mat3_t(glsl_type::mat3_type), mat4_t(glsl_type::mat4_type)
 {
 }
@@ -436,11 +446,12 @@ builtin_variable_generator::add_variable(const char *name,
       var->data.read_only = true;
       break;
    case ir_var_shader_out:
+   case ir_var_shader_storage:
       break;
    default:
       /* The only variables that are added using this function should be
-       * uniforms, shader inputs, and shader outputs, constants (which use
-       * ir_var_auto), and system values.
+       * uniforms, shader storage, shader inputs, and shader outputs, constants
+       * (which use ir_var_auto), and system values.
        */
       assert(0);
       break;
@@ -669,8 +680,10 @@ builtin_variable_generator::generate_constants()
       if (!state->es_shader) {
          add_const("gl_MaxGeometryAtomicCounters",
                    state->Const.MaxGeometryAtomicCounters);
-         add_const("gl_MaxTessControlAtomicCounters", 0);
-         add_const("gl_MaxTessEvaluationAtomicCounters", 0);
+         add_const("gl_MaxTessControlAtomicCounters",
+                   state->Const.MaxTessControlAtomicCounters);
+         add_const("gl_MaxTessEvaluationAtomicCounters",
+                   state->Const.MaxTessEvaluationAtomicCounters);
       }
    }
 
@@ -690,8 +703,10 @@ builtin_variable_generator::generate_constants()
       if (!state->es_shader) {
          add_const("gl_MaxGeometryAtomicCounterBuffers",
                    state->Const.MaxGeometryAtomicCounterBuffers);
-         add_const("gl_MaxTessControlAtomicCounterBuffers", 0);
-         add_const("gl_MaxTessEvaluationAtomicCounterBuffers", 0);
+         add_const("gl_MaxTessControlAtomicCounterBuffers",
+                   state->Const.MaxTessControlAtomicCounterBuffers);
+         add_const("gl_MaxTessEvaluationAtomicCounterBuffers",
+                   state->Const.MaxTessEvaluationAtomicCounterBuffers);
       }
    }
 
@@ -732,29 +747,59 @@ builtin_variable_generator::generate_constants()
        */
    }
 
-   if (state->is_version(420, 0) ||
+   if (state->is_version(420, 310) ||
        state->ARB_shader_image_load_store_enable) {
       add_const("gl_MaxImageUnits",
                 state->Const.MaxImageUnits);
-      add_const("gl_MaxCombinedImageUnitsAndFragmentOutputs",
-                state->Const.MaxCombinedImageUnitsAndFragmentOutputs);
-      add_const("gl_MaxImageSamples",
-                state->Const.MaxImageSamples);
       add_const("gl_MaxVertexImageUniforms",
                 state->Const.MaxVertexImageUniforms);
-      add_const("gl_MaxTessControlImageUniforms", 0);
-      add_const("gl_MaxTessEvaluationImageUniforms", 0);
-      add_const("gl_MaxGeometryImageUniforms",
-                state->Const.MaxGeometryImageUniforms);
       add_const("gl_MaxFragmentImageUniforms",
                 state->Const.MaxFragmentImageUniforms);
       add_const("gl_MaxCombinedImageUniforms",
                 state->Const.MaxCombinedImageUniforms);
+
+      if (!state->es_shader) {
+         add_const("gl_MaxCombinedImageUnitsAndFragmentOutputs",
+                   state->Const.MaxCombinedShaderOutputResources);
+         add_const("gl_MaxImageSamples",
+                   state->Const.MaxImageSamples);
+         add_const("gl_MaxGeometryImageUniforms",
+                   state->Const.MaxGeometryImageUniforms);
+      }
+
+      if (state->is_version(450, 310)) {
+         add_const("gl_MaxCombinedShaderOutputResources",
+                   state->Const.MaxCombinedShaderOutputResources);
+      }
+
+      if (state->is_version(400, 0) ||
+          state->ARB_tessellation_shader_enable) {
+         add_const("gl_MaxTessControlImageUniforms",
+                   state->Const.MaxTessControlImageUniforms);
+         add_const("gl_MaxTessEvaluationImageUniforms",
+                   state->Const.MaxTessEvaluationImageUniforms);
+      }
    }
 
    if (state->is_version(410, 0) ||
        state->ARB_viewport_array_enable)
       add_const("gl_MaxViewports", state->Const.MaxViewports);
+
+   if (state->is_version(400, 0) ||
+       state->ARB_tessellation_shader_enable) {
+      add_const("gl_MaxPatchVertices", state->Const.MaxPatchVertices);
+      add_const("gl_MaxTessGenLevel", state->Const.MaxTessGenLevel);
+      add_const("gl_MaxTessControlInputComponents", state->Const.MaxTessControlInputComponents);
+      add_const("gl_MaxTessControlOutputComponents", state->Const.MaxTessControlOutputComponents);
+      add_const("gl_MaxTessControlTextureImageUnits", state->Const.MaxTessControlTextureImageUnits);
+      add_const("gl_MaxTessEvaluationInputComponents", state->Const.MaxTessEvaluationInputComponents);
+      add_const("gl_MaxTessEvaluationOutputComponents", state->Const.MaxTessEvaluationOutputComponents);
+      add_const("gl_MaxTessEvaluationTextureImageUnits", state->Const.MaxTessEvaluationTextureImageUnits);
+      add_const("gl_MaxTessPatchComponents", state->Const.MaxTessPatchComponents);
+      add_const("gl_MaxTessControlTotalOutputComponents", state->Const.MaxTessControlTotalOutputComponents);
+      add_const("gl_MaxTessControlUniformComponents", state->Const.MaxTessControlUniformComponents);
+      add_const("gl_MaxTessEvaluationUniformComponents", state->Const.MaxTessEvaluationUniformComponents);
+   }
 }
 
 
@@ -764,7 +809,8 @@ builtin_variable_generator::generate_constants()
 void
 builtin_variable_generator::generate_uniforms()
 {
-   add_uniform(int_t, "gl_NumSamples");
+   if (state->is_version(400, 0) || state->ARB_sample_shading_enable)
+      add_uniform(int_t, "gl_NumSamples");
    add_uniform(type("gl_DepthRangeParameters"), "gl_DepthRange");
    add_uniform(array(vec4_t, VERT_ATTRIB_MAX), "gl_CurrentAttribVertMESA");
    add_uniform(array(vec4_t, VARYING_SLOT_MAX), "gl_CurrentAttribFragMESA");
@@ -870,15 +916,48 @@ builtin_variable_generator::generate_vs_special_vars()
 
 
 /**
+ * Generate variables which only exist in tessellation control shaders.
+ */
+void
+builtin_variable_generator::generate_tcs_special_vars()
+{
+   add_system_value(SYSTEM_VALUE_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
+   add_system_value(SYSTEM_VALUE_VERTICES_IN, int_t, "gl_PatchVerticesIn");
+   add_system_value(SYSTEM_VALUE_INVOCATION_ID, int_t, "gl_InvocationID");
+
+   add_output(VARYING_SLOT_TESS_LEVEL_OUTER, array(float_t, 4),
+              "gl_TessLevelOuter")->data.patch = 1;
+   add_output(VARYING_SLOT_TESS_LEVEL_INNER, array(float_t, 2),
+              "gl_TessLevelInner")->data.patch = 1;
+}
+
+
+/**
+ * Generate variables which only exist in tessellation evaluation shaders.
+ */
+void
+builtin_variable_generator::generate_tes_special_vars()
+{
+   add_system_value(SYSTEM_VALUE_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
+   add_system_value(SYSTEM_VALUE_VERTICES_IN, int_t, "gl_PatchVerticesIn");
+   add_system_value(SYSTEM_VALUE_TESS_COORD, vec3_t, "gl_TessCoord");
+   add_system_value(SYSTEM_VALUE_TESS_LEVEL_OUTER, array(float_t, 4),
+                    "gl_TessLevelOuter");
+   add_system_value(SYSTEM_VALUE_TESS_LEVEL_INNER, array(float_t, 2),
+                    "gl_TessLevelInner");
+}
+
+
+/**
  * Generate variables which only exist in geometry shaders.
  */
 void
 builtin_variable_generator::generate_gs_special_vars()
 {
    add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
-   if (state->ARB_viewport_array_enable)
+   if (state->is_version(410, 0) || state->ARB_viewport_array_enable)
       add_output(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
-   if (state->ARB_gpu_shader5_enable)
+   if (state->is_version(400, 0) || state->ARB_gpu_shader5_enable)
       add_system_value(SYSTEM_VALUE_INVOCATION_ID, int_t, "gl_InvocationID");
 
    /* Although gl_PrimitiveID appears in tessellation control and tessellation
@@ -946,7 +1025,7 @@ builtin_variable_generator::generate_fs_special_vars()
          var->enable_extension_warning("GL_AMD_shader_stencil_export");
    }
 
-   if (state->ARB_sample_shading_enable) {
+   if (state->is_version(400, 0) || state->ARB_sample_shading_enable) {
       add_system_value(SYSTEM_VALUE_SAMPLE_ID, int_t, "gl_SampleID");
       add_system_value(SYSTEM_VALUE_SAMPLE_POS, vec2_t, "gl_SamplePosition");
       /* From the ARB_sample_shading specification:
@@ -959,11 +1038,11 @@ builtin_variable_generator::generate_fs_special_vars()
       add_output(FRAG_RESULT_SAMPLE_MASK, array(int_t, 1), "gl_SampleMask");
    }
 
-   if (state->ARB_gpu_shader5_enable) {
+   if (state->is_version(400, 0) || state->ARB_gpu_shader5_enable) {
       add_system_value(SYSTEM_VALUE_SAMPLE_MASK_IN, array(int_t, 1), "gl_SampleMaskIn");
    }
 
-   if (state->ARB_fragment_layer_viewport_enable) {
+   if (state->is_version(430, 0) || state->ARB_fragment_layer_viewport_enable) {
       add_input(VARYING_SLOT_LAYER, int_t, "gl_Layer");
       add_input(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
    }
@@ -976,22 +1055,27 @@ builtin_variable_generator::generate_fs_special_vars()
 void
 builtin_variable_generator::generate_cs_special_vars()
 {
-   /* TODO: finish this. */
+   add_system_value(SYSTEM_VALUE_LOCAL_INVOCATION_ID, uvec3_t,
+                    "gl_LocalInvocationID");
+   add_system_value(SYSTEM_VALUE_WORK_GROUP_ID, uvec3_t, "gl_WorkGroupID");
+   add_system_value(SYSTEM_VALUE_NUM_WORK_GROUPS, uvec3_t, "gl_NumWorkGroups");
+   add_variable("gl_GlobalInvocationID", uvec3_t, ir_var_auto, 0);
+   add_variable("gl_LocalInvocationIndex", uint_t, ir_var_auto, 0);
 }
 
 
 /**
  * Add a single "varying" variable.  The variable's type and direction (input
  * or output) are adjusted as appropriate for the type of shader being
- * compiled.  For geometry shaders using {ARB,EXT}_geometry_shader4,
- * name_as_gs_input is used for the input (to avoid ambiguity).
+ * compiled.
  */
 void
 builtin_variable_generator::add_varying(int slot, const glsl_type *type,
-                                        const char *name,
-                                        const char *name_as_gs_input)
+                                        const char *name)
 {
    switch (state->stage) {
+   case MESA_SHADER_TESS_CTRL:
+   case MESA_SHADER_TESS_EVAL:
    case MESA_SHADER_GEOMETRY:
       this->per_vertex_in.add_field(slot, type, name);
       /* FALLTHROUGH */
@@ -1015,42 +1099,66 @@ builtin_variable_generator::add_varying(int slot, const glsl_type *type,
 void
 builtin_variable_generator::generate_varyings()
 {
-#define ADD_VARYING(loc, type, name) \
-   add_varying(loc, type, name, name "In")
-
    /* gl_Position and gl_PointSize are not visible from fragment shaders. */
    if (state->stage != MESA_SHADER_FRAGMENT) {
-      ADD_VARYING(VARYING_SLOT_POS, vec4_t, "gl_Position");
-      ADD_VARYING(VARYING_SLOT_PSIZ, float_t, "gl_PointSize");
+      add_varying(VARYING_SLOT_POS, vec4_t, "gl_Position");
+      add_varying(VARYING_SLOT_PSIZ, float_t, "gl_PointSize");
    }
 
    if (state->is_version(130, 0)) {
-       ADD_VARYING(VARYING_SLOT_CLIP_DIST0, array(float_t, 0),
+       add_varying(VARYING_SLOT_CLIP_DIST0, array(float_t, 0),
                    "gl_ClipDistance");
    }
 
    if (compatibility) {
-      ADD_VARYING(VARYING_SLOT_TEX0, array(vec4_t, 0), "gl_TexCoord");
-      ADD_VARYING(VARYING_SLOT_FOGC, float_t, "gl_FogFragCoord");
+      add_varying(VARYING_SLOT_TEX0, array(vec4_t, 0), "gl_TexCoord");
+      add_varying(VARYING_SLOT_FOGC, float_t, "gl_FogFragCoord");
       if (state->stage == MESA_SHADER_FRAGMENT) {
-         ADD_VARYING(VARYING_SLOT_COL0, vec4_t, "gl_Color");
-         ADD_VARYING(VARYING_SLOT_COL1, vec4_t, "gl_SecondaryColor");
+         add_varying(VARYING_SLOT_COL0, vec4_t, "gl_Color");
+         add_varying(VARYING_SLOT_COL1, vec4_t, "gl_SecondaryColor");
       } else {
-         ADD_VARYING(VARYING_SLOT_CLIP_VERTEX, vec4_t, "gl_ClipVertex");
-         ADD_VARYING(VARYING_SLOT_COL0, vec4_t, "gl_FrontColor");
-         ADD_VARYING(VARYING_SLOT_BFC0, vec4_t, "gl_BackColor");
-         ADD_VARYING(VARYING_SLOT_COL1, vec4_t, "gl_FrontSecondaryColor");
-         ADD_VARYING(VARYING_SLOT_BFC1, vec4_t, "gl_BackSecondaryColor");
+         add_varying(VARYING_SLOT_CLIP_VERTEX, vec4_t, "gl_ClipVertex");
+         add_varying(VARYING_SLOT_COL0, vec4_t, "gl_FrontColor");
+         add_varying(VARYING_SLOT_BFC0, vec4_t, "gl_BackColor");
+         add_varying(VARYING_SLOT_COL1, vec4_t, "gl_FrontSecondaryColor");
+         add_varying(VARYING_SLOT_BFC1, vec4_t, "gl_BackSecondaryColor");
       }
    }
 
+   /* Section 7.1 (Built-In Language Variables) of the GLSL 4.00 spec
+    * says:
+    *
+    *    "In the tessellation control language, built-in variables are
+    *    intrinsically declared as:
+    *
+    *        in gl_PerVertex {
+    *            vec4 gl_Position;
+    *            float gl_PointSize;
+    *            float gl_ClipDistance[];
+    *        } gl_in[gl_MaxPatchVertices];"
+    */
+   if (state->stage == MESA_SHADER_TESS_CTRL ||
+       state->stage == MESA_SHADER_TESS_EVAL) {
+      const glsl_type *per_vertex_in_type =
+         this->per_vertex_in.construct_interface_instance();
+      add_variable("gl_in", array(per_vertex_in_type, state->Const.MaxPatchVertices),
+                   ir_var_shader_in, -1);
+   }
    if (state->stage == MESA_SHADER_GEOMETRY) {
       const glsl_type *per_vertex_in_type =
          this->per_vertex_in.construct_interface_instance();
       add_variable("gl_in", array(per_vertex_in_type, 0),
                    ir_var_shader_in, -1);
    }
-   if (state->stage == MESA_SHADER_VERTEX || state->stage == MESA_SHADER_GEOMETRY) {
+   if (state->stage == MESA_SHADER_TESS_CTRL) {
+      const glsl_type *per_vertex_out_type =
+         this->per_vertex_out.construct_interface_instance();
+      add_variable("gl_out", array(per_vertex_out_type, 0),
+                   ir_var_shader_out, -1);
+   }
+   if (state->stage == MESA_SHADER_VERTEX ||
+       state->stage == MESA_SHADER_TESS_EVAL ||
+       state->stage == MESA_SHADER_GEOMETRY) {
       const glsl_type *per_vertex_out_type =
          this->per_vertex_out.construct_interface_instance();
       const glsl_struct_field *fields = per_vertex_out_type->fields.structure;
@@ -1061,6 +1169,7 @@ builtin_variable_generator::generate_varyings()
          var->data.interpolation = fields[i].interpolation;
          var->data.centroid = fields[i].centroid;
          var->data.sample = fields[i].sample;
+         var->data.patch = fields[i].patch;
          var->init_interface_type(per_vertex_out_type);
       }
    }
@@ -1085,6 +1194,12 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
    case MESA_SHADER_VERTEX:
       gen.generate_vs_special_vars();
       break;
+   case MESA_SHADER_TESS_CTRL:
+      gen.generate_tcs_special_vars();
+      break;
+   case MESA_SHADER_TESS_EVAL:
+      gen.generate_tes_special_vars();
+      break;
    case MESA_SHADER_GEOMETRY:
       gen.generate_gs_special_vars();
       break;
@@ -1095,4 +1210,85 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
       gen.generate_cs_special_vars();
       break;
    }
+}
+
+
+/**
+ * Initialize compute shader variables with values that are derived from other
+ * compute shader variable.
+ */
+static void
+initialize_cs_derived_variables(gl_shader *shader,
+                                ir_function_signature *const main_sig)
+{
+   assert(shader->Stage == MESA_SHADER_COMPUTE);
+
+   ir_variable *gl_GlobalInvocationID =
+      shader->symbols->get_variable("gl_GlobalInvocationID");
+   assert(gl_GlobalInvocationID);
+   ir_variable *gl_WorkGroupID =
+      shader->symbols->get_variable("gl_WorkGroupID");
+   assert(gl_WorkGroupID);
+   ir_variable *gl_WorkGroupSize =
+      shader->symbols->get_variable("gl_WorkGroupSize");
+   if (gl_WorkGroupSize == NULL) {
+      void *const mem_ctx = ralloc_parent(shader->ir);
+      gl_WorkGroupSize = new(mem_ctx) ir_variable(glsl_type::uvec3_type,
+                                                  "gl_WorkGroupSize",
+                                                  ir_var_auto);
+      gl_WorkGroupSize->data.how_declared = ir_var_declared_implicitly;
+      gl_WorkGroupSize->data.read_only = true;
+      shader->ir->push_head(gl_WorkGroupSize);
+   }
+   ir_variable *gl_LocalInvocationID =
+      shader->symbols->get_variable("gl_LocalInvocationID");
+   assert(gl_LocalInvocationID);
+
+   /* gl_GlobalInvocationID =
+    *    gl_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID
+    */
+   ir_instruction *inst =
+      assign(gl_GlobalInvocationID,
+             add(mul(gl_WorkGroupID, gl_WorkGroupSize),
+                 gl_LocalInvocationID));
+   main_sig->body.push_head(inst);
+
+   /* gl_LocalInvocationIndex =
+    *    gl_LocalInvocationID.z * gl_WorkGroupSize.x * gl_WorkGroupSize.y +
+    *    gl_LocalInvocationID.y * gl_WorkGroupSize.x +
+    *    gl_LocalInvocationID.x;
+    */
+   ir_expression *index_z =
+      mul(mul(swizzle_z(gl_LocalInvocationID), swizzle_x(gl_WorkGroupSize)),
+          swizzle_y(gl_WorkGroupSize));
+   ir_expression *index_y =
+      mul(swizzle_y(gl_LocalInvocationID), swizzle_x(gl_WorkGroupSize));
+   ir_expression *index_y_plus_z = add(index_y, index_z);
+   operand index_x(swizzle_x(gl_LocalInvocationID));
+   ir_expression *index_x_plus_y_plus_z = add(index_y_plus_z, index_x);
+   ir_variable *gl_LocalInvocationIndex =
+      shader->symbols->get_variable("gl_LocalInvocationIndex");
+   assert(gl_LocalInvocationIndex);
+   inst = assign(gl_LocalInvocationIndex, index_x_plus_y_plus_z);
+   main_sig->body.push_head(inst);
+}
+
+
+/**
+ * Initialize builtin variables with values based on other builtin variables.
+ * These are initialized in the main function.
+ */
+void
+_mesa_glsl_initialize_derived_variables(gl_shader *shader)
+{
+   /* We only need to set CS variables currently. */
+   if (shader->Stage != MESA_SHADER_COMPUTE)
+      return;
+
+   ir_function_signature *const main_sig =
+      _mesa_get_main_function_signature(shader);
+   if (main_sig == NULL)
+      return;
+
+   initialize_cs_derived_variables(shader, main_sig);
 }

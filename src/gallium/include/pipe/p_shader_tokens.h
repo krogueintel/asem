@@ -402,6 +402,7 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_ENDLOOP             101
 #define TGSI_OPCODE_ENDSUB              102
 #define TGSI_OPCODE_TXQ_LZ              103 /* TXQ for mipmap level 0 */
+#define TGSI_OPCODE_TXQS                104
                                 /* gap */
 #define TGSI_OPCODE_NOP                 107
 
@@ -685,7 +686,7 @@ struct tgsi_src_register
  *
  * File, Index and Swizzle are handled the same as in tgsi_src_register.
  *
- * If ArrayID is zero the whole register file might be is indirectly addressed,
+ * If ArrayID is zero the whole register file might be indirectly addressed,
  * if not only the Declaration with this ArrayID is accessed by this operand.
  *
  */

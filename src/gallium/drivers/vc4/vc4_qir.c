@@ -71,12 +71,11 @@ static const struct qir_op_info qir_op_info[] = {
         [QOP_RSQ] = { "rsq", 1, 1, false, true },
         [QOP_EXP2] = { "exp2", 1, 2, false, true },
         [QOP_LOG2] = { "log2", 1, 2, false, true },
-        [QOP_PACK_8888_F] = { "pack_8888_f", 1, 1, false, true },
-        [QOP_PACK_8A_F] = { "pack_8a_f", 1, 2, false, true },
-        [QOP_PACK_8B_F] = { "pack_8b_f", 1, 2, false, true },
-        [QOP_PACK_8C_F] = { "pack_8c_f", 1, 2, false, true },
-        [QOP_PACK_8D_F] = { "pack_8d_f", 1, 2, false, true },
-        [QOP_PACK_SCALED] = { "pack_scaled", 1, 2, false, true },
+        [QOP_PACK_8888_F] = { "pack_8888_f", 1, 1 },
+        [QOP_PACK_8A_F] = { "pack_8a_f", 1, 1 },
+        [QOP_PACK_8B_F] = { "pack_8b_f", 1, 1 },
+        [QOP_PACK_8C_F] = { "pack_8c_f", 1, 1 },
+        [QOP_PACK_8D_F] = { "pack_8d_f", 1, 1 },
         [QOP_TLB_DISCARD_SETUP] = { "discard", 0, 1, true },
         [QOP_TLB_STENCIL_SETUP] = { "tlb_stencil_setup", 0, 1, true },
         [QOP_TLB_Z_WRITE] = { "tlb_z", 0, 1, true },
@@ -96,10 +95,6 @@ static const struct qir_op_info qir_op_info[] = {
         [QOP_TEX_B] = { "tex_b", 0, 2 },
         [QOP_TEX_DIRECT] = { "tex_direct", 0, 2 },
         [QOP_TEX_RESULT] = { "tex_result", 1, 0, true },
-        [QOP_R4_UNPACK_A] = { "r4_unpack_a", 1, 1 },
-        [QOP_R4_UNPACK_B] = { "r4_unpack_b", 1, 1 },
-        [QOP_R4_UNPACK_C] = { "r4_unpack_c", 1, 1 },
-        [QOP_R4_UNPACK_D] = { "r4_unpack_d", 1, 1 },
         [QOP_UNPACK_8A_F] = { "unpack_8a_f", 1, 1 },
         [QOP_UNPACK_8B_F] = { "unpack_8b_f", 1, 1 },
         [QOP_UNPACK_8C_F] = { "unpack_8c_f", 1, 1 },
@@ -152,7 +147,7 @@ qir_has_side_effect_reads(struct vc4_compile *c, struct qinst *inst)
          */
         for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
                 if (inst->src[i].file == QFILE_VARY &&
-                    c->input_semantics[inst->src[i].index].semantic == 0xff) {
+                    c->input_slots[inst->src[i].index].slot == 0xff) {
                         return true;
                 }
 
@@ -170,6 +165,18 @@ bool
 qir_is_multi_instruction(struct qinst *inst)
 {
         return qir_op_info[inst->op].multi_instruction;
+}
+
+bool
+qir_is_mul(struct qinst *inst)
+{
+        switch (inst->op) {
+        case QOP_FMUL:
+        case QOP_MUL24:
+                return true;
+        default:
+                return false;
+        }
 }
 
 bool
@@ -234,20 +241,6 @@ qir_writes_r4(struct qinst *inst)
         }
 }
 
-bool
-qir_reads_r4(struct qinst *inst)
-{
-        switch (inst->op) {
-        case QOP_R4_UNPACK_A:
-        case QOP_R4_UNPACK_B:
-        case QOP_R4_UNPACK_C:
-        case QOP_R4_UNPACK_D:
-                return true;
-        default:
-                return false;
-        }
-}
-
 static void
 qir_print_reg(struct vc4_compile *c, struct qreg reg, bool write)
 {
@@ -291,6 +284,14 @@ qir_dump_inst(struct vc4_compile *c, struct qinst *inst)
                 inst->sf ? ".sf" : "");
 
         qir_print_reg(c, inst->dst, true);
+        if (inst->dst.pack) {
+                if (inst->dst.pack) {
+                        if (qir_is_mul(inst))
+                                vc4_qpu_disasm_pack_mul(stderr, inst->dst.pack);
+                        else
+                                vc4_qpu_disasm_pack_a(stderr, inst->dst.pack);
+                }
+        }
         for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
                 fprintf(stderr, ", ");
                 qir_print_reg(c, inst->src[i], false);
@@ -313,6 +314,7 @@ qir_get_temp(struct vc4_compile *c)
 
         reg.file = QFILE_TEMP;
         reg.index = c->num_temps++;
+        reg.pack = 0;
 
         if (c->num_temps > c->defs_array_size) {
                 uint32_t old_size = c->defs_array_size;
@@ -366,7 +368,7 @@ qir_emit(struct vc4_compile *c, struct qinst *inst)
         if (inst->dst.file == QFILE_TEMP)
                 c->defs[inst->dst.index] = inst;
 
-        list_addtail(&inst->link, &c->instructions);
+        qir_emit_nodef(c, inst);
 }
 
 bool
@@ -407,8 +409,11 @@ qir_remove_instruction(struct vc4_compile *c, struct qinst *qinst)
 struct qreg
 qir_follow_movs(struct vc4_compile *c, struct qreg reg)
 {
-        while (reg.file == QFILE_TEMP && c->defs[reg.index]->op == QOP_MOV)
+        while (reg.file == QFILE_TEMP &&
+               c->defs[reg.index] &&
+               c->defs[reg.index]->op == QOP_MOV) {
                 reg = c->defs[reg.index]->src[0];
+        }
 
         return reg;
 }
