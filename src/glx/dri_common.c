@@ -73,6 +73,10 @@ dri_message(int level, const char *f, ...)
    }
 }
 
+#ifndef GL_LIB_NAME
+#define GL_LIB_NAME "libGL.so.1"
+#endif
+
 #ifndef DEFAULT_DRIVER_DIR
 /* this is normally defined in Mesa/configs/default with DRI_DRIVER_SEARCH_PATH */
 #define DEFAULT_DRIVER_DIR "/usr/local/lib/dri"
@@ -99,7 +103,7 @@ driOpenDriver(const char *driverName)
    int len;
 
    /* Attempt to make sure libGL symbols will be visible to the driver */
-   glhandle = dlopen("libGL.so.1", RTLD_NOW | RTLD_GLOBAL);
+   glhandle = dlopen(GL_LIB_NAME, RTLD_NOW | RTLD_GLOBAL);
 
    libPaths = NULL;
    if (geteuid() == getuid()) {
@@ -157,10 +161,9 @@ driGetDriverExtensions(void *handle, const char *driver_name)
 {
    const __DRIextension **extensions = NULL;
    const __DRIextension **(*get_extensions)(void);
-   char *get_extensions_name;
+   char *get_extensions_name = loader_get_extensions_name(driver_name);
 
-   if (asprintf(&get_extensions_name, "%s_%s",
-                __DRI_DRIVER_GET_EXTENSIONS, driver_name) != -1) {
+   if (get_extensions_name) {
       get_extensions = dlsym(handle, get_extensions_name);
       if (get_extensions) {
          free(get_extensions_name);
@@ -543,9 +546,18 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
       case GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB:
 	 *api = __DRI_API_OPENGL;
 	 break;
-      case GLX_CONTEXT_ES2_PROFILE_BIT_EXT:
-	 *api = __DRI_API_GLES2;
-	 break;
+      case GLX_CONTEXT_ES_PROFILE_BIT_EXT:
+         if (*major_ver >= 3)
+            *api = __DRI_API_GLES3;
+         else if (*major_ver == 2 && *minor_ver == 0)
+            *api = __DRI_API_GLES2;
+         else if (*major_ver == 1 && *minor_ver < 2)
+            *api = __DRI_API_GLES;
+         else {
+            *error = __DRI_CTX_ERROR_BAD_API;
+            return false;
+         }
+         break;
       default:
 	 *error = __DRI_CTX_ERROR_BAD_API;
 	 return false;
@@ -573,19 +585,6 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
 
    if (*major_ver >= 3 && *render_type == GLX_COLOR_INDEX_TYPE) {
       *error = __DRI_CTX_ERROR_BAD_FLAG;
-      return false;
-   }
-
-   /* The GLX_EXT_create_context_es2_profile spec says:
-    *
-    *     "... If the version requested is 2.0, and the
-    *     GLX_CONTEXT_ES2_PROFILE_BIT_EXT bit is set in the
-    *     GLX_CONTEXT_PROFILE_MASK_ARB attribute (see below), then the context
-    *     returned will implement OpenGL ES 2.0. This is the only way in which
-    *     an implementation may request an OpenGL ES 2.0 context."
-    */
-   if (*api == __DRI_API_GLES2 && (*major_ver != 2 || *minor_ver != 0)) {
-      *error = __DRI_CTX_ERROR_BAD_API;
       return false;
    }
 

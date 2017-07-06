@@ -30,19 +30,29 @@ include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := $(C_SOURCES)
 
-LOCAL_SHARED_LIBRARIES := libdrm libdrm_radeon
+LOCAL_CFLAGS += -DFORCE_BUILD_AMDGPU   # instructs LLVM to declare LLVMInitializeAMDGPU* functions
+
+LOCAL_MODULE_CLASS := STATIC_LIBRARIES
+
+LOCAL_C_INCLUDES := \
+	$(MESA_TOP)/src/amd/common \
+	$(call generated-sources-dir-for,STATIC_LIBRARIES,libmesa_amd_common,,)/common
+
+LOCAL_STATIC_LIBRARIES := libmesa_amd_common
+
+LOCAL_SHARED_LIBRARIES := libdrm_radeon libLLVM
 LOCAL_MODULE := libmesa_pipe_radeonsi
 
-# generate sources
-LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-intermediates := $(call local-generated-sources-dir)
-LOCAL_GENERATED_SOURCES := $(addprefix $(intermediates)/, $(GENERATED_SOURCES))
-
-$(LOCAL_GENERATED_SOURCES): PRIVATE_PYTHON := $(MESA_PYTHON2)
-$(LOCAL_GENERATED_SOURCES): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ > $@
-
-$(intermediates)/sid_tables.h:  $(intermediates)/%.h: $(LOCAL_PATH)/%.py $(LOCAL_PATH)/sid.h
-	$(transform-generated-source)
+$(call mesa-build-with-llvm)
 
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
+
+ifneq ($(HAVE_GALLIUM_RADEONSI),)
+$(eval GALLIUM_LIBS += \
+	$(LOCAL_MODULE) \
+	$(LOCAL_STATIC_LIBRARIES) \
+	libmesa_winsys_radeon \
+	libmesa_winsys_amdgpu)
+$(eval GALLIUM_SHARED_LIBS += $(LOCAL_SHARED_LIBRARIES))
+endif

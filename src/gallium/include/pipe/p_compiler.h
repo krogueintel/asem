@@ -48,6 +48,8 @@
 
 #if defined(_MSC_VER)
 
+#include <intrin.h>
+
 /* Avoid 'expression is always true' warning */
 #pragma warning(disable: 4296)
 
@@ -58,9 +60,6 @@
  * Alternative stdint.h and stdbool.h headers are supplied in include/c99 for
  * systems that lack it.
  */
-#ifndef __STDC_LIMIT_MACROS
-#define __STDC_LIMIT_MACROS 1
-#endif
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -94,17 +93,6 @@ typedef unsigned char boolean;
 #endif
 #endif
 
-/* Forced function inlining */
-#ifndef ALWAYS_INLINE
-#  ifdef __GNUC__
-#    define ALWAYS_INLINE inline __attribute__((always_inline))
-#  elif defined(_MSC_VER)
-#    define ALWAYS_INLINE __forceinline
-#  else
-#    define ALWAYS_INLINE inline
-#  endif
-#endif
-
 
 /* XXX: Use standard `__func__` instead */
 #ifndef __FUNCTION__
@@ -132,7 +120,7 @@ typedef unsigned char boolean;
 
 
 /* Macros for data alignment. */
-#if defined(__GNUC__) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590)) || defined(__SUNPRO_CC)
+#if defined(__GNUC__)
 
 /* See http://gcc.gnu.org/onlinedocs/gcc-4.4.2/gcc/Type-Attributes.html */
 #define PIPE_ALIGN_TYPE(_alignment, _type) _type __attribute__((aligned(_alignment)))
@@ -174,13 +162,7 @@ typedef unsigned char boolean;
 
 #elif defined(_MSC_VER)
 
-void _ReadWriteBarrier(void);
-#pragma intrinsic(_ReadWriteBarrier)
 #define PIPE_READ_WRITE_BARRIER() _ReadWriteBarrier()
-
-#elif defined(__SUNPRO_C) || defined(__SUNPRO_CC)
-
-#define PIPE_READ_WRITE_BARRIER() __machine_rw_barrier()
 
 #else
 

@@ -240,7 +240,6 @@ const struct u_resource_vtbl nvc0_miptree_vtbl =
    nvc0_miptree_transfer_map,       /* transfer_map */
    u_default_transfer_flush_region, /* transfer_flush_region */
    nvc0_miptree_transfer_unmap,     /* transfer_unmap */
-   u_default_transfer_inline_write  /* transfer_inline_write */
 };
 
 struct pipe_resource *
@@ -248,9 +247,10 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
                     const struct pipe_resource *templ)
 {
    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
+   struct nouveau_drm *drm = nouveau_screen(pscreen)->drm;
    struct nv50_miptree *mt = CALLOC_STRUCT(nv50_miptree);
    struct pipe_resource *pt = &mt->base.base;
-   bool compressed = dev->drm_version >= 0x01000101;
+   bool compressed = drm->version >= 0x01000101;
    int ret;
    union nouveau_bo_config bo_config;
    uint32_t bo_flags;

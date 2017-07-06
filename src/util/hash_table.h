@@ -64,8 +64,15 @@ _mesa_hash_table_create(void *mem_ctx,
                                                     const void *b));
 void _mesa_hash_table_destroy(struct hash_table *ht,
                               void (*delete_function)(struct hash_entry *entry));
+void _mesa_hash_table_clear(struct hash_table *ht,
+                            void (*delete_function)(struct hash_entry *entry));
 void _mesa_hash_table_set_deleted_key(struct hash_table *ht,
                                       const void *deleted_key);
+
+static inline uint32_t _mesa_hash_table_num_entries(struct hash_table *ht)
+{
+   return ht->entries;
+}
 
 struct hash_entry *
 _mesa_hash_table_insert(struct hash_table *ht, const void *key, void *data);
@@ -98,10 +105,13 @@ static inline uint32_t _mesa_key_hash_string(const void *key)
 
 static inline uint32_t _mesa_hash_pointer(const void *pointer)
 {
-   return _mesa_hash_data(&pointer, sizeof(pointer));
+   uintptr_t num = (uintptr_t) pointer;
+   return (uint32_t) ((num >> 2) ^ (num >> 6) ^ (num >> 10) ^ (num >> 14));
 }
 
-static const uint32_t _mesa_fnv32_1a_offset_bias = 2166136261u;
+enum {
+   _mesa_fnv32_1a_offset_bias = 2166136261u,
+};
 
 static inline uint32_t
 _mesa_fnv32_1a_accumulate_block(uint32_t hash, const void *data, size_t size)
@@ -129,6 +139,44 @@ _mesa_fnv32_1a_accumulate_block(uint32_t hash, const void *data, size_t size)
    for (entry = _mesa_hash_table_next_entry(ht, NULL);  \
         entry != NULL;                                  \
         entry = _mesa_hash_table_next_entry(ht, entry))
+
+static inline void
+hash_table_call_foreach(struct hash_table *ht,
+                        void (*callback)(const void *key,
+                                         void *data,
+                                         void *closure),
+                        void *closure)
+{
+   struct hash_entry *entry;
+
+   hash_table_foreach(ht, entry)
+      callback(entry->key, entry->data, closure);
+}
+
+/**
+ * Hash table wrapper which supports 64-bit keys.
+ */
+struct hash_table_u64 {
+   struct hash_table *table;
+   void *deleted_key_data;
+};
+
+struct hash_table_u64 *
+_mesa_hash_table_u64_create(void *mem_ctx);
+
+void
+_mesa_hash_table_u64_destroy(struct hash_table_u64 *ht,
+                             void (*delete_function)(struct hash_entry *entry));
+
+void
+_mesa_hash_table_u64_insert(struct hash_table_u64 *ht, uint64_t key,
+                            void *data);
+
+void *
+_mesa_hash_table_u64_search(struct hash_table_u64 *ht, uint64_t key);
+
+void
+_mesa_hash_table_u64_remove(struct hash_table_u64 *ht, uint64_t key);
 
 #ifdef __cplusplus
 } /* extern C */

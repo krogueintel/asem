@@ -1,8 +1,10 @@
+#include <strings.h>
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_dynarray.h"
 #include "util/u_debug.h"
+#include "util/u_memory.h"
 
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_parse.h"
@@ -68,9 +70,8 @@ temp(struct nvfx_vpc *vpc)
 {
    int idx = ffs(~vpc->r_temps) - 1;
 
-   if (idx < 0) {
+   if (idx < 0 || (!vpc->is_nv4x && idx >= 16)) {
       NOUVEAU_ERR("out of temps!!\n");
-      assert(0);
       return nvfx_reg(NVFXSR_TEMP, 0);
    }
 
@@ -549,9 +550,6 @@ nvfx_vertprog_parse_instruction(struct nvfx_vpc *vpc,
    }
 
    switch (finst->Instruction.Opcode) {
-   case TGSI_OPCODE_ABS:
-      nvfx_vp_emit(vpc, arith(sat, VEC, MOV, dst, mask, abs(src[0]), none, none));
-      break;
    case TGSI_OPCODE_ADD:
       nvfx_vp_emit(vpc, arith(sat, VEC, ADD, dst, mask, src[0], none, src[1]));
       break;
@@ -674,9 +672,6 @@ nvfx_vertprog_parse_instruction(struct nvfx_vpc *vpc,
       break;
    case TGSI_OPCODE_SSG:
       nvfx_vp_emit(vpc, arith(sat, VEC, SSG, dst, mask, src[0], none, none));
-      break;
-   case TGSI_OPCODE_SUB:
-      nvfx_vp_emit(vpc, arith(sat, VEC, ADD, dst, mask, src[0], none, neg(src[1])));
       break;
    case TGSI_OPCODE_TRUNC:
       tmp = nvfx_src(temp(vpc));
@@ -1003,7 +998,7 @@ _nvfx_vertprog_translate(uint16_t oclass, struct nv30_vertprog *vp)
       vpc->cvtx_idx = vpc->hpos_idx;
    }
 
-   util_dynarray_init(&insns);
+   util_dynarray_init(&insns, NULL);
 
    tgsi_parse_init(&parse, vp->pipe.tokens);
    while (!tgsi_parse_end_of_tokens(&parse)) {
@@ -1112,7 +1107,7 @@ _nvfx_vertprog_translate(uint16_t oclass, struct nv30_vertprog *vp)
 
 out:
    tgsi_parse_free(&parse);
-   if(vpc) {
+   if (vpc) {
       util_dynarray_fini(&vpc->label_relocs);
       util_dynarray_fini(&vpc->loop_stack);
       FREE(vpc->r_temp);

@@ -61,10 +61,10 @@ struct vc4_format {
 };
 
 #define SWIZ(x,y,z,w) {          \
-        UTIL_FORMAT_SWIZZLE_##x, \
-        UTIL_FORMAT_SWIZZLE_##y, \
-        UTIL_FORMAT_SWIZZLE_##z, \
-        UTIL_FORMAT_SWIZZLE_##w  \
+        PIPE_SWIZZLE_##x, \
+        PIPE_SWIZZLE_##y, \
+        PIPE_SWIZZLE_##z, \
+        PIPE_SWIZZLE_##w  \
 }
 
 #define FORMAT(pipe, rt, tex, swiz)                                     \
@@ -82,6 +82,8 @@ static const struct vc4_format vc4_format_table[] = {
         FORMAT(B8G8R8X8_SRGB, RGBA8888, RGBA8888, SWIZ(Z, Y, X, 1)),
 
         FORMAT(B5G6R5_UNORM, RGB565, RGB565, SWIZ(X, Y, Z, 1)),
+
+        FORMAT(ETC1_RGB8, NO, ETC1, SWIZ(X, Y, Z, 1)),
 
         /* Depth sampling will be handled by doing nearest filtering and not
          * unpacking the RGBA value.

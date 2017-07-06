@@ -38,55 +38,16 @@
 #include "c99_compat.h"
 
 
-#if defined(_MSC_VER)
-
 /* This is to ensure that we get M_PI, etc. definitions */
-#if !defined(_USE_MATH_DEFINES)
+#if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
 #error _USE_MATH_DEFINES define required when building with MSVC
 #endif 
 
-#if _MSC_VER < 1800
-#define isfinite(x) _finite((double)(x))
-#define isnan(x) _isnan((double)(x))
-#endif /* _MSC_VER < 1800 */
 
-#if _MSC_VER < 1800
-static inline double log2( double x )
-{
-   const double invln2 = 1.442695041;
-   return log( x ) * invln2;
-}
-
-static inline double
-round(double x)
-{
-   return x >= 0.0 ? floor(x + 0.5) : ceil(x - 0.5);
-}
-
-static inline float
-roundf(float x)
-{
-   return x >= 0.0f ? floorf(x + 0.5f) : ceilf(x - 0.5f);
-}
-#endif
-
-#ifndef INFINITY
-#include <float.h> // DBL_MAX
-#define INFINITY (DBL_MAX + DBL_MAX)
-#endif
-
-#ifndef NAN
-#define NAN (INFINITY - INFINITY)
-#endif
-
-#endif /* _MSC_VER */
-
-
-#if (defined(_MSC_VER) && _MSC_VER < 1800) || \
-    (!defined(_MSC_VER) && \
-     __STDC_VERSION__ < 199901L && \
-     (!defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 600) && \
-     !defined(__cplusplus))
+#if !defined(_MSC_VER) && \
+    __STDC_VERSION__ < 199901L && \
+    (!defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 600) && \
+    !defined(__cplusplus)
 
 static inline long int
 lrint(double d)
@@ -221,6 +182,29 @@ fpclassify(double x)
 }
 #else
 #error "Need to include or define an fpclassify function"
+#endif
+
+
+/* Since C++11, the following functions are part of the std namespace. Their C
+ * counteparts should still exist in the global namespace, however cmath
+ * undefines those functions, which in glibc 2.23, are defined as macros rather
+ * than functions as in glibc 2.22.
+ */
+#if __cplusplus >= 201103L && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 23))
+#include <cmath>
+
+using std::fpclassify;
+using std::isfinite;
+using std::isinf;
+using std::isnan;
+using std::isnormal;
+using std::signbit;
+using std::isgreater;
+using std::isgreaterequal;
+using std::isless;
+using std::islessequal;
+using std::islessgreater;
+using std::isunordered;
 #endif
 
 

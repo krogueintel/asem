@@ -38,13 +38,13 @@
 #include "vl/vl_video_buffer.h"
 
 /* UVD uses PM4 packet type 0 and 2 */
-#define RUVD_PKT_TYPE_S(x)		(((x) & 0x3) << 30)
+#define RUVD_PKT_TYPE_S(x)		(((unsigned)(x) & 0x3) << 30)
 #define RUVD_PKT_TYPE_G(x)		(((x) >> 30) & 0x3)
 #define RUVD_PKT_TYPE_C			0x3FFFFFFF
-#define RUVD_PKT_COUNT_S(x)		(((x) & 0x3FFF) << 16)
+#define RUVD_PKT_COUNT_S(x)		(((unsigned)(x) & 0x3FFF) << 16)
 #define RUVD_PKT_COUNT_G(x)		(((x) >> 16) & 0x3FFF)
 #define RUVD_PKT_COUNT_C		0xC000FFFF
-#define RUVD_PKT0_BASE_INDEX_S(x)	(((x) & 0xFFFF) << 0)
+#define RUVD_PKT0_BASE_INDEX_S(x)	(((unsigned)(x) & 0xFFFF) << 0)
 #define RUVD_PKT0_BASE_INDEX_G(x)	(((x) >> 0) & 0xFFFF)
 #define RUVD_PKT0_BASE_INDEX_C		0xFFFF0000
 #define RUVD_PKT0(index, count)		(RUVD_PKT_TYPE_S(0) | RUVD_PKT0_BASE_INDEX_S(index) | RUVD_PKT_COUNT_S(count))
@@ -56,11 +56,17 @@
 #define RUVD_GPCOM_VCPU_DATA1		0xEF14
 #define RUVD_ENGINE_CNTL		0xEF18
 
+#define RUVD_GPCOM_VCPU_CMD_SOC15		0x2070c
+#define RUVD_GPCOM_VCPU_DATA0_SOC15		0x20710
+#define RUVD_GPCOM_VCPU_DATA1_SOC15		0x20714
+#define RUVD_ENGINE_CNTL_SOC15			0x20718
+
 /* UVD commands to VCPU */
 #define RUVD_CMD_MSG_BUFFER		0x00000000
 #define RUVD_CMD_DPB_BUFFER		0x00000001
 #define RUVD_CMD_DECODING_TARGET_BUFFER	0x00000002
 #define RUVD_CMD_FEEDBACK_BUFFER	0x00000003
+#define RUVD_CMD_SESSION_CONTEXT_BUFFER	0x00000005
 #define RUVD_CMD_BITSTREAM_BUFFER	0x00000100
 #define RUVD_CMD_ITSCALING_TABLE_BUFFER	0x00000204
 #define RUVD_CMD_CONTEXT_BUFFER		0x00000206
@@ -109,6 +115,11 @@
 #define RUVD_VC1_PROFILE_SIMPLE		0x00000000
 #define RUVD_VC1_PROFILE_MAIN		0x00000001
 #define RUVD_VC1_PROFILE_ADVANCED	0x00000002
+
+enum ruvd_surface_type {
+	RUVD_SURFACE_TYPE_LEGACY = 0,
+	RUVD_SURFACE_TYPE_GFX9
+};
 
 struct ruvd_mvc_element {
 	uint16_t	viewOrderIndex;
@@ -233,6 +244,15 @@ struct ruvd_h265 {
 
 	uint8_t		highestTid;
 	uint8_t		isNonRef;
+
+	uint8_t 	p010_mode;
+	uint8_t 	msb_mode;
+	uint8_t 	luma_10to8;
+	uint8_t 	chroma_10to8;
+	uint8_t 	sclr_luma10to8;
+	uint8_t 	sclr_chroma10to8;
+
+	uint8_t 	direct_reflist[2][15];
 };
 
 struct ruvd_vc1 {
@@ -385,7 +405,10 @@ struct ruvd_msg {
 			uint32_t	dt_chroma_top_offset;
 			uint32_t	dt_chroma_bottom_offset;
 			uint32_t	dt_surf_tile_config;
-			uint32_t	dt_reserved[3];
+			uint32_t	dt_uv_surf_tile_config;
+			// re-use dt_wa_chroma_top_offset as dt_ext_info for UV pitch in stoney
+			uint32_t	dt_wa_chroma_top_offset;
+			uint32_t	dt_wa_chroma_bottom_offset;
 
 			uint32_t	reserved[16];
 
@@ -409,7 +432,7 @@ struct ruvd_msg {
 };
 
 /* driver dependent callback */
-typedef struct radeon_winsys_cs_handle* (*ruvd_set_dtb)
+typedef struct pb_buffer* (*ruvd_set_dtb)
 (struct ruvd_msg* msg, struct vl_video_buffer *vb);
 
 /* create an UVD decode */
@@ -419,5 +442,5 @@ struct pipe_video_codec *ruvd_create_decoder(struct pipe_context *context,
 
 /* fill decoding target field from the luma and chroma surfaces */
 void ruvd_set_dt_surfaces(struct ruvd_msg *msg, struct radeon_surf *luma,
-			  struct radeon_surf *chroma);
+			struct radeon_surf *chroma, enum ruvd_surface_type type);
 #endif

@@ -21,7 +21,7 @@
 
 SUBDIRS = . main/tests
 
-if HAVE_X11_DRIVER
+if HAVE_XLIB_GLX
 SUBDIRS += drivers/x11
 endif
 
@@ -33,35 +33,11 @@ if HAVE_OSMESA
 SUBDIRS += drivers/osmesa
 endif
 
-gldir = $(includedir)/GL
-gl_HEADERS = $(top_srcdir)/include/GL/*.h
-
-.PHONY: main/git_sha1.h.tmp
-main/git_sha1.h.tmp:
-	@# Don't assume that $(top_srcdir)/.git is a directory. It may be
-	@# a gitlink file if $(top_srcdir) is a submodule checkout or a linked
-	@# worktree.
-	@touch main/git_sha1.h.tmp
-	@if test -e $(top_srcdir)/.git; then \
-		if which git > /dev/null; then \
-		    git --git-dir=$(top_srcdir)/.git log -n 1 --oneline | \
-			sed 's/^\([^ ]*\) .*/#define MESA_GIT_SHA1 "git-\1"/' \
-			> main/git_sha1.h.tmp ; \
-		fi \
-	fi
-
-main/git_sha1.h: main/git_sha1.h.tmp
-	@echo "updating main/git_sha1.h"
-	@if ! cmp -s main/git_sha1.h.tmp main/git_sha1.h; then \
-		mv main/git_sha1.h.tmp main/git_sha1.h ;\
-	else \
-		rm main/git_sha1.h.tmp ;\
-	fi
-
 include Makefile.sources
 
 EXTRA_DIST = \
 	drivers/SConscript \
+	main/format_fallback.py \
 	main/format_info.py \
 	main/format_pack.py \
 	main/format_parser.py \
@@ -79,16 +55,15 @@ EXTRA_DIST = \
 
 BUILT_SOURCES = \
 	main/get_hash.h \
+	main/format_fallback.c \
 	main/format_info.h \
-	main/git_sha1.h \
 	main/format_pack.c \
 	main/format_unpack.c \
 	program/program_parse.tab.c \
 	program/lex.yy.c
 CLEANFILES = \
 	$(BUILT_SOURCES) \
-	program/program_parse.tab.h \
-	main/git_sha1.h.tmp
+	program/program_parse.tab.h
 
 PYTHON_GEN = $(AM_V_GEN)$(PYTHON2) $(PYTHON_FLAGS)
 
@@ -96,6 +71,11 @@ main/get_hash.h: ../mapi/glapi/gen/gl_and_es_API.xml main/get_hash_params.py \
                  main/get_hash_generator.py
 	$(PYTHON_GEN) $(srcdir)/main/get_hash_generator.py \
 		-f $(srcdir)/../mapi/glapi/gen/gl_and_es_API.xml > $@
+
+main/format_fallback.c: main/format_fallback.py \
+                        main/format_parser.py \
+	                main/formats.csv
+	$(PYTHON_GEN) $(srcdir)/main/format_fallback.py $(srcdir)/main/formats.csv $@
 
 main/format_info.h: main/formats.csv \
                     main/format_parser.py main/format_info.py
@@ -123,6 +103,7 @@ endif
 
 AM_CPPFLAGS = $(DEFINES) $(INCLUDE_DIRS)
 AM_CFLAGS = \
+	$(VDPAU_CFLAGS) \
 	$(LLVM_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
 	$(MSVC2013_COMPAT_CFLAGS)
@@ -165,7 +146,7 @@ libmesa_la_SOURCES = \
 	$(MESA_ASM_FILES_FOR_ARCH)
 
 libmesa_la_LIBADD = \
-	$(top_builddir)/src/glsl/libglsl.la \
+	$(top_builddir)/src/compiler/glsl/libglsl.la \
 	$(ARCH_LIBS)
 
 libmesagallium_la_SOURCES = \
@@ -175,18 +156,13 @@ libmesagallium_la_SOURCES = \
 	$(MESA_ASM_FILES_FOR_ARCH)
 
 libmesagallium_la_LIBADD = \
-	$(top_builddir)/src/glsl/libglsl.la \
+	$(top_builddir)/src/compiler/glsl/libglsl.la \
 	$(ARCH_LIBS)
 
 libmesa_sse41_la_SOURCES = \
-	main/streaming-load-memcpy.c \
-	main/streaming-load-memcpy.h \
-	main/sse_minmax.c \
-	main/sse_minmax.h
-libmesa_sse41_la_CFLAGS = $(AM_CFLAGS) $(SSE41_CFLAGS)
+	$(X86_SSE41_FILES)
 
-pkgconfigdir = $(libdir)/pkgconfig
-pkgconfig_DATA = gl.pc
+libmesa_sse41_la_CFLAGS = $(AM_CFLAGS) $(SSE41_CFLAGS)
 
 MKDIR_GEN = $(AM_V_at)$(MKDIR_P) $(@D)
 YACC_GEN = $(AM_V_GEN)$(YACC) $(YFLAGS)

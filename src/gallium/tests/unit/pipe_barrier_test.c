@@ -35,52 +35,96 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "os/os_thread.h"
 #include "os/os_time.h"
+#include "util/u_atomic.h"
 
 
 #define NUM_THREADS 10
 
-static pipe_thread threads[NUM_THREADS];
+static int verbosity = 0;
+
+static thrd_t threads[NUM_THREADS];
 static pipe_barrier barrier;
 static int thread_ids[NUM_THREADS];
 
+static volatile int waiting = 0;
+static volatile int proceeded = 0;
 
-static PIPE_THREAD_ROUTINE(thread_function, thread_data)
+
+#define LOG(fmt, ...) \
+   if (verbosity > 0) { \
+      fprintf(stdout, fmt, ##__VA_ARGS__); \
+   }
+
+#define CHECK(_cond) \
+   if (!(_cond)) { \
+      fprintf(stderr, "%s:%u: `%s` failed\n", __FILE__, __LINE__, #_cond); \
+      _exit(EXIT_FAILURE); \
+   }
+
+
+static int
+thread_function(void *thread_data)
 {
    int thread_id = *((int *) thread_data);
 
-   printf("thread %d starting\n", thread_id);
-   os_time_sleep(thread_id * 1000 * 1000);
-   printf("thread %d before barrier\n", thread_id);
+   LOG("thread %d starting\n", thread_id);
+   os_time_sleep(thread_id * 100 * 1000);
+   LOG("thread %d before barrier\n", thread_id);
+
+   CHECK(p_atomic_read(&proceeded) == 0);
+   p_atomic_inc(&waiting);
+
    pipe_barrier_wait(&barrier);
-   printf("thread %d exiting\n", thread_id);
+
+   CHECK(p_atomic_read(&waiting) == NUM_THREADS);
+
+   p_atomic_inc(&proceeded);
+
+   LOG("thread %d exiting\n", thread_id);
 
    return 0;
 }
 
 
-int main()
+int main(int argc, char *argv[])
 {
    int i;
 
-   printf("pipe_barrier_test starting\n");
+   for (i = 1; i < argc; ++i) {
+      const char *arg = argv[i];
+      if (strcmp(arg, "-v") == 0) {
+         ++verbosity;
+      } else {
+         fprintf(stderr, "error: unrecognized option `%s`\n", arg);
+         exit(EXIT_FAILURE);
+      }
+   }
+
+   // Disable buffering
+   setbuf(stdout, NULL);
+
+   LOG("pipe_barrier_test starting\n");
 
    pipe_barrier_init(&barrier, NUM_THREADS);
 
    for (i = 0; i < NUM_THREADS; i++) {
       thread_ids[i] = i;
-      threads[i] = pipe_thread_create(thread_function, (void *) &thread_ids[i]);
+      threads[i] = u_thread_create(thread_function, (void *) &thread_ids[i]);
    }
 
    for (i = 0; i < NUM_THREADS; i++ ) {
-      pipe_thread_wait(threads[i]);
+      thrd_join(threads[i], NULL);
    }
+
+   CHECK(p_atomic_read(&proceeded) == NUM_THREADS);
 
    pipe_barrier_destroy(&barrier);
 
-   printf("pipe_barrier_test exiting\n");
+   LOG("pipe_barrier_test exiting\n");
 
    return 0;
 }

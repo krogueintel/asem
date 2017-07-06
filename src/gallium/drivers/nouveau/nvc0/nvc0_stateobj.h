@@ -17,13 +17,13 @@
 struct nvc0_blend_stateobj {
    struct pipe_blend_state pipe;
    int size;
-   uint32_t state[70];
+   uint32_t state[72];
 };
 
 struct nvc0_rasterizer_stateobj {
    struct pipe_rasterizer_state pipe;
    int size;
-   uint32_t state[44];
+   uint32_t state[43];
 };
 
 struct nvc0_zsa_stateobj {
@@ -59,6 +59,12 @@ struct nvc0_vertex_stateobj {
    bool need_conversion; /* e.g. VFETCH cannot convert f64 to f32 */
    unsigned size; /* size of vertex in bytes (when packed) */
    struct nvc0_vertex_element element[0];
+};
+
+struct nvc0_window_rect_stateobj {
+   bool inclusive;
+   unsigned rects;
+   struct pipe_scissor_state rect[PIPE_MAX_WINDOW_RECTANGLES];
 };
 
 struct nvc0_so_target {

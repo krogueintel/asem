@@ -163,7 +163,7 @@ nouveau_transfer_staging(struct nouveau_context *nv,
    return tx->map;
 }
 
-/* Copies data from the resource into the the transfer's temporary GART
+/* Copies data from the resource into the transfer's temporary GART
  * buffer. Also updates buf->data if present.
  *
  * Maybe just migrate to GART right away if we actually need to do this. */
@@ -225,21 +225,22 @@ nouveau_transfer_write(struct nouveau_context *nv, struct nouveau_transfer *tx,
  * for write/read by waiting on the buffer's relevant fences.
  */
 static inline bool
-nouveau_buffer_sync(struct nv04_resource *buf, unsigned rw)
+nouveau_buffer_sync(struct nouveau_context *nv,
+                    struct nv04_resource *buf, unsigned rw)
 {
    if (rw == PIPE_TRANSFER_READ) {
       if (!buf->fence_wr)
          return true;
       NOUVEAU_DRV_STAT_RES(buf, buf_non_kernel_fence_sync_count,
                            !nouveau_fence_signalled(buf->fence_wr));
-      if (!nouveau_fence_wait(buf->fence_wr))
+      if (!nouveau_fence_wait(buf->fence_wr, &nv->debug))
          return false;
    } else {
       if (!buf->fence)
          return true;
       NOUVEAU_DRV_STAT_RES(buf, buf_non_kernel_fence_sync_count,
                            !nouveau_fence_signalled(buf->fence));
-      if (!nouveau_fence_wait(buf->fence))
+      if (!nouveau_fence_wait(buf->fence, &nv->debug))
          return false;
 
       nouveau_fence_ref(NULL, &buf->fence);
@@ -405,9 +406,6 @@ nouveau_buffer_transfer_map(struct pipe_context *pipe,
        !util_ranges_intersect(&buf->valid_buffer_range, box->x, box->x + box->width))
       usage |= PIPE_TRANSFER_DISCARD_RANGE | PIPE_TRANSFER_UNSYNCHRONIZED;
 
-   if (usage & PIPE_TRANSFER_PERSISTENT)
-      usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
-
    if (buf->domain == NOUVEAU_BO_VRAM) {
       if (usage & NOUVEAU_TRANSFER_DISCARD) {
          /* Set up a staging area for the user to write to. It will be copied
@@ -475,10 +473,11 @@ nouveau_buffer_transfer_map(struct pipe_context *pipe,
     * complete its operation, or set up a staging area to perform our work in.
     */
    if (nouveau_buffer_busy(buf, usage & PIPE_TRANSFER_READ_WRITE)) {
-      if (unlikely(usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE)) {
+      if (unlikely(usage & (PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE |
+                            PIPE_TRANSFER_PERSISTENT))) {
          /* Discarding was not possible, must sync because
           * subsequent transfers might use UNSYNCHRONIZED. */
-         nouveau_buffer_sync(buf, usage & PIPE_TRANSFER_READ_WRITE);
+         nouveau_buffer_sync(nv, buf, usage & PIPE_TRANSFER_READ_WRITE);
       } else
       if (usage & PIPE_TRANSFER_DISCARD_RANGE) {
          /* The whole range is being discarded, so it doesn't matter what was
@@ -490,7 +489,7 @@ nouveau_buffer_transfer_map(struct pipe_context *pipe,
          if (usage & PIPE_TRANSFER_DONTBLOCK)
             map = NULL;
          else
-            nouveau_buffer_sync(buf, usage & PIPE_TRANSFER_READ_WRITE);
+            nouveau_buffer_sync(nv, buf, usage & PIPE_TRANSFER_READ_WRITE);
       } else {
          /* It is expected that the returned buffer be a representation of the
           * data in question, so we must copy it over from the buffer. */
@@ -615,7 +614,7 @@ nouveau_resource_map_offset(struct nouveau_context *nv,
    if (res->mm) {
       unsigned rw;
       rw = (flags & NOUVEAU_BO_WR) ? PIPE_TRANSFER_WRITE : PIPE_TRANSFER_READ;
-      nouveau_buffer_sync(res, rw);
+      nouveau_buffer_sync(nv, res, rw);
       if (nouveau_bo_map(res->bo, 0, NULL))
          return NULL;
    } else {
@@ -633,7 +632,6 @@ const struct u_resource_vtbl nouveau_buffer_vtbl =
    nouveau_buffer_transfer_map,          /* transfer_map */
    nouveau_buffer_transfer_flush_region, /* transfer_flush_region */
    nouveau_buffer_transfer_unmap,        /* transfer_unmap */
-   u_default_transfer_inline_write    /* transfer_inline_write */
 };
 
 struct pipe_resource *
@@ -656,8 +654,8 @@ nouveau_buffer_create(struct pipe_screen *pscreen,
    if (buffer->base.flags & (PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
                              PIPE_RESOURCE_FLAG_MAP_COHERENT)) {
       buffer->domain = NOUVEAU_BO_GART;
-   } else if (buffer->base.bind &
-              (screen->vidmem_bindings & screen->sysmem_bindings)) {
+   } else if (buffer->base.bind == 0 || (buffer->base.bind &
+              (screen->vidmem_bindings & screen->sysmem_bindings))) {
       switch (buffer->base.usage) {
       case PIPE_USAGE_DEFAULT:
       case PIPE_USAGE_IMMUTABLE:
@@ -684,6 +682,7 @@ nouveau_buffer_create(struct pipe_screen *pscreen,
       if (buffer->base.bind & screen->sysmem_bindings)
          buffer->domain = NOUVEAU_BO_GART;
    }
+
    ret = nouveau_buffer_allocate(screen, buffer, buffer->domain);
 
    if (ret == false)
@@ -836,6 +835,39 @@ nouveau_user_buffer_upload(struct nouveau_context *nv,
    memcpy((uint8_t *)buf->bo->map + buf->offset + base, buf->data + base, size);
 
    return true;
+}
+
+/* Invalidate underlying buffer storage, reset fences, reallocate to non-busy
+ * buffer.
+ */
+void
+nouveau_buffer_invalidate(struct pipe_context *pipe,
+                          struct pipe_resource *resource)
+{
+   struct nouveau_context *nv = nouveau_context(pipe);
+   struct nv04_resource *buf = nv04_resource(resource);
+   int ref = buf->base.reference.count - 1;
+
+   /* Shared buffers shouldn't get reallocated */
+   if (unlikely(buf->base.bind & PIPE_BIND_SHARED))
+      return;
+
+   /* We can't touch persistent/coherent buffers */
+   if (buf->base.flags & (PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
+                          PIPE_RESOURCE_FLAG_MAP_COHERENT))
+      return;
+
+   /* If the buffer is sub-allocated and not currently being written, just
+    * wipe the valid buffer range. Otherwise we have to create fresh
+    * storage. (We don't keep track of fences for non-sub-allocated BO's.)
+    */
+   if (buf->mm && !nouveau_buffer_busy(buf, PIPE_TRANSFER_WRITE)) {
+      util_range_set_empty(&buf->valid_buffer_range);
+   } else {
+      nouveau_buffer_reallocate(nv->screen, buf, buf->domain);
+      if (ref > 0) /* any references inside context possible ? */
+         nv->invalidate_resource_storage(nv, &buf->base, ref);
+   }
 }
 
 

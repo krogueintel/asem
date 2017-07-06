@@ -33,6 +33,7 @@
 #include "util/u_range.h"
 #include "util/u_transfer.h"
 
+#include "freedreno_batch.h"
 #include "freedreno_util.h"
 
 /* Texture Layout on a3xx:
@@ -60,23 +61,16 @@ struct fd_resource_slice {
 	uint32_t size0;          /* size of first layer in slice */
 };
 
-/* status of queued up but not flushed reads and write operations.
- * In _transfer_map() we need to know if queued up rendering needs
- * to be flushed to preserve the order of cpu and gpu access.
- */
-enum fd_resource_status {
-	FD_PENDING_WRITE = 0x01,
-	FD_PENDING_READ  = 0x02,
-};
+struct set;
 
 struct fd_resource {
 	struct u_resource base;
 	struct fd_bo *bo;
 	uint32_t cpp;
+	enum pipe_format internal_format;
 	bool layer_first;        /* see above description */
 	uint32_t layer_size;
 	struct fd_resource_slice slices[MAX_MIP_LEVELS];
-	uint32_t timestamp;
 	/* buffer range that has been initialized */
 	struct util_range valid_buffer_range;
 
@@ -84,19 +78,55 @@ struct fd_resource {
 	/* TODO rename to secondary or auxiliary? */
 	struct fd_resource *stencil;
 
-	/* pending read/write state: */
-	enum fd_resource_status status;
-	/* resources accessed by queued but not flushed draws are tracked
-	 * in the used_resources list.
+	/* bitmask of in-flight batches which reference this resource.  Note
+	 * that the batch doesn't hold reference to resources (but instead
+	 * the fd_ringbuffer holds refs to the underlying fd_bo), but in case
+	 * the resource is destroyed we need to clean up the batch's weak
+	 * references to us.
 	 */
-	struct list_head list;
-	struct fd_context *pending_ctx;
+	uint32_t batch_mask;
+
+	/* reference to batch that writes this resource: */
+	struct fd_batch *write_batch;
+
+	/* Set of batches whose batch-cache key references this resource.
+	 * We need to track this to know which batch-cache entries to
+	 * invalidate if, for example, the resource is invalidated or
+	 * shadowed.
+	 */
+	uint32_t bc_batch_mask;
+
+	/*
+	 * LRZ
+	 */
+	bool lrz_valid : 1;
+	uint16_t lrz_width;  // for lrz clear, does this differ from lrz_pitch?
+	uint16_t lrz_height;
+	uint16_t lrz_pitch;
+	struct fd_bo *lrz;
 };
 
 static inline struct fd_resource *
 fd_resource(struct pipe_resource *ptex)
 {
 	return (struct fd_resource *)ptex;
+}
+
+static inline bool
+pending(struct fd_resource *rsc, bool write)
+{
+	/* if we have a pending GPU write, we are busy in any case: */
+	if (rsc->write_batch)
+		return true;
+
+	/* if CPU wants to write, but we are pending a GPU read, we are busy: */
+	if (write && rsc->batch_mask)
+		return true;
+
+	if (rsc->stencil && pending(rsc->stencil, write))
+		return true;
+
+	return false;
 }
 
 struct fd_transfer {
@@ -132,7 +162,15 @@ fd_resource_offset(struct fd_resource *rsc, unsigned level, unsigned layer)
 	return offset;
 }
 
+void fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard,
+		enum fd_render_stage stage);
+void fd_blitter_pipe_end(struct fd_context *ctx);
+
 void fd_resource_screen_init(struct pipe_screen *pscreen);
 void fd_resource_context_init(struct pipe_context *pctx);
+
+void fd_resource_resize(struct pipe_resource *prsc, uint32_t sz);
+
+bool fd_render_condition_check(struct pipe_context *pctx);
 
 #endif /* FREEDRENO_RESOURCE_H_ */

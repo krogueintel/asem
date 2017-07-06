@@ -62,6 +62,10 @@ C_SOURCES := \
 	hud/hud_context.c \
 	hud/hud_context.h \
 	hud/hud_cpu.c \
+	hud/hud_nic.c \
+	hud/hud_cpufreq.c \
+	hud/hud_diskstat.c \
+	hud/hud_sensors_temp.c \
 	hud/hud_driver_query.c \
 	hud/hud_fps.c \
 	hud/hud_private.h \
@@ -93,6 +97,10 @@ C_SOURCES := \
 	pipebuffer/pb_bufmgr_ondemand.c \
 	pipebuffer/pb_bufmgr_pool.c \
 	pipebuffer/pb_bufmgr_slab.c \
+	pipebuffer/pb_cache.c \
+	pipebuffer/pb_cache.h \
+	pipebuffer/pb_slab.c \
+	pipebuffer/pb_slab.h \
 	pipebuffer/pb_validate.c \
 	pipebuffer/pb_validate.h \
 	postprocess/filters.h \
@@ -137,6 +145,8 @@ C_SOURCES := \
 	tgsi/tgsi_dump.h \
 	tgsi/tgsi_exec.c \
 	tgsi/tgsi_exec.h \
+	tgsi/tgsi_emulate.c \
+	tgsi/tgsi_emulate.h \
 	tgsi/tgsi_info.c \
 	tgsi/tgsi_info.h \
 	tgsi/tgsi_iterate.c \
@@ -171,6 +181,7 @@ C_SOURCES := \
 	translate/translate_generic.c \
 	translate/translate_sse.c \
 	util/dbghelp.h \
+	util/u_bitcast.h \
 	util/u_bitmask.c \
 	util/u_bitmask.h \
 	util/u_blend.h \
@@ -181,17 +192,16 @@ C_SOURCES := \
 	util/u_box.h \
 	util/u_cache.c \
 	util/u_cache.h \
-	util/u_caps.c \
-	util/u_caps.h \
-	util/u_clear.h \
 	util/u_cpu_detect.c \
 	util/u_cpu_detect.h \
 	util/u_debug.c \
+	util/u_debug.h \
 	util/u_debug_describe.c \
 	util/u_debug_describe.h \
 	util/u_debug_flush.c \
 	util/u_debug_flush.h \
-	util/u_debug.h \
+	util/u_debug_image.c \
+	util/u_debug_image.h \
 	util/u_debug_memory.c \
 	util/u_debug_refcnt.c \
 	util/u_debug_refcnt.h \
@@ -211,20 +221,15 @@ C_SOURCES := \
 	util/u_dump_defines.c \
 	util/u_dump.h \
 	util/u_dump_state.c \
-	util/u_dynarray.h \
 	util/u_fifo.h \
 	util/u_format.c \
 	util/u_format.h \
 	util/u_format_etc.c \
 	util/u_format_etc.h \
-	util/u_format_fake.c \
-	util/u_format_fake.h \
 	util/u_format_latc.c \
 	util/u_format_latc.h \
 	util/u_format_other.c \
 	util/u_format_other.h \
-	util/u_format_r11g11b10f.h \
-	util/u_format_rgb9e5.h \
 	util/u_format_rgtc.c \
 	util/u_format_rgtc.h \
 	util/u_format_s3tc.c \
@@ -242,15 +247,12 @@ C_SOURCES := \
 	util/u_half.h \
 	util/u_handle_table.c \
 	util/u_handle_table.h \
-	util/u_hash.c \
-	util/u_hash.h \
 	util/u_hash_table.c \
 	util/u_hash_table.h \
 	util/u_helpers.c \
 	util/u_helpers.h \
 	util/u_index_modify.c \
 	util/u_index_modify.h \
-	util/u_init.h \
 	util/u_inlines.h \
 	util/u_keymap.c \
 	util/u_keymap.h \
@@ -270,6 +272,7 @@ C_SOURCES := \
 	util/u_prim_restart.h \
 	util/u_pstipple.c \
 	util/u_pstipple.h \
+	util/u_pwr8.h \
 	util/u_range.h \
 	util/u_rect.h \
 	util/u_resource.c \
@@ -280,13 +283,8 @@ C_SOURCES := \
 	util/u_sampler.h \
 	util/u_simple_shaders.c \
 	util/u_simple_shaders.h \
-	util/u_slab.c \
-	util/u_slab.h \
 	util/u_split_prim.h \
 	util/u_sse.h \
-	util/u_staging.c \
-	util/u_staging.h \
-	util/u_string.h \
 	util/u_suballoc.c \
 	util/u_suballoc.h \
 	util/u_surface.c \
@@ -302,17 +300,23 @@ C_SOURCES := \
 	util/u_time.h \
 	util/u_transfer.c \
 	util/u_transfer.h \
+	util/u_threaded_context.c \
+	util/u_threaded_context.h \
+	util/u_threaded_context_calls.h \
 	util/u_upload_mgr.c \
 	util/u_upload_mgr.h \
 	util/u_vbuf.c \
 	util/u_vbuf.h \
-	util/u_video.h
+	util/u_video.h \
+	util/u_viewport.h
 
 NIR_SOURCES := \
 	nir/tgsi_to_nir.c \
 	nir/tgsi_to_nir.h
 
 VL_SOURCES := \
+	vl/vl_bicubic_filter.c \
+	vl/vl_bicubic_filter.h \
 	vl/vl_compositor.c \
 	vl/vl_compositor.h \
 	vl/vl_csc.c \
@@ -341,13 +345,21 @@ VL_SOURCES := \
 	vl/vl_video_buffer.c \
 	vl/vl_video_buffer.h \
 	vl/vl_vlc.h \
-	vl/vl_winsys.h \
 	vl/vl_zscan.c \
 	vl/vl_zscan.h
 
 # XXX: Nuke this as our dri targets no longer depend on VL.
 VL_WINSYS_SOURCES := \
+	vl/vl_winsys.h
+
+VL_WINSYS_DRI2_SOURCES := \
 	vl/vl_winsys_dri.c
+
+VL_WINSYS_DRI3_SOURCES := \
+	vl/vl_winsys_dri3.c
+
+VL_WINSYS_DRM_SOURCES := \
+	vl/vl_winsys_drm.c
 
 VL_STUB_SOURCES := \
 	vl/vl_stubs.c
@@ -376,7 +388,9 @@ GALLIVM_SOURCES := \
 	gallivm/lp_bld_flow.h \
 	gallivm/lp_bld_format_aos_array.c \
 	gallivm/lp_bld_format_aos.c \
+	gallivm/lp_bld_format_cached.c \
 	gallivm/lp_bld_format_float.c \
+	gallivm/lp_bld_format.c \
 	gallivm/lp_bld_format.h \
 	gallivm/lp_bld_format_soa.c \
 	gallivm/lp_bld_format_srgb.c \
@@ -422,3 +436,7 @@ GALLIVM_SOURCES := \
 	draw/draw_llvm_sample.c \
 	draw/draw_pt_fetch_shade_pipeline_llvm.c \
 	draw/draw_vs_llvm.c
+
+RENDERONLY_SOURCES := \
+	renderonly/renderonly.c \
+	renderonly/renderonly.h

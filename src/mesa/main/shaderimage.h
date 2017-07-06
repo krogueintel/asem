@@ -43,6 +43,20 @@ mesa_format
 _mesa_get_shader_image_format(GLenum format);
 
 /**
+ * Get the GL image format class for a shader image format GL enum
+ */
+GLenum
+_mesa_get_image_format_class(GLenum format);
+
+/**
+ * Return whether an image format should be supported based on the current API
+ * version of the context.
+ */
+bool
+_mesa_is_shader_image_format_supported(const struct gl_context *ctx,
+                                       GLenum format);
+
+/**
  * Get a single image unit struct with the default state.
  */
 struct gl_image_unit
@@ -55,13 +69,20 @@ void
 _mesa_init_image_units(struct gl_context *ctx);
 
 /**
- * Recalculate the \c _Valid flag of a context's shader image units.
+ * Return GL_TRUE if the state of the image unit passed as argument is valid
+ * and access from the shader is allowed.  Otherwise loads from this unit
+ * should return zero and stores should have no effect.
  *
- * To be called when the state of any texture bound to an image unit
- * changes.
+ * The result depends on context state other than the passed image unit, part
+ * of the _NEW_TEXTURE_OBJECT set.
  */
-void
-_mesa_validate_image_units(struct gl_context *ctx);
+GLboolean
+_mesa_is_image_unit_valid(struct gl_context *ctx, struct gl_image_unit *u);
+
+void GLAPIENTRY
+_mesa_BindImageTexture_no_error(GLuint unit, GLuint texture, GLint level,
+                                GLboolean layered, GLint layer, GLenum access,
+                                GLenum format);
 
 void GLAPIENTRY
 _mesa_BindImageTexture(GLuint unit, GLuint texture, GLint level,
@@ -69,13 +90,11 @@ _mesa_BindImageTexture(GLuint unit, GLuint texture, GLint level,
                        GLenum format);
 
 void GLAPIENTRY
+_mesa_BindImageTextures_no_error(GLuint first, GLsizei count,
+                                 const GLuint *textures);
+
+void GLAPIENTRY
 _mesa_BindImageTextures(GLuint first, GLsizei count, const GLuint *textures);
-
-void GLAPIENTRY
-_mesa_MemoryBarrier(GLbitfield barriers);
-
-void GLAPIENTRY
-_mesa_MemoryBarrierByRegion(GLbitfield barriers);
 
 #ifdef __cplusplus
 }

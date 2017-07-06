@@ -36,7 +36,7 @@
 #include "fd3_format.h"
 
 static enum a3xx_tex_clamp
-tex_clamp(unsigned wrap, bool clamp_to_edge)
+tex_clamp(unsigned wrap, bool clamp_to_edge, bool *needs_border)
 {
 	/* Hardware does not support _CLAMP, but we emulate it: */
 	if (wrap == PIPE_TEX_WRAP_CLAMP) {
@@ -50,6 +50,7 @@ tex_clamp(unsigned wrap, bool clamp_to_edge)
 	case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
 		return A3XX_TEX_CLAMP_TO_EDGE;
 	case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
+		*needs_border = true;
 		return A3XX_TEX_CLAMP_TO_BORDER;
 	case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE:
 		/* only works for PoT.. need to emulate otherwise! */
@@ -113,6 +114,7 @@ fd3_sampler_state_create(struct pipe_context *pctx,
 		so->saturate_r = (cso->wrap_r == PIPE_TEX_WRAP_CLAMP);
 	}
 
+	so->needs_border = false;
 	so->texsamp0 =
 			COND(!cso->normalized_coords, A3XX_TEX_SAMP_0_UNNORM_COORDS) |
 			COND(!cso->seamless_cube_map, A3XX_TEX_SAMP_0_CUBEMAPSEAMLESSFILTOFF) |
@@ -120,9 +122,9 @@ fd3_sampler_state_create(struct pipe_context *pctx,
 			A3XX_TEX_SAMP_0_XY_MAG(tex_filter(cso->mag_img_filter, aniso)) |
 			A3XX_TEX_SAMP_0_XY_MIN(tex_filter(cso->min_img_filter, aniso)) |
 			A3XX_TEX_SAMP_0_ANISO(aniso) |
-			A3XX_TEX_SAMP_0_WRAP_S(tex_clamp(cso->wrap_s, clamp_to_edge)) |
-			A3XX_TEX_SAMP_0_WRAP_T(tex_clamp(cso->wrap_t, clamp_to_edge)) |
-			A3XX_TEX_SAMP_0_WRAP_R(tex_clamp(cso->wrap_r, clamp_to_edge));
+			A3XX_TEX_SAMP_0_WRAP_S(tex_clamp(cso->wrap_s, clamp_to_edge, &so->needs_border)) |
+			A3XX_TEX_SAMP_0_WRAP_T(tex_clamp(cso->wrap_t, clamp_to_edge, &so->needs_border)) |
+			A3XX_TEX_SAMP_0_WRAP_R(tex_clamp(cso->wrap_r, clamp_to_edge, &so->needs_border));
 
 	if (cso->compare_mode)
 		so->texsamp0 |= A3XX_TEX_SAMP_0_COMPARE_FUNC(cso->compare_func); /* maps 1:1 */
@@ -141,13 +143,16 @@ fd3_sampler_state_create(struct pipe_context *pctx,
 
 static void
 fd3_sampler_states_bind(struct pipe_context *pctx,
-		unsigned shader, unsigned start,
+		enum pipe_shader_type shader, unsigned start,
 		unsigned nr, void **hwcso)
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd3_context *fd3_ctx = fd3_context(ctx);
 	uint16_t saturate_s = 0, saturate_t = 0, saturate_r = 0;
 	unsigned i;
+
+	if (!hwcso)
+		nr = 0;
 
 	for (i = 0; i < nr; i++) {
 		if (hwcso[i]) {
@@ -211,8 +216,7 @@ fd3_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 {
 	struct fd3_pipe_sampler_view *so = CALLOC_STRUCT(fd3_pipe_sampler_view);
 	struct fd_resource *rsc = fd_resource(prsc);
-	unsigned lvl = fd_sampler_first_level(cso);
-	unsigned miplevels = fd_sampler_last_level(cso) - lvl;
+	unsigned lvl;
 	uint32_t sz2 = 0;
 
 	if (!so)
@@ -227,20 +231,35 @@ fd3_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 	so->texconst0 =
 			A3XX_TEX_CONST_0_TYPE(tex_type(prsc->target)) |
 			A3XX_TEX_CONST_0_FMT(fd3_pipe2tex(cso->format)) |
-			A3XX_TEX_CONST_0_MIPLVLS(miplevels) |
 			fd3_tex_swiz(cso->format, cso->swizzle_r, cso->swizzle_g,
 						cso->swizzle_b, cso->swizzle_a);
 
+	if (prsc->target == PIPE_BUFFER || util_format_is_pure_integer(cso->format))
+		so->texconst0 |= A3XX_TEX_CONST_0_NOCONVERT;
 	if (util_format_is_srgb(cso->format))
 		so->texconst0 |= A3XX_TEX_CONST_0_SRGB;
 
-	so->texconst1 =
+	if (prsc->target == PIPE_BUFFER) {
+		lvl = 0;
+		so->texconst1 =
+			A3XX_TEX_CONST_1_FETCHSIZE(fd3_pipe2fetchsize(cso->format)) |
+			A3XX_TEX_CONST_1_WIDTH(cso->u.buf.size / util_format_get_blocksize(cso->format)) |
+			A3XX_TEX_CONST_1_HEIGHT(1);
+	} else {
+		unsigned miplevels;
+
+		lvl = fd_sampler_first_level(cso);
+		miplevels = fd_sampler_last_level(cso) - lvl;
+
+		so->texconst0 |= A3XX_TEX_CONST_0_MIPLVLS(miplevels);
+		so->texconst1 =
 			A3XX_TEX_CONST_1_FETCHSIZE(fd3_pipe2fetchsize(cso->format)) |
 			A3XX_TEX_CONST_1_WIDTH(u_minify(prsc->width0, lvl)) |
 			A3XX_TEX_CONST_1_HEIGHT(u_minify(prsc->height0, lvl));
+	}
 	/* when emitted, A3XX_TEX_CONST_2_INDX() must be OR'd in: */
 	so->texconst2 =
-			A3XX_TEX_CONST_2_PITCH(util_format_get_nblocksx(cso->format, rsc->slices[lvl].pitch) * rsc->cpp);
+			A3XX_TEX_CONST_2_PITCH(fd3_pipe2nblocksx(cso->format, rsc->slices[lvl].pitch) * rsc->cpp);
 	switch (prsc->target) {
 	case PIPE_TEXTURE_1D_ARRAY:
 	case PIPE_TEXTURE_2D_ARRAY:

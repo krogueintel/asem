@@ -90,6 +90,11 @@ DRI_CONF_OPT_BEGIN_B(disable_blend_func_extended, def) \
         DRI_CONF_DESC(en,gettext("Disable dual source blending")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION(def) \
+DRI_CONF_OPT_BEGIN_B(dual_color_blend_by_location, def) \
+        DRI_CONF_DESC(en,gettext("Identify dual color blending sources by location rather than index")) \
+DRI_CONF_OPT_END
+
 #define DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS(def) \
 DRI_CONF_OPT_BEGIN_B(disable_glsl_line_continuations, def) \
         DRI_CONF_DESC(en,gettext("Disable backslash-based line continuations in GLSL source")) \
@@ -110,6 +115,25 @@ DRI_CONF_OPT_BEGIN_B(allow_glsl_extension_directive_midshader, def) \
         DRI_CONF_DESC(en,gettext("Allow GLSL #extension directives in the middle of shaders")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_ALLOW_GLSL_BUILTIN_VARIABLE_REDECLARATION(def) \
+DRI_CONF_OPT_BEGIN_B(allow_glsl_builtin_variable_redeclaration, def) \
+        DRI_CONF_DESC(en,gettext("Allow GLSL built-in variables to be redeclared verbatim")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_ALLOW_HIGHER_COMPAT_VERSION(def) \
+DRI_CONF_OPT_BEGIN_B(allow_higher_compat_version, def) \
+        DRI_CONF_DESC(en,gettext("Allow a higher compat profile (version 3.1+) for apps that request it")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_FORCE_GLSL_ABS_SQRT(def) \
+DRI_CONF_OPT_BEGIN_B(force_glsl_abs_sqrt, def) \
+        DRI_CONF_DESC(en,gettext("Force computing the absolute value for sqrt() and inversesqrt()")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_GLSL_CORRECT_DERIVATIVES_AFTER_DISCARD(def) \
+DRI_CONF_OPT_BEGIN_B(glsl_correct_derivatives_after_discard, def) \
+        DRI_CONF_DESC(en,gettext("Implicit and explicit derivatives after a discard behave as if the discard didn't happen")) \
+DRI_CONF_OPT_END
 
 
 /**
@@ -151,6 +175,11 @@ DRI_CONF_OPT_END
 #define DRI_CONF_FORCE_S3TC_ENABLE(def) \
 DRI_CONF_OPT_BEGIN_B(force_s3tc_enable, def) \
         DRI_CONF_DESC(en,gettext("Enable S3TC texture compression even if software support is not available")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_PRECISE_TRIG(def) \
+DRI_CONF_OPT_BEGIN_B(precise_trig, def) \
+        DRI_CONF_DESC(en,gettext("Prefer accuracy over performance in trig functions")) \
 DRI_CONF_OPT_END
 
 #define DRI_CONF_COLOR_REDUCTION_ROUND 0
@@ -298,6 +327,20 @@ DRI_CONF_OPT_BEGIN_V(texture_heaps,enum,def,"0:2") \
 	DRI_CONF_DESC_END \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_MESA_GLTHREAD(def) \
+DRI_CONF_OPT_BEGIN_B(mesa_glthread, def) \
+        DRI_CONF_DESC(en,gettext("Enable offloading GL driver work to a separate thread")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_DISABLE_EXT_BUFFER_AGE(def) \
+DRI_CONF_OPT_BEGIN_B(glx_disable_ext_buffer_age, def) \
+   DRI_CONF_DESC(en, gettext("Disable the GLX_EXT_buffer_age extension")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_DISABLE_OML_SYNC_CONTROL(def) \
+DRI_CONF_OPT_BEGIN_B(glx_disable_oml_sync_control, def) \
+   DRI_CONF_DESC(en, gettext("Disable the GLX_OML_sync_control extension")) \
+DRI_CONF_OPT_END
 
 
 /**
@@ -327,7 +370,10 @@ DRI_CONF_OPT_BEGIN_B(always_have_depth_buffer, def) \
         DRI_CONF_DESC(en,gettext("Create all visuals with a depth buffer")) \
 DRI_CONF_OPT_END
 
-
+#define DRI_CONF_GLSL_ZERO_INIT(def) \
+DRI_CONF_OPT_BEGIN_B(glsl_zero_init, def) \
+        DRI_CONF_DESC(en,gettext("Force uninitialized variables to default to zero")) \
+DRI_CONF_OPT_END
 
 /**
  * \brief Initialization configuration options
@@ -357,4 +403,24 @@ DRI_CONF_OPT_END
 #define DRI_CONF_NINE_THREADSUBMIT(def) \
 DRI_CONF_OPT_BEGIN_B(thread_submit, def) \
         DRI_CONF_DESC(en,gettext("Use an additional thread to submit buffers.")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_OVERRIDEVENDOR(def) \
+DRI_CONF_OPT_BEGIN(override_vendorid, int, def) \
+        DRI_CONF_DESC(en,gettext("Define the vendor_id to report. This allows faking another hardware vendor.")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_ALLOWDISCARDDELAYEDRELEASE(def) \
+DRI_CONF_OPT_BEGIN_B(discard_delayed_release, def) \
+        DRI_CONF_DESC(en,gettext("Whether to allow the display server to release buffers with a delay when using d3d's presentation mode DISCARD. Default to true. Set to false if suffering from lag (thread_submit=true can also help in this situation).")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_TEARFREEDISCARD(def) \
+DRI_CONF_OPT_BEGIN_B(tearfree_discard, def) \
+        DRI_CONF_DESC(en,gettext("Whether to make d3d's presentation mode DISCARD (games usually use that mode) Tear Free. If rendering above screen refresh, some frames will get skipped. false by default.")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_CSMT(def) \
+DRI_CONF_OPT_BEGIN(csmt_force, int, def) \
+        DRI_CONF_DESC(en,gettext("If set to 1, force gallium nine CSMT. If set to 0, disable it. By default (-1) CSMT is enabled on known thread-safe drivers.")) \
 DRI_CONF_OPT_END

@@ -30,18 +30,19 @@ using namespace clover;
 namespace {
    template<typename T>
    std::vector<T>
-   get_compute_param(pipe_screen *pipe, pipe_compute_cap cap) {
-      int sz = pipe->get_compute_param(pipe, cap, NULL);
+   get_compute_param(pipe_screen *pipe, pipe_shader_ir ir_format,
+                     pipe_compute_cap cap) {
+      int sz = pipe->get_compute_param(pipe, ir_format, cap, NULL);
       std::vector<T> v(sz / sizeof(T));
 
-      pipe->get_compute_param(pipe, cap, &v.front());
+      pipe->get_compute_param(pipe, ir_format, cap, &v.front());
       return v;
    }
 }
 
 device::device(clover::platform &platform, pipe_loader_device *ldev) :
    platform(platform), ldev(ldev) {
-   pipe = pipe_loader_create_screen(ldev, PIPE_SEARCH_DIR);
+   pipe = pipe_loader_create_screen(ldev, 0);
    if (!pipe || !pipe->get_param(pipe, PIPE_CAP_COMPUTE)) {
       if (pipe)
          pipe->destroy(pipe);
@@ -97,6 +98,11 @@ device::max_images_write() const {
    return PIPE_MAX_SHADER_IMAGES;
 }
 
+size_t
+device::max_image_buffer_size() const {
+   return pipe->get_param(pipe, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE);
+}
+
 cl_uint
 device::max_image_levels_2d() const {
    return pipe->get_param(pipe, PIPE_CAP_MAX_TEXTURE_2D_LEVELS);
@@ -107,6 +113,11 @@ device::max_image_levels_3d() const {
    return pipe->get_param(pipe, PIPE_CAP_MAX_TEXTURE_3D_LEVELS);
 }
 
+size_t
+device::max_image_array_number() const {
+   return pipe->get_param(pipe, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS);
+}
+
 cl_uint
 device::max_samplers() const {
    return pipe->get_shader_param(pipe, PIPE_SHADER_COMPUTE,
@@ -115,19 +126,19 @@ device::max_samplers() const {
 
 cl_ulong
 device::max_mem_global() const {
-   return get_compute_param<uint64_t>(pipe,
+   return get_compute_param<uint64_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE)[0];
 }
 
 cl_ulong
 device::max_mem_local() const {
-   return get_compute_param<uint64_t>(pipe,
+   return get_compute_param<uint64_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE)[0];
 }
 
 cl_ulong
 device::max_mem_input() const {
-   return get_compute_param<uint64_t>(pipe,
+   return get_compute_param<uint64_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_INPUT_SIZE)[0];
 }
 
@@ -146,48 +157,60 @@ device::max_const_buffers() const {
 size_t
 device::max_threads_per_block() const {
    return get_compute_param<uint64_t>(
-      pipe, PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK)[0];
+      pipe, ir_format(), PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK)[0];
 }
 
 cl_ulong
 device::max_mem_alloc_size() const {
-   return get_compute_param<uint64_t>(pipe,
+   return get_compute_param<uint64_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE)[0];
 }
 
 cl_uint
 device::max_clock_frequency() const {
-   return get_compute_param<uint32_t>(pipe,
+   return get_compute_param<uint32_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY)[0];
 }
 
 cl_uint
 device::max_compute_units() const {
-   return get_compute_param<uint32_t>(pipe,
+   return get_compute_param<uint32_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS)[0];
 }
 
 bool
 device::image_support() const {
-   return get_compute_param<uint32_t>(pipe,
+   return get_compute_param<uint32_t>(pipe, ir_format(),
                                       PIPE_COMPUTE_CAP_IMAGES_SUPPORTED)[0];
 }
 
 bool
 device::has_doubles() const {
-   return pipe->get_shader_param(pipe, PIPE_SHADER_COMPUTE,
-                                 PIPE_SHADER_CAP_DOUBLES);
+   return pipe->get_param(pipe, PIPE_CAP_DOUBLES);
+}
+
+bool
+device::has_unified_memory() const {
+   return pipe->get_param(pipe, PIPE_CAP_UMA);
 }
 
 std::vector<size_t>
 device::max_block_size() const {
-   auto v = get_compute_param<uint64_t>(pipe, PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE);
+   auto v = get_compute_param<uint64_t>(pipe, ir_format(),
+                                        PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE);
    return { v.begin(), v.end() };
 }
 
 cl_uint
 device::subgroup_size() const {
-   return get_compute_param<uint32_t>(pipe, PIPE_COMPUTE_CAP_SUBGROUP_SIZE)[0];
+   return get_compute_param<uint32_t>(pipe, ir_format(),
+                                      PIPE_COMPUTE_CAP_SUBGROUP_SIZE)[0];
+}
+
+cl_uint
+device::address_bits() const {
+   return get_compute_param<uint32_t>(pipe, ir_format(),
+                                      PIPE_COMPUTE_CAP_ADDRESS_BITS)[0];
 }
 
 std::string
@@ -209,7 +232,7 @@ device::ir_format() const {
 std::string
 device::ir_target() const {
    std::vector<char> target = get_compute_param<char>(
-      pipe, PIPE_COMPUTE_CAP_IR_TARGET);
+      pipe, ir_format(), PIPE_COMPUTE_CAP_IR_TARGET);
    return { target.data() };
 }
 

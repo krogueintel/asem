@@ -84,6 +84,9 @@ struct svga_shader_emitter
 
    int dynamic_branching_level;
 
+   unsigned num_output_writes;
+   boolean constant_color_output;
+
    boolean in_main_func;
 
    boolean created_common_immediate;
@@ -133,6 +136,9 @@ struct svga_shader_emitter
    int current_arl;
 
    unsigned pstipple_sampler_unit;
+
+   int num_samplers;
+   uint8_t sampler_target[PIPE_MAX_SAMPLERS];
 };
 
 
@@ -150,6 +156,9 @@ svga_shader_emit_opcode(struct svga_shader_emitter *emit,
 boolean
 svga_shader_emit_instructions(struct svga_shader_emitter *emit,
                               const struct tgsi_token *tokens);
+
+boolean
+svga_shader_emit_samplers_decl(struct svga_shader_emitter *emit);
 
 boolean
 svga_translate_decl_sm30(struct svga_shader_emitter *emit,

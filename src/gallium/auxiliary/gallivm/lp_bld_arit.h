@@ -77,6 +77,18 @@ lp_build_mul(struct lp_build_context *bld,
              LLVMValueRef b);
 
 LLVMValueRef
+lp_build_mul_32_lohi_cpu(struct lp_build_context *bld,
+                         LLVMValueRef a,
+                         LLVMValueRef b,
+                         LLVMValueRef *res_hi);
+
+LLVMValueRef
+lp_build_mul_32_lohi(struct lp_build_context *bld,
+                     LLVMValueRef a,
+                     LLVMValueRef b,
+                     LLVMValueRef *res_hi);
+
+LLVMValueRef
 lp_build_mul_imm(struct lp_build_context *bld,
                  LLVMValueRef a,
                  int b);
@@ -85,6 +97,21 @@ LLVMValueRef
 lp_build_div(struct lp_build_context *bld,
              LLVMValueRef a,
              LLVMValueRef b);
+
+
+/* llvm.fmuladd.* intrinsic */
+LLVMValueRef
+lp_build_fmuladd(LLVMBuilderRef builder,
+                 LLVMValueRef a,
+                 LLVMValueRef b,
+                 LLVMValueRef c);
+
+/* a * b + c */
+LLVMValueRef
+lp_build_mad(struct lp_build_context *bld,
+             LLVMValueRef a,
+             LLVMValueRef b,
+             LLVMValueRef c);
 
 
 /**

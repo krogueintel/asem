@@ -580,10 +580,8 @@ lp_build_brilinear_lod(struct lp_build_context *bld,
 
    lp_build_ifloor_fract(bld, lod, out_lod_ipart, &lod_fpart);
 
-   lod_fpart = lp_build_mul(bld, lod_fpart,
-                            lp_build_const_vec(bld->gallivm, bld->type, factor));
-
-   lod_fpart = lp_build_add(bld, lod_fpart,
+   lod_fpart = lp_build_mad(bld, lod_fpart,
+                            lp_build_const_vec(bld->gallivm, bld->type, factor),
                             lp_build_const_vec(bld->gallivm, bld->type, post_offset));
 
    /*
@@ -639,10 +637,8 @@ lp_build_brilinear_rho(struct lp_build_context *bld,
    /* fpart = rho / 2**ipart */
    lod_fpart = lp_build_extract_mantissa(bld, rho);
 
-   lod_fpart = lp_build_mul(bld, lod_fpart,
-                            lp_build_const_vec(bld->gallivm, bld->type, factor));
-
-   lod_fpart = lp_build_add(bld, lod_fpart,
+   lod_fpart = lp_build_mad(bld, lod_fpart,
+                            lp_build_const_vec(bld->gallivm, bld->type, factor),
                             lp_build_const_vec(bld->gallivm, bld->type, post_offset));
 
    /*
@@ -1416,8 +1412,8 @@ lp_build_unnormalized_coords(struct lp_build_sample_context *bld,
 {
    const unsigned dims = bld->dims;
    LLVMValueRef width;
-   LLVMValueRef height;
-   LLVMValueRef depth;
+   LLVMValueRef height = NULL;
+   LLVMValueRef depth = NULL;
 
    lp_build_extract_image_sizes(bld,
                                 &bld->float_size_bld,

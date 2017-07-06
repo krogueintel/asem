@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 
 # Copyright (C) 2012 Intel Corporation
 #
@@ -56,6 +55,7 @@ header = """/**
 #include "main/blit.h"
 #include "main/bufferobj.h"
 #include "main/arrayobj.h"
+#include "main/bbox.h"
 #include "main/buffers.h"
 #include "main/clear.h"
 #include "main/clip.h"
@@ -66,6 +66,7 @@ header = """/**
 #include "main/convolve.h"
 #include "main/copyimage.h"
 #include "main/depth.h"
+#include "main/debug_output.h"
 #include "main/dlist.h"
 #include "main/drawpix.h"
 #include "main/drawtex.h"
@@ -90,6 +91,7 @@ header = """/**
 #include "main/objectlabel.h"
 #include "main/objectpurge.h"
 #include "main/performance_monitor.h"
+#include "main/performance_query.h"
 #include "main/pipelineobj.h"
 #include "main/pixel.h"
 #include "main/pixelstore.h"
@@ -110,7 +112,8 @@ header = """/**
 #include "main/texparam.h"
 #include "main/texstate.h"
 #include "main/texstorage.h"
-#include "main/texturebarrier.h"
+#include "main/barrier.h"
+#include "main/texturebindless.h"
 #include "main/textureview.h"
 #include "main/transformfeedback.h"
 #include "main/mtypes.h"
@@ -230,8 +233,16 @@ class PrintCode(gl_XML.gl_print_base):
                 # This function is not implemented, or is dispatched
                 # dynamically.
                 continue
-            settings_by_condition[condition].append(
-                'SET_{0}(exec, {1}{0});'.format(f.name, prefix, f.name))
+            if f.has_no_error_variant:
+                no_error_condition = '_mesa_is_no_error_enabled(ctx) && ({0})'.format(condition)
+                error_condition = '!_mesa_is_no_error_enabled(ctx) && ({0})'.format(condition)
+                settings_by_condition[no_error_condition].append(
+                    'SET_{0}(exec, {1}{0}_no_error);'.format(f.name, prefix, f.name))
+                settings_by_condition[error_condition].append(
+                    'SET_{0}(exec, {1}{0});'.format(f.name, prefix, f.name))
+            else:
+                settings_by_condition[condition].append(
+                    'SET_{0}(exec, {1}{0});'.format(f.name, prefix, f.name))
         # Print out an if statement for each unique condition, with
         # the SET_* calls nested inside it.
         for condition in sorted(settings_by_condition.keys()):

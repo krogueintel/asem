@@ -328,7 +328,7 @@ static void r300_clear(struct pipe_context* pipe,
             /* Pair the resource with the CMASK to avoid other resources
              * accessing it. */
             if (!r300->screen->cmask_resource) {
-                pipe_mutex_lock(r300->screen->cmask_mutex);
+                mtx_lock(&r300->screen->cmask_mutex);
                 /* Double checking (first unlocked, then locked). */
                 if (!r300->screen->cmask_resource) {
                     /* Don't reference this, so that the texture can be
@@ -336,7 +336,7 @@ static void r300_clear(struct pipe_context* pipe,
                      * Then in texture_destroy, we set cmask_resource to NULL. */
                     r300->screen->cmask_resource = fb->cbufs[0]->texture;
                 }
-                pipe_mutex_unlock(r300->screen->cmask_mutex);
+                mtx_unlock(&r300->screen->cmask_mutex);
             }
 
             if (r300->screen->cmask_resource == fb->cbufs[0]->texture) {
@@ -382,7 +382,7 @@ static void r300_clear(struct pipe_context* pipe,
             r300_get_num_cs_end_dwords(r300);
 
         /* Reserve CS space. */
-        if (dwords > (r300->cs->max_dw - r300->cs->cdw)) {
+        if (!r300->rws->cs_check_space(r300->cs, dwords)) {
             r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         }
 
@@ -430,11 +430,13 @@ static void r300_clear_render_target(struct pipe_context *pipe,
                                      struct pipe_surface *dst,
                                      const union pipe_color_union *color,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_render_target(r300->blitter, dst, color,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -447,7 +449,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
                                      double depth,
                                      unsigned stencil,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
     struct pipe_framebuffer_state *fb =
@@ -460,7 +463,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
     }
 
     /* XXX Do not decompress ZMask of the currently-set zbuffer. */
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_depth_stencil(r300->blitter, dst, clear_flags, depth, stencil,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -563,7 +567,7 @@ static void r300_resource_copy_region(struct pipe_context *pipe,
      * colorbuffers. */
 
     util_blitter_default_dst_texture(&dst_templ, dst, dst_level, dstz);
-    util_blitter_default_src_texture(&src_templ, src, src_level);
+    util_blitter_default_src_texture(r300->blitter, &src_templ, src, src_level);
 
     layout = util_format_description(dst_templ.format)->layout;
 

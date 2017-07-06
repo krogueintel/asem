@@ -50,6 +50,9 @@ struct schedule_node {
         uint32_t child_array_size;
         uint32_t parent_count;
 
+        /* Longest cycles + instruction_latency() of any parent of this node. */
+        uint32_t unblocked_time;
+
         /**
          * Minimum number of cycles from scheduling this instruction until the
          * end of the program, based on the slowest dependency chain through
@@ -89,7 +92,10 @@ struct schedule_state {
         struct schedule_node *last_tmu_write;
         struct schedule_node *last_tlb;
         struct schedule_node *last_vpm;
+        struct schedule_node *last_uniforms_reset;
         enum direction dir;
+        /* Estimated cycle when the current instruction would start. */
+        uint32_t time;
 };
 
 static void
@@ -179,6 +185,9 @@ process_raddr_deps(struct schedule_state *state, struct schedule_node *n,
                 break;
 
         case QPU_R_UNIF:
+                add_read_dep(state, state->last_uniforms_reset, n);
+                break;
+
         case QPU_R_NOP:
         case QPU_R_ELEM_QPU:
         case QPU_R_XY_PIXEL_COORD:
@@ -254,7 +263,9 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
                 }
         } else if (is_tmu_write(waddr)) {
                 add_write_dep(state, &state->last_tmu_write, n);
-        } else if (qpu_waddr_is_tlb(waddr)) {
+                add_read_dep(state, state->last_uniforms_reset, n);
+        } else if (qpu_waddr_is_tlb(waddr) ||
+                   waddr == QPU_W_MS_FLAGS) {
                 add_write_dep(state, &state->last_tlb, n);
         } else {
                 switch (waddr) {
@@ -293,6 +304,14 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
                          * other.
                          */
                         add_write_dep(state, &state->last_tlb, n);
+                        break;
+
+                case QPU_W_MS_FLAGS:
+                        add_write_dep(state, &state->last_tlb, n);
+                        break;
+
+                case QPU_W_UNIFORMS_ADDRESS:
+                        add_write_dep(state, &state->last_uniforms_reset, n);
                         break;
 
                 case QPU_W_NOP:
@@ -344,7 +363,8 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
 
         if (sig != QPU_SIG_LOAD_IMM) {
                 process_raddr_deps(state, n, raddr_a, true);
-                if (sig != QPU_SIG_SMALL_IMM)
+                if (sig != QPU_SIG_SMALL_IMM &&
+                    sig != QPU_SIG_BRANCH)
                         process_raddr_deps(state, n, raddr_b, false);
         }
 
@@ -365,10 +385,25 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
         switch (sig) {
         case QPU_SIG_SW_BREAKPOINT:
         case QPU_SIG_NONE:
-        case QPU_SIG_THREAD_SWITCH:
-        case QPU_SIG_LAST_THREAD_SWITCH:
         case QPU_SIG_SMALL_IMM:
         case QPU_SIG_LOAD_IMM:
+                break;
+
+        case QPU_SIG_THREAD_SWITCH:
+        case QPU_SIG_LAST_THREAD_SWITCH:
+                /* All accumulator contents and flags are undefined after the
+                 * switch.
+                 */
+                for (int i = 0; i < ARRAY_SIZE(state->last_r); i++)
+                        add_write_dep(state, &state->last_r[i], n);
+                add_write_dep(state, &state->last_sf, n);
+
+                /* Scoreboard-locking operations have to stay after the last
+                 * thread switch.
+                 */
+                add_write_dep(state, &state->last_tlb, n);
+
+                add_write_dep(state, &state->last_tmu_write, n);
                 break;
 
         case QPU_SIG_LOAD_TMU0:
@@ -382,20 +417,23 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
                 add_read_dep(state, state->last_tlb, n);
                 break;
 
+        case QPU_SIG_BRANCH:
+                add_read_dep(state, state->last_sf, n);
+                break;
+
         case QPU_SIG_PROG_END:
         case QPU_SIG_WAIT_FOR_SCOREBOARD:
         case QPU_SIG_SCOREBOARD_UNLOCK:
         case QPU_SIG_COVERAGE_LOAD:
         case QPU_SIG_COLOR_LOAD_END:
         case QPU_SIG_ALPHA_MASK_LOAD:
-        case QPU_SIG_BRANCH:
                 fprintf(stderr, "Unhandled signal bits %d\n", sig);
                 abort();
         }
 
         process_cond_deps(state, n, QPU_GET_FIELD(inst, QPU_COND_ADD));
-        process_cond_deps(state, n, QPU_GET_FIELD(inst, QPU_COND_ADD));
-        if (inst & QPU_SF)
+        process_cond_deps(state, n, QPU_GET_FIELD(inst, QPU_COND_MUL));
+        if ((inst & QPU_SF) && sig != QPU_SIG_BRANCH)
                 add_write_dep(state, &state->last_sf, n);
 }
 
@@ -428,7 +466,9 @@ calculate_reverse_deps(struct vc4_compile *c, struct list_head *schedule_list)
 struct choose_scoreboard {
         int tick;
         int last_sfu_write_tick;
+        int last_uniforms_reset_tick;
         uint32_t last_waddr_a, last_waddr_b;
+        bool tlb_locked;
 };
 
 static bool
@@ -437,6 +477,11 @@ reads_too_soon_after_write(struct choose_scoreboard *scoreboard, uint64_t inst)
         uint32_t raddr_a = QPU_GET_FIELD(inst, QPU_RADDR_A);
         uint32_t raddr_b = QPU_GET_FIELD(inst, QPU_RADDR_B);
         uint32_t sig = QPU_GET_FIELD(inst, QPU_SIG);
+
+        /* Full immediate loads don't read any registers. */
+        if (sig == QPU_SIG_LOAD_IMM)
+                return false;
+
         uint32_t src_muxes[] = {
                 QPU_GET_FIELD(inst, QPU_ADD_A),
                 QPU_GET_FIELD(inst, QPU_ADD_B),
@@ -460,6 +505,24 @@ reads_too_soon_after_write(struct choose_scoreboard *scoreboard, uint64_t inst)
                                 return true;
                         }
                 }
+        }
+
+        if (sig == QPU_SIG_SMALL_IMM &&
+            QPU_GET_FIELD(inst, QPU_SMALL_IMM) >= QPU_SMALL_IMM_MUL_ROT) {
+                uint32_t mux_a = QPU_GET_FIELD(inst, QPU_MUL_A);
+                uint32_t mux_b = QPU_GET_FIELD(inst, QPU_MUL_B);
+
+                if (scoreboard->last_waddr_a == mux_a + QPU_W_ACC0 ||
+                    scoreboard->last_waddr_a == mux_b + QPU_W_ACC0 ||
+                    scoreboard->last_waddr_b == mux_a + QPU_W_ACC0 ||
+                    scoreboard->last_waddr_b == mux_b + QPU_W_ACC0) {
+                        return true;
+                }
+        }
+
+        if (reads_uniform(inst) &&
+            scoreboard->tick - scoreboard->last_uniforms_reset_tick <= 2) {
+                return true;
         }
 
         return false;
@@ -512,8 +575,31 @@ choose_instruction_to_schedule(struct choose_scoreboard *scoreboard,
         struct schedule_node *chosen = NULL;
         int chosen_prio = 0;
 
+        /* Don't pair up anything with a thread switch signal -- emit_thrsw()
+         * will handle pairing it along with filling the delay slots.
+         */
+        if (prev_inst) {
+                uint32_t prev_sig = QPU_GET_FIELD(prev_inst->inst->inst,
+                                                  QPU_SIG);
+                if (prev_sig == QPU_SIG_THREAD_SWITCH ||
+                    prev_sig == QPU_SIG_LAST_THREAD_SWITCH) {
+                        return NULL;
+                }
+        }
+
         list_for_each_entry(struct schedule_node, n, schedule_list, link) {
                 uint64_t inst = n->inst->inst;
+                uint32_t sig = QPU_GET_FIELD(inst, QPU_SIG);
+
+                /* Don't choose the branch instruction until it's the last one
+                 * left.  XXX: We could potentially choose it before it's the
+                 * last one, if the remaining instructions fit in the delay
+                 * slots.
+                 */
+                if (sig == QPU_SIG_BRANCH &&
+                    !list_is_singular(schedule_list)) {
+                        continue;
+                }
 
                 /* "An instruction must not read from a location in physical
                  *  regfile A or B that was written to by the previous
@@ -534,7 +620,23 @@ choose_instruction_to_schedule(struct choose_scoreboard *scoreboard,
                  * that they're compatible.
                  */
                 if (prev_inst) {
+                        /* Don't pair up a thread switch signal -- we'll
+                         * handle pairing it when we pick it on its own.
+                         */
+                        if (sig == QPU_SIG_THREAD_SWITCH ||
+                            sig == QPU_SIG_LAST_THREAD_SWITCH) {
+                                continue;
+                        }
+
                         if (prev_inst->uniform != -1 && n->uniform != -1)
+                                continue;
+
+                        /* Don't merge in something that will lock the TLB.
+                         * Hopwefully what we have in inst will release some
+                         * other instructions, allowing us to delay the
+                         * TLB-locking instruction until later.
+                         */
+                        if (!scoreboard->tlb_locked && qpu_inst_is_tlb(inst))
                                 continue;
 
                         inst = qpu_merge_inst(prev_inst->inst->inst, inst);
@@ -590,15 +692,21 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
             (waddr_mul >= QPU_W_SFU_RECIP && waddr_mul <= QPU_W_SFU_LOG)) {
                 scoreboard->last_sfu_write_tick = scoreboard->tick;
         }
+
+        if (waddr_add == QPU_W_UNIFORMS_ADDRESS ||
+            waddr_mul == QPU_W_UNIFORMS_ADDRESS) {
+                scoreboard->last_uniforms_reset_tick = scoreboard->tick;
+        }
+
+        if (qpu_inst_is_tlb(inst))
+                scoreboard->tlb_locked = true;
 }
 
 static void
 dump_state(struct list_head *schedule_list)
 {
-        uint32_t i = 0;
-
         list_for_each_entry(struct schedule_node, n, schedule_list, link) {
-                fprintf(stderr, "%3d: ", i++);
+                fprintf(stderr, "         t=%4d: ", n->unblocked_time);
                 vc4_qpu_disasm(&n->inst->inst, 1);
                 fprintf(stderr, "\n");
 
@@ -607,13 +715,73 @@ dump_state(struct list_head *schedule_list)
                         if (!child)
                                 continue;
 
-                        fprintf(stderr, "   - ");
+                        fprintf(stderr, "                 - ");
                         vc4_qpu_disasm(&child->inst->inst, 1);
                         fprintf(stderr, " (%d parents, %c)\n",
                                 child->parent_count,
                                 n->children[i].write_after_read ? 'w' : 'r');
                 }
         }
+}
+
+static uint32_t waddr_latency(uint32_t waddr, uint64_t after)
+{
+        if (waddr < 32)
+                return 2;
+
+        /* Apply some huge latency between texture fetch requests and getting
+         * their results back.
+         *
+         * FIXME: This is actually pretty bogus.  If we do:
+         *
+         * mov tmu0_s, a
+         * <a bit of math>
+         * mov tmu0_s, b
+         * load_tmu0
+         * <more math>
+         * load_tmu0
+         *
+         * we count that as worse than
+         *
+         * mov tmu0_s, a
+         * mov tmu0_s, b
+         * <lots of math>
+         * load_tmu0
+         * <more math>
+         * load_tmu0
+         *
+         * because we associate the first load_tmu0 with the *second* tmu0_s.
+         */
+        if (waddr == QPU_W_TMU0_S) {
+                if (QPU_GET_FIELD(after, QPU_SIG) == QPU_SIG_LOAD_TMU0)
+                        return 100;
+        }
+        if (waddr == QPU_W_TMU1_S) {
+                if (QPU_GET_FIELD(after, QPU_SIG) == QPU_SIG_LOAD_TMU1)
+                        return 100;
+        }
+
+        switch(waddr) {
+        case QPU_W_SFU_RECIP:
+        case QPU_W_SFU_RECIPSQRT:
+        case QPU_W_SFU_EXP:
+        case QPU_W_SFU_LOG:
+                return 3;
+        default:
+                return 1;
+        }
+}
+
+static uint32_t
+instruction_latency(struct schedule_node *before, struct schedule_node *after)
+{
+        uint64_t before_inst = before->inst->inst;
+        uint64_t after_inst = after->inst->inst;
+
+        return MAX2(waddr_latency(QPU_GET_FIELD(before_inst, QPU_WADDR_ADD),
+                                  after_inst),
+                    waddr_latency(QPU_GET_FIELD(before_inst, QPU_WADDR_MUL),
+                                  after_inst));
 }
 
 /** Recursive computation of the delay member of a node. */
@@ -627,13 +795,15 @@ compute_delay(struct schedule_node *n)
                         if (!n->children[i].node->delay)
                                 compute_delay(n->children[i].node);
                         n->delay = MAX2(n->delay,
-                                        n->children[i].node->delay + n->latency);
+                                        n->children[i].node->delay +
+                                        instruction_latency(n, n->children[i].node));
                 }
         }
 }
 
 static void
 mark_instruction_scheduled(struct list_head *schedule_list,
+                           uint32_t time,
                            struct schedule_node *node,
                            bool war_only)
 {
@@ -650,6 +820,19 @@ mark_instruction_scheduled(struct list_head *schedule_list,
                 if (war_only && !node->children[i].write_after_read)
                         continue;
 
+                /* If the requirement is only that the node not appear before
+                 * the last read of its destination, then it can be scheduled
+                 * immediately after (or paired with!) the thing reading the
+                 * destination.
+                 */
+                uint32_t latency = 0;
+                if (!war_only) {
+                        latency = instruction_latency(node,
+                                                      node->children[i].node);
+                }
+
+                child->unblocked_time = MAX2(child->unblocked_time,
+                                             time + latency);
                 child->parent_count--;
                 if (child->parent_count == 0)
                         list_add(&child->link, schedule_list);
@@ -658,26 +841,61 @@ mark_instruction_scheduled(struct list_head *schedule_list,
         }
 }
 
+/**
+ * Emits a THRSW/LTHRSW signal in the stream, trying to move it up to pair
+ * with another instruction.
+ */
 static void
-schedule_instructions(struct vc4_compile *c, struct list_head *schedule_list)
+emit_thrsw(struct vc4_compile *c,
+           struct choose_scoreboard *scoreboard,
+           uint64_t inst)
 {
-        struct choose_scoreboard scoreboard;
+        uint32_t sig = QPU_GET_FIELD(inst, QPU_SIG);
 
-        /* We reorder the uniforms as we schedule instructions, so save the
-         * old data off and replace it.
+        /* There should be nothing in a thrsw inst being scheduled other than
+         * the signal bits.
          */
-        uint32_t *uniform_data = c->uniform_data;
-        enum quniform_contents *uniform_contents = c->uniform_contents;
-        c->uniform_contents = ralloc_array(c, enum quniform_contents,
-                                           c->num_uniforms);
-        c->uniform_data = ralloc_array(c, uint32_t, c->num_uniforms);
-        c->uniform_array_size = c->num_uniforms;
-        uint32_t next_uniform = 0;
+        assert(QPU_GET_FIELD(inst, QPU_OP_ADD) == QPU_A_NOP);
+        assert(QPU_GET_FIELD(inst, QPU_OP_MUL) == QPU_M_NOP);
 
-        memset(&scoreboard, 0, sizeof(scoreboard));
-        scoreboard.last_waddr_a = ~0;
-        scoreboard.last_waddr_b = ~0;
-        scoreboard.last_sfu_write_tick = -10;
+        /* Try to find an earlier scheduled instruction that we can merge the
+         * thrsw into.
+         */
+        int thrsw_ip = c->qpu_inst_count;
+        for (int i = 1; i <= MIN2(c->qpu_inst_count, 3); i++) {
+                uint64_t prev_instr = c->qpu_insts[c->qpu_inst_count - i];
+                uint32_t prev_sig = QPU_GET_FIELD(prev_instr, QPU_SIG);
+
+                if (prev_sig == QPU_SIG_NONE)
+                        thrsw_ip = c->qpu_inst_count - i;
+        }
+
+        if (thrsw_ip != c->qpu_inst_count) {
+                /* Merge the thrsw into the existing instruction. */
+                c->qpu_insts[thrsw_ip] =
+                        QPU_UPDATE_FIELD(c->qpu_insts[thrsw_ip], sig, QPU_SIG);
+        } else {
+                qpu_serialize_one_inst(c, inst);
+                update_scoreboard_for_chosen(scoreboard, inst);
+        }
+
+        /* Fill the delay slots. */
+        while (c->qpu_inst_count < thrsw_ip + 3) {
+                update_scoreboard_for_chosen(scoreboard, qpu_NOP());
+                qpu_serialize_one_inst(c, qpu_NOP());
+        }
+}
+
+static uint32_t
+schedule_instructions(struct vc4_compile *c,
+                      struct choose_scoreboard *scoreboard,
+                      struct qblock *block,
+                      struct list_head *schedule_list,
+                      enum quniform_contents *orig_uniform_contents,
+                      uint32_t *orig_uniform_data,
+                      uint32_t *next_uniform)
+{
+        uint32_t time = 0;
 
         if (debug) {
                 fprintf(stderr, "initial deps:\n");
@@ -693,7 +911,7 @@ schedule_instructions(struct vc4_compile *c, struct list_head *schedule_list)
 
         while (!list_empty(schedule_list)) {
                 struct schedule_node *chosen =
-                        choose_instruction_to_schedule(&scoreboard,
+                        choose_instruction_to_schedule(scoreboard,
                                                        schedule_list,
                                                        NULL);
                 struct schedule_node *merge = NULL;
@@ -704,9 +922,10 @@ schedule_instructions(struct vc4_compile *c, struct list_head *schedule_list)
                 uint64_t inst = chosen ? chosen->inst->inst : qpu_NOP();
 
                 if (debug) {
-                        fprintf(stderr, "current list:\n");
+                        fprintf(stderr, "t=%4d: current list:\n",
+                                time);
                         dump_state(schedule_list);
-                        fprintf(stderr, "chose: ");
+                        fprintf(stderr, "t=%4d: chose: ", time);
                         vc4_qpu_disasm(&inst, 1);
                         fprintf(stderr, "\n");
                 }
@@ -715,36 +934,40 @@ schedule_instructions(struct vc4_compile *c, struct list_head *schedule_list)
                  * find an instruction to pair with it.
                  */
                 if (chosen) {
+                        time = MAX2(chosen->unblocked_time, time);
                         list_del(&chosen->link);
-                        mark_instruction_scheduled(schedule_list, chosen, true);
+                        mark_instruction_scheduled(schedule_list, time,
+                                                   chosen, true);
                         if (chosen->uniform != -1) {
-                                c->uniform_data[next_uniform] =
-                                        uniform_data[chosen->uniform];
-                                c->uniform_contents[next_uniform] =
-                                        uniform_contents[chosen->uniform];
-                                next_uniform++;
+                                c->uniform_data[*next_uniform] =
+                                        orig_uniform_data[chosen->uniform];
+                                c->uniform_contents[*next_uniform] =
+                                        orig_uniform_contents[chosen->uniform];
+                                (*next_uniform)++;
                         }
 
-                        merge = choose_instruction_to_schedule(&scoreboard,
+                        merge = choose_instruction_to_schedule(scoreboard,
                                                                schedule_list,
                                                                chosen);
                         if (merge) {
+                                time = MAX2(merge->unblocked_time, time);
                                 list_del(&merge->link);
                                 inst = qpu_merge_inst(inst, merge->inst->inst);
                                 assert(inst != 0);
                                 if (merge->uniform != -1) {
-                                        c->uniform_data[next_uniform] =
-                                                uniform_data[merge->uniform];
-                                        c->uniform_contents[next_uniform] =
-                                                uniform_contents[merge->uniform];
-                                        next_uniform++;
+                                        c->uniform_data[*next_uniform] =
+                                                orig_uniform_data[merge->uniform];
+                                        c->uniform_contents[*next_uniform] =
+                                                orig_uniform_contents[merge->uniform];
+                                        (*next_uniform)++;
                                 }
 
                                 if (debug) {
-                                        fprintf(stderr, "merging: ");
+                                        fprintf(stderr, "t=%4d: merging: ",
+                                                time);
                                         vc4_qpu_disasm(&merge->inst->inst, 1);
                                         fprintf(stderr, "\n");
-                                        fprintf(stderr, "resulting in: ");
+                                        fprintf(stderr, "            resulting in: ");
                                         vc4_qpu_disasm(&inst, 1);
                                         fprintf(stderr, "\n");
                                 }
@@ -755,88 +978,76 @@ schedule_instructions(struct vc4_compile *c, struct list_head *schedule_list)
                         fprintf(stderr, "\n");
                 }
 
-                qpu_serialize_one_inst(c, inst);
-
-                update_scoreboard_for_chosen(&scoreboard, inst);
-
                 /* Now that we've scheduled a new instruction, some of its
                  * children can be promoted to the list of instructions ready to
                  * be scheduled.  Update the children's unblocked time for this
                  * DAG edge as we do so.
                  */
-                mark_instruction_scheduled(schedule_list, chosen, false);
-                mark_instruction_scheduled(schedule_list, merge, false);
+                mark_instruction_scheduled(schedule_list, time, chosen, false);
+                mark_instruction_scheduled(schedule_list, time, merge, false);
 
-                scoreboard.tick++;
+                if (QPU_GET_FIELD(inst, QPU_SIG) == QPU_SIG_THREAD_SWITCH ||
+                    QPU_GET_FIELD(inst, QPU_SIG) == QPU_SIG_LAST_THREAD_SWITCH) {
+                        emit_thrsw(c, scoreboard, inst);
+                } else {
+                        qpu_serialize_one_inst(c, inst);
+                        update_scoreboard_for_chosen(scoreboard, inst);
+                }
+
+                scoreboard->tick++;
+                time++;
+
+                if (QPU_GET_FIELD(inst, QPU_SIG) == QPU_SIG_BRANCH) {
+                        block->branch_qpu_ip = c->qpu_inst_count - 1;
+                        /* Fill the delay slots.
+                         *
+                         * We should fill these with actual instructions,
+                         * instead, but that will probably need to be done
+                         * after this, once we know what the leading
+                         * instructions of the successors are (so we can
+                         * handle A/B register file write latency)
+                        */
+                        inst = qpu_NOP();
+                        update_scoreboard_for_chosen(scoreboard, inst);
+                        qpu_serialize_one_inst(c, inst);
+                        qpu_serialize_one_inst(c, inst);
+                        qpu_serialize_one_inst(c, inst);
+                }
         }
 
-        assert(next_uniform == c->num_uniforms);
-}
-
-static uint32_t waddr_latency(uint32_t waddr)
-{
-        if (waddr < 32)
-                return 2;
-
-        /* Some huge number, really. */
-        if (waddr >= QPU_W_TMU0_S && waddr <= QPU_W_TMU1_B)
-                return 10;
-
-        switch(waddr) {
-        case QPU_W_SFU_RECIP:
-        case QPU_W_SFU_RECIPSQRT:
-        case QPU_W_SFU_EXP:
-        case QPU_W_SFU_LOG:
-                return 3;
-        default:
-                return 1;
-        }
+        return time;
 }
 
 static uint32_t
-instruction_latency(uint64_t inst)
-{
-        return MAX2(waddr_latency(QPU_GET_FIELD(inst, QPU_WADDR_ADD)),
-                    waddr_latency(QPU_GET_FIELD(inst, QPU_WADDR_MUL)));
-}
-
-void
-qpu_schedule_instructions(struct vc4_compile *c)
+qpu_schedule_instructions_block(struct vc4_compile *c,
+                                struct choose_scoreboard *scoreboard,
+                                struct qblock *block,
+                                enum quniform_contents *orig_uniform_contents,
+                                uint32_t *orig_uniform_data,
+                                uint32_t *next_uniform)
 {
         void *mem_ctx = ralloc_context(NULL);
         struct list_head schedule_list;
 
         list_inithead(&schedule_list);
 
-        if (debug) {
-                fprintf(stderr, "Pre-schedule instructions\n");
-                list_for_each_entry(struct queued_qpu_inst, q,
-                                    &c->qpu_inst_list, link) {
-                        vc4_qpu_disasm(&q->inst, 1);
-                        fprintf(stderr, "\n");
-                }
-                fprintf(stderr, "\n");
-        }
-
         /* Wrap each instruction in a scheduler structure. */
-        uint32_t next_uniform = 0;
-        while (!list_empty(&c->qpu_inst_list)) {
+        uint32_t next_sched_uniform = *next_uniform;
+        while (!list_empty(&block->qpu_inst_list)) {
                 struct queued_qpu_inst *inst =
-                        (struct queued_qpu_inst *)c->qpu_inst_list.next;
+                        (struct queued_qpu_inst *)block->qpu_inst_list.next;
                 struct schedule_node *n = rzalloc(mem_ctx, struct schedule_node);
 
                 n->inst = inst;
-                n->latency = instruction_latency(inst->inst);
 
                 if (reads_uniform(inst->inst)) {
-                        n->uniform = next_uniform++;
+                        n->uniform = next_sched_uniform++;
                 } else {
                         n->uniform = -1;
                 }
                 list_del(&inst->link);
                 list_addtail(&n->link, &schedule_list);
         }
-        assert(next_uniform == c->num_uniforms);
 
         calculate_forward_deps(c, &schedule_list);
         calculate_reverse_deps(c, &schedule_list);
@@ -845,7 +1056,109 @@ qpu_schedule_instructions(struct vc4_compile *c)
                 compute_delay(n);
         }
 
-        schedule_instructions(c, &schedule_list);
+        uint32_t cycles = schedule_instructions(c, scoreboard, block,
+                                                &schedule_list,
+                                                orig_uniform_contents,
+                                                orig_uniform_data,
+                                                next_uniform);
+
+        ralloc_free(mem_ctx);
+
+        return cycles;
+}
+
+static void
+qpu_set_branch_targets(struct vc4_compile *c)
+{
+        qir_for_each_block(block, c) {
+                /* The end block of the program has no branch. */
+                if (!block->successors[0])
+                        continue;
+
+                /* If there was no branch instruction, then the successor
+                 * block must follow immediately after this one.
+                 */
+                if (block->branch_qpu_ip == ~0) {
+                        assert(block->end_qpu_ip + 1 ==
+                               block->successors[0]->start_qpu_ip);
+                        continue;
+                }
+
+                /* Set the branch target for the block that doesn't follow
+                 * immediately after ours.
+                 */
+                uint64_t *branch_inst = &c->qpu_insts[block->branch_qpu_ip];
+                assert(QPU_GET_FIELD(*branch_inst, QPU_SIG) == QPU_SIG_BRANCH);
+                assert(QPU_GET_FIELD(*branch_inst, QPU_BRANCH_TARGET) == 0);
+
+                uint32_t branch_target =
+                        (block->successors[0]->start_qpu_ip -
+                         (block->branch_qpu_ip + 4)) * sizeof(uint64_t);
+                *branch_inst = (*branch_inst |
+                                QPU_SET_FIELD(branch_target, QPU_BRANCH_TARGET));
+
+                /* Make sure that the if-we-don't-jump successor was scheduled
+                 * just after the delay slots.
+                 */
+                if (block->successors[1]) {
+                        assert(block->successors[1]->start_qpu_ip ==
+                               block->branch_qpu_ip + 4);
+                }
+        }
+}
+
+uint32_t
+qpu_schedule_instructions(struct vc4_compile *c)
+{
+        /* We reorder the uniforms as we schedule instructions, so save the
+         * old data off and replace it.
+         */
+        uint32_t *uniform_data = c->uniform_data;
+        enum quniform_contents *uniform_contents = c->uniform_contents;
+        c->uniform_contents = ralloc_array(c, enum quniform_contents,
+                                           c->num_uniforms);
+        c->uniform_data = ralloc_array(c, uint32_t, c->num_uniforms);
+        c->uniform_array_size = c->num_uniforms;
+        uint32_t next_uniform = 0;
+
+        struct choose_scoreboard scoreboard;
+        memset(&scoreboard, 0, sizeof(scoreboard));
+        scoreboard.last_waddr_a = ~0;
+        scoreboard.last_waddr_b = ~0;
+        scoreboard.last_sfu_write_tick = -10;
+        scoreboard.last_uniforms_reset_tick = -10;
+
+        if (debug) {
+                fprintf(stderr, "Pre-schedule instructions\n");
+                qir_for_each_block(block, c) {
+                        fprintf(stderr, "BLOCK %d\n", block->index);
+                        list_for_each_entry(struct queued_qpu_inst, q,
+                                            &block->qpu_inst_list, link) {
+                                vc4_qpu_disasm(&q->inst, 1);
+                                fprintf(stderr, "\n");
+                        }
+                }
+                fprintf(stderr, "\n");
+        }
+
+        uint32_t cycles = 0;
+        qir_for_each_block(block, c) {
+                block->start_qpu_ip = c->qpu_inst_count;
+                block->branch_qpu_ip = ~0;
+
+                cycles += qpu_schedule_instructions_block(c,
+                                                          &scoreboard,
+                                                          block,
+                                                          uniform_contents,
+                                                          uniform_data,
+                                                          &next_uniform);
+
+                block->end_qpu_ip = c->qpu_inst_count - 1;
+        }
+
+        qpu_set_branch_targets(c);
+
+        assert(next_uniform == c->num_uniforms);
 
         if (debug) {
                 fprintf(stderr, "Post-schedule instructions\n");
@@ -853,5 +1166,5 @@ qpu_schedule_instructions(struct vc4_compile *c)
                 fprintf(stderr, "\n");
         }
 
-        ralloc_free(mem_ctx);
+        return cycles;
 }

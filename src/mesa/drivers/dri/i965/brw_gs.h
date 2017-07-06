@@ -27,23 +27,18 @@
 #include <stdbool.h>
 
 #include "brw_context.h"
-#include "brw_program.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct gl_context;
 struct gl_shader_program;
-struct gl_program;
 
 void
 brw_upload_gs_prog(struct brw_context *brw);
 
-bool
-brw_codegen_gs_prog(struct brw_context *brw,
-                    struct gl_shader_program *prog,
-                    struct brw_geometry_program *gp,
+void
+brw_gs_populate_key(struct brw_context *brw,
                     struct brw_gs_prog_key *key);
 
 #ifdef __cplusplus

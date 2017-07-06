@@ -64,6 +64,7 @@ is_constant_value(struct vc4_compile *c, struct qreg reg,
                   uint32_t val)
 {
         if (reg.file == QFILE_UNIF &&
+            !reg.pack &&
             c->uniform_contents[reg.index] == QUNIFORM_CONSTANT &&
             c->uniform_data[reg.index] == val) {
                 return true;
@@ -93,9 +94,17 @@ static void
 replace_with_mov(struct vc4_compile *c, struct qinst *inst, struct qreg arg)
 {
         dump_from(c, inst);
-        inst->op = QOP_MOV;
+
         inst->src[0] = arg;
-        inst->src[1] = c->undef;
+        if (qir_has_implicit_tex_uniform(inst))
+                inst->src[1] = inst->src[qir_get_tex_uniform_src(inst)];
+
+        if (qir_is_mul(inst))
+                inst->op = QOP_MMOV;
+        else if (qir_is_float_input(inst))
+                inst->op = QOP_FMOV;
+        else
+                inst->op = QOP_MOV;
         dump_to(c, inst);
 }
 
@@ -137,53 +146,41 @@ qir_opt_algebraic(struct vc4_compile *c)
 {
         bool progress = false;
 
-        list_for_each_entry(struct qinst, inst, &c->instructions, link) {
+        qir_for_each_inst_inorder(inst, c) {
                 switch (inst->op) {
-                case QOP_SEL_X_Y_ZS:
-                case QOP_SEL_X_Y_ZC:
-                case QOP_SEL_X_Y_NS:
-                case QOP_SEL_X_Y_NC:
-                        if (is_zero(c, inst->src[1])) {
-                                /* Replace references to a 0 uniform value
-                                 * with the SEL_X_0 equivalent.
-                                 */
-                                dump_from(c, inst);
-                                inst->op -= (QOP_SEL_X_Y_ZS - QOP_SEL_X_0_ZS);
-                                inst->src[1] = c->undef;
+                case QOP_FMIN:
+                        if (is_1f(c, inst->src[1]) &&
+                            inst->src[0].pack >= QPU_UNPACK_8D_REP &&
+                            inst->src[0].pack <= QPU_UNPACK_8D) {
+                                replace_with_mov(c, inst, inst->src[0]);
                                 progress = true;
-                                dump_to(c, inst);
-                                break;
                         }
+                        break;
 
-                        if (is_zero(c, inst->src[0])) {
-                                /* Replace references to a 0 uniform value
-                                 * with the SEL_X_0 equivalent, flipping the
-                                 * condition being evaluated since the operand
-                                 * order is flipped.
-                                 */
-                                dump_from(c, inst);
-                                inst->op -= QOP_SEL_X_Y_ZS;
-                                inst->op ^= 1;
-                                inst->op += QOP_SEL_X_0_ZS;
-                                inst->src[0] = inst->src[1];
-                                inst->src[1] = c->undef;
+                case QOP_FMAX:
+                        if (is_zero(c, inst->src[1]) &&
+                            inst->src[0].pack >= QPU_UNPACK_8D_REP &&
+                            inst->src[0].pack <= QPU_UNPACK_8D) {
+                                replace_with_mov(c, inst, inst->src[0]);
                                 progress = true;
-                                dump_to(c, inst);
-                                break;
                         }
-
                         break;
 
                 case QOP_FSUB:
                 case QOP_SUB:
                         if (is_zero(c, inst->src[1])) {
                                 replace_with_mov(c, inst, inst->src[0]);
+                                progress = true;
                         }
                         break;
 
                 case QOP_ADD:
-                        if (replace_x_0_with_x(c, inst, 0) ||
-                            replace_x_0_with_x(c, inst, 1)) {
+                        /* Kernel validation requires that we use an actual
+                         * add instruction.
+                         */
+                        if (inst->dst.file != QFILE_TEX_S_DIRECT &&
+                            (replace_x_0_with_x(c, inst, 0) ||
+                             replace_x_0_with_x(c, inst, 1))) {
                                 progress = true;
                                 break;
                         }

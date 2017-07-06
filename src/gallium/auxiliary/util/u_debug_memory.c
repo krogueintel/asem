@@ -87,7 +87,7 @@ struct debug_memory_footer
 
 static struct list_head list = { &list, &list };
 
-pipe_static_mutex(list_mutex);
+static mtx_t list_mutex = _MTX_INITIALIZER_NP;
 
 static unsigned long last_no = 0;
 
@@ -128,7 +128,7 @@ debug_malloc(const char *file, unsigned line, const char *function,
    struct debug_memory_footer *ftr;
    
    hdr = os_malloc(sizeof(*hdr) + size + sizeof(*ftr));
-   if(!hdr) {
+   if (!hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)size);
@@ -153,9 +153,9 @@ debug_malloc(const char *file, unsigned line, const char *function,
    ftr = footer_from_header(hdr);
    ftr->magic = DEBUG_MEMORY_MAGIC;
    
-   pipe_mutex_lock(list_mutex);
+   mtx_lock(&list_mutex);
    LIST_ADDTAIL(&hdr->head, &list);
-   pipe_mutex_unlock(list_mutex);
+   mtx_unlock(&list_mutex);
    
    return data_from_header(hdr);
 }
@@ -167,7 +167,7 @@ debug_free(const char *file, unsigned line, const char *function,
    struct debug_memory_header *hdr;
    struct debug_memory_footer *ftr;
    
-   if(!ptr)
+   if (!ptr)
       return;
    
    hdr = header_from_data(ptr);
@@ -198,9 +198,9 @@ debug_free(const char *file, unsigned line, const char *function,
    /* set freed memory to special value */
    memset(ptr, DEBUG_FREED_BYTE, hdr->size);
 #else
-   pipe_mutex_lock(list_mutex);
+   mtx_lock(&list_mutex);
    LIST_DEL(&hdr->head);
-   pipe_mutex_unlock(list_mutex);
+   mtx_unlock(&list_mutex);
    hdr->magic = 0;
    ftr->magic = 0;
    
@@ -213,7 +213,7 @@ debug_calloc(const char *file, unsigned line, const char *function,
              size_t count, size_t size )
 {
    void *ptr = debug_malloc( file, line, function, count * size );
-   if( ptr )
+   if (ptr)
       memset( ptr, 0, count * size );
    return ptr;
 }
@@ -226,7 +226,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
    struct debug_memory_footer *old_ftr, *new_ftr;
    void *new_ptr;
    
-   if(!old_ptr)
+   if (!old_ptr)
       return debug_malloc( file, line, function, new_size );
    
    if(!new_size) {
@@ -253,7 +253,7 @@ debug_realloc(const char *file, unsigned line, const char *function,
 
    /* alloc new */
    new_hdr = os_malloc(sizeof(*new_hdr) + new_size + sizeof(*new_ftr));
-   if(!new_hdr) {
+   if (!new_hdr) {
       debug_printf("%s:%u:%s: out of memory when trying to allocate %lu bytes\n",
                    file, line, function,
                    (long unsigned)new_size);
@@ -273,9 +273,9 @@ debug_realloc(const char *file, unsigned line, const char *function,
    new_ftr = footer_from_header(new_hdr);
    new_ftr->magic = DEBUG_MEMORY_MAGIC;
    
-   pipe_mutex_lock(list_mutex);
+   mtx_lock(&list_mutex);
    LIST_REPLACE(&old_hdr->head, &new_hdr->head);
-   pipe_mutex_unlock(list_mutex);
+   mtx_unlock(&list_mutex);
 
    /* copy data */
    new_ptr = data_from_header(new_hdr);

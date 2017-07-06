@@ -104,8 +104,7 @@ enum {
 
 enum {
    DRAW_JIT_VERTEX_VERTEX_ID = 0,
-   DRAW_JIT_VERTEX_CLIP,
-   DRAW_JIT_VERTEX_PRE_CLIP_POS,
+   DRAW_JIT_VERTEX_CLIP_POS,
    DRAW_JIT_VERTEX_DATA
 };
 
@@ -162,11 +161,8 @@ enum {
 #define draw_jit_header_id(_gallivm, _ptr)              \
    lp_build_struct_get_ptr(_gallivm, _ptr, DRAW_JIT_VERTEX_VERTEX_ID, "id")
 
-#define draw_jit_header_clip(_gallivm, _ptr) \
-   lp_build_struct_get_ptr(_gallivm, _ptr, DRAW_JIT_VERTEX_CLIP, "clip")
-
-#define draw_jit_header_pre_clip_pos(_gallivm, _ptr) \
-   lp_build_struct_get_ptr(_gallivm, _ptr, DRAW_JIT_VERTEX_PRE_CLIP_POS, "pre_clip_pos")
+#define draw_jit_header_clip_pos(_gallivm, _ptr) \
+   lp_build_struct_get_ptr(_gallivm, _ptr, DRAW_JIT_VERTEX_CLIP_POS, "clip_pos")
 
 #define draw_jit_header_data(_gallivm, _ptr)            \
    lp_build_struct_get_ptr(_gallivm, _ptr, DRAW_JIT_VERTEX_DATA, "data")
@@ -176,7 +172,7 @@ enum {
    lp_build_struct_get(_gallivm, _ptr, 0, "stride")
 
 #define draw_jit_vbuffer_offset(_gallivm, _ptr)         \
-   lp_build_struct_get(_gallivm, _ptr, 1, "buffer_offset")
+   lp_build_struct_get(_gallivm, _ptr, 2, "buffer_offset")
 
 enum {
    DRAW_JIT_DVBUFFER_MAP = 0,
@@ -265,31 +261,18 @@ enum {
 
 
 
-typedef int
+typedef boolean
 (*draw_jit_vert_func)(struct draw_jit_context *context,
                       struct vertex_header *io,
                       const struct draw_vertex_buffer vbuffers[PIPE_MAX_ATTRIBS],
-                      unsigned start,
                       unsigned count,
+                      unsigned start_or_maxelt,
                       unsigned stride,
                       struct pipe_vertex_buffer *vertex_buffers,
                       unsigned instance_id,
                       unsigned vertex_id_offset,
-                      unsigned start_instance);
-
-
-typedef int
-(*draw_jit_vert_func_elts)(struct draw_jit_context *context,
-                           struct vertex_header *io,
-                           const struct draw_vertex_buffer vbuffers[PIPE_MAX_ATTRIBS],
-                           const unsigned *fetch_elts,
-                           unsigned fetch_max_elt,
-                           unsigned fetch_count,
-                           unsigned stride,
-                           struct pipe_vertex_buffer *vertex_buffers,
-                           unsigned instance_id,
-                           unsigned vertex_id_offset,
-                           unsigned start_instance);
+                      unsigned start_instance,
+                      const unsigned *fetch_elts);
 
 
 typedef int
@@ -315,12 +298,8 @@ struct draw_llvm_variant_key
    unsigned need_edgeflags:1;
    unsigned has_gs:1;
    unsigned num_outputs:8;
-   /*
-    * it is important there are no holes in this struct
-    * (and all padding gets zeroed).
-    */
    unsigned ucp_enable:PIPE_MAX_CLIP_PLANES;
-   unsigned pad1:24-PIPE_MAX_CLIP_PLANES;
+   /* note padding here - must use memset */
 
    /* Variable number of vertex elements:
     */
@@ -336,6 +315,7 @@ struct draw_gs_llvm_variant_key
    unsigned nr_samplers:8;
    unsigned nr_sampler_views:8;
    unsigned num_outputs:8;
+   /* note padding here - must use memset */
 
    struct draw_sampler_static_state samplers[1];
 };
@@ -400,9 +380,7 @@ struct draw_llvm_variant
    LLVMTypeRef vertex_header_ptr_type;
 
    LLVMValueRef function;
-   LLVMValueRef function_elts;
    draw_jit_vert_func jit_func;
-   draw_jit_vert_func_elts jit_func_elts;
 
    struct llvm_vertex_shader *shader;
 
@@ -530,11 +508,12 @@ struct lp_build_sampler_soa *
 draw_llvm_sampler_soa_create(const struct draw_sampler_static_state *static_state);
 
 void
-draw_llvm_set_sampler_state(struct draw_context *draw, unsigned shader_stage);
+draw_llvm_set_sampler_state(struct draw_context *draw,
+                            enum pipe_shader_type shader_stage);
 
 void
 draw_llvm_set_mapped_texture(struct draw_context *draw,
-                             unsigned shader_stage,
+                             enum pipe_shader_type shader_stage,
                              unsigned sview_idx,
                              uint32_t width, uint32_t height, uint32_t depth,
                              uint32_t first_level, uint32_t last_level,

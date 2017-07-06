@@ -28,6 +28,10 @@
 #ifndef PIPE_VIDEO_ENUMS_H
 #define PIPE_VIDEO_ENUMS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum pipe_video_format
 {
    PIPE_VIDEO_FORMAT_UNKNOWN = 0,
@@ -50,6 +54,7 @@ enum pipe_video_profile
    PIPE_VIDEO_PROFILE_VC1_MAIN,
    PIPE_VIDEO_PROFILE_VC1_ADVANCED,
    PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE,
+   PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE,
    PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN,
    PIPE_VIDEO_PROFILE_MPEG4_AVC_EXTENDED,
    PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH,
@@ -86,5 +91,9 @@ enum pipe_video_entrypoint
    PIPE_VIDEO_ENTRYPOINT_MC,
    PIPE_VIDEO_ENTRYPOINT_ENCODE
 };
+
+#if defined(__cplusplus)
+}
+#endif
 
 #endif /* PIPE_VIDEO_ENUMS_H */

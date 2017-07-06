@@ -397,7 +397,7 @@ int main(int argc, char **argv)
    }
 #endif
 
-   if(fp) {
+   if (fp) {
       /* Warm up the caches */
       test_some(0, NULL, 100);
 
@@ -411,8 +411,10 @@ int main(int argc, char **argv)
    else
       success = test_all(verbose, fp);
 
-   if(fp)
+   if (fp)
       fclose(fp);
+
+   LLVMShutdown();
 
    return success ? 0 : 1;
 }

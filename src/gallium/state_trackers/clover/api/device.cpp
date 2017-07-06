@@ -23,6 +23,7 @@
 #include "api/util.hpp"
 #include "core/platform.hpp"
 #include "core/device.hpp"
+#include "git_sha1.h"
 
 using namespace clover;
 
@@ -157,7 +158,7 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_ADDRESS_BITS:
-      buf.as_scalar<cl_uint>() = 32;
+      buf.as_scalar<cl_uint>() = dev.address_bits();
       break;
 
    case CL_DEVICE_MAX_READ_IMAGE_ARGS:
@@ -181,6 +182,14 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
    case CL_DEVICE_IMAGE3D_MAX_HEIGHT:
    case CL_DEVICE_IMAGE3D_MAX_DEPTH:
       buf.as_scalar<size_t>() = 1 << dev.max_image_levels_3d();
+      break;
+
+   case CL_DEVICE_IMAGE_MAX_BUFFER_SIZE:
+      buf.as_scalar<size_t>() = dev.max_image_buffer_size();
+      break;
+
+   case CL_DEVICE_IMAGE_MAX_ARRAY_SIZE:
+      buf.as_scalar<size_t>() = dev.max_image_array_number();
       break;
 
    case CL_DEVICE_IMAGE_SUPPORT:
@@ -272,6 +281,7 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
 
    case CL_DEVICE_AVAILABLE:
    case CL_DEVICE_COMPILER_AVAILABLE:
+   case CL_DEVICE_LINKER_AVAILABLE:
       buf.as_scalar<cl_bool>() = CL_TRUE;
       break;
 
@@ -281,6 +291,10 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
 
    case CL_DEVICE_QUEUE_PROPERTIES:
       buf.as_scalar<cl_command_queue_properties>() = CL_QUEUE_PROFILING_ENABLE;
+      break;
+
+   case CL_DEVICE_BUILT_IN_KERNELS:
+      buf.as_string() = "";
       break;
 
    case CL_DEVICE_NAME:
@@ -300,7 +314,11 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_VERSION:
-      buf.as_string() = "OpenCL 1.1 MESA " PACKAGE_VERSION;
+      buf.as_string() = "OpenCL 1.1 Mesa " PACKAGE_VERSION
+#ifdef MESA_GIT_SHA1
+                        " (" MESA_GIT_SHA1 ")"
+#endif
+			;
       break;
 
    case CL_DEVICE_EXTENSIONS:
@@ -318,7 +336,7 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
       break;
 
    case CL_DEVICE_HOST_UNIFIED_MEMORY:
-      buf.as_scalar<cl_bool>() = CL_TRUE;
+      buf.as_scalar<cl_bool>() = dev.has_unified_memory();
       break;
 
    case CL_DEVICE_NATIVE_VECTOR_WIDTH_CHAR:
@@ -351,6 +369,16 @@ clGetDeviceInfo(cl_device_id d_dev, cl_device_info param,
 
    case CL_DEVICE_OPENCL_C_VERSION:
       buf.as_string() = "OpenCL C 1.1 ";
+      break;
+
+   case CL_DEVICE_PRINTF_BUFFER_SIZE:
+      // Per the spec, the minimum value for the FULL profile is 1 MB.
+      // However, clover is not ready yet to support it
+      buf.as_scalar<size_t>() = 0 /* 1024 */;
+      break;
+
+   case CL_DEVICE_PREFERRED_INTEROP_USER_SYNC:
+      buf.as_scalar<cl_bool>() = CL_TRUE;
       break;
 
    case CL_DEVICE_PARENT_DEVICE:

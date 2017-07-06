@@ -30,8 +30,12 @@ include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := $(C_SOURCES)
 
-LOCAL_SHARED_LIBRARIES := libdrm libdrm_intel
+LOCAL_SHARED_LIBRARIES := libdrm_intel
 LOCAL_MODULE := libmesa_winsys_i915
 
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
+
+ifneq ($(HAVE_GALLIUM_I915),)
+$(eval GALLIUM_SHARED_LIBS += $(LOCAL_SHARED_LIBRARIES))
+endif

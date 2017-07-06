@@ -39,8 +39,9 @@
 #include "main/uniforms.h"
 #include "program/program.h"
 #include "program/prog_parameter.h"
-#include "program/hash_table.h"
 #include "util/ralloc.h"
+#include "util/string_to_uint_map.h"
+#include "util/u_atomic.h"
 
 /**********************************************************************/
 /*** Shader object functions                                        ***/
@@ -64,17 +65,14 @@ _mesa_reference_shader(struct gl_context *ctx, struct gl_shader **ptr,
    }
    if (*ptr) {
       /* Unreference the old shader */
-      GLboolean deleteFlag = GL_FALSE;
       struct gl_shader *old = *ptr;
 
       assert(old->RefCount > 0);
-      old->RefCount--;
-      deleteFlag = (old->RefCount == 0);
 
-      if (deleteFlag) {
+      if (p_atomic_dec_zero(&old->RefCount)) {
 	 if (old->Name != 0)
 	    _mesa_HashRemove(ctx->Shared->ShaderObjects, old->Name);
-         ctx->Driver.DeleteShader(ctx, old);
+         _mesa_delete_shader(ctx, old);
       }
 
       *ptr = NULL;
@@ -83,32 +81,35 @@ _mesa_reference_shader(struct gl_context *ctx, struct gl_shader **ptr,
 
    if (sh) {
       /* reference new */
-      sh->RefCount++;
+      p_atomic_inc(&sh->RefCount);
       *ptr = sh;
    }
 }
 
-void
-_mesa_init_shader(struct gl_context *ctx, struct gl_shader *shader)
+static void
+_mesa_init_shader(struct gl_shader *shader)
 {
    shader->RefCount = 1;
+   shader->info.Geom.VerticesOut = -1;
+   shader->info.Geom.InputType = GL_TRIANGLES;
+   shader->info.Geom.OutputType = GL_TRIANGLE_STRIP;
 }
 
 /**
  * Allocate a new gl_shader object, initialize it.
- * Called via ctx->Driver.NewShader()
  */
 struct gl_shader *
-_mesa_new_shader(struct gl_context *ctx, GLuint name, GLenum type)
+_mesa_new_shader(GLuint name, gl_shader_stage stage)
 {
    struct gl_shader *shader;
-   assert(_mesa_validate_shader_target(ctx, type));
    shader = rzalloc(NULL, struct gl_shader);
    if (shader) {
-      shader->Type = type;
-      shader->Stage = _mesa_shader_enum_to_shader_stage(type);
+      shader->Stage = stage;
       shader->Name = name;
-      _mesa_init_shader(ctx, shader);
+#ifdef DEBUG
+      shader->SourceChecksum = 0xa110c; /* alloc */
+#endif
+      _mesa_init_shader(shader);
    }
    return shader;
 }
@@ -116,13 +117,24 @@ _mesa_new_shader(struct gl_context *ctx, GLuint name, GLenum type)
 
 /**
  * Delete a shader object.
- * Called via ctx->Driver.DeleteShader().
  */
-static void
+void
 _mesa_delete_shader(struct gl_context *ctx, struct gl_shader *sh)
 {
    free((void *)sh->Source);
+   free((void *)sh->FallbackSource);
    free(sh->Label);
+   ralloc_free(sh);
+}
+
+
+/**
+ * Delete a shader object.
+ */
+void
+_mesa_delete_linked_shader(struct gl_context *ctx,
+                           struct gl_linked_shader *sh)
+{
    _mesa_reference_program(ctx, &sh->Program, NULL);
    ralloc_free(sh);
 }
@@ -182,6 +194,33 @@ _mesa_lookup_shader_err(struct gl_context *ctx, GLuint name, const char *caller)
 /**********************************************************************/
 
 
+void
+_mesa_reference_shader_program_data(struct gl_context *ctx,
+                                    struct gl_shader_program_data **ptr,
+                                    struct gl_shader_program_data *data)
+{
+   if (*ptr == data)
+      return;
+
+   if (*ptr) {
+      struct gl_shader_program_data *oldData = *ptr;
+
+      assert(oldData->RefCount > 0);
+
+      if (p_atomic_dec_zero(&oldData->RefCount)) {
+         assert(ctx);
+         ralloc_free(oldData);
+      }
+
+      *ptr = NULL;
+   }
+
+   if (data)
+      p_atomic_inc(&data->RefCount);
+
+   *ptr = data;
+}
+
 /**
  * Set ptr to point to shProg.
  * If ptr is pointing to another object, decrement its refcount (and delete
@@ -200,17 +239,14 @@ _mesa_reference_shader_program_(struct gl_context *ctx,
    }
    if (*ptr) {
       /* Unreference the old shader program */
-      GLboolean deleteFlag = GL_FALSE;
       struct gl_shader_program *old = *ptr;
 
       assert(old->RefCount > 0);
-      old->RefCount--;
-      deleteFlag = (old->RefCount == 0);
 
-      if (deleteFlag) {
+      if (p_atomic_dec_zero(&old->RefCount)) {
 	 if (old->Name != 0)
 	    _mesa_HashRemove(ctx->Shared->ShaderObjects, old->Name);
-         ctx->Driver.DeleteShaderProgram(ctx, old);
+         _mesa_delete_shader_program(ctx, old);
       }
 
       *ptr = NULL;
@@ -218,9 +254,20 @@ _mesa_reference_shader_program_(struct gl_context *ctx,
    assert(!*ptr);
 
    if (shProg) {
-      shProg->RefCount++;
+      p_atomic_inc(&shProg->RefCount);
       *ptr = shProg;
    }
+}
+
+static struct gl_shader_program_data *
+create_shader_program_data()
+{
+   struct gl_shader_program_data *data;
+   data = rzalloc(NULL, struct gl_shader_program_data);
+   if (data)
+      data->RefCount = 1;
+
+   return data;
 }
 
 static void
@@ -233,28 +280,31 @@ init_shader_program(struct gl_shader_program *prog)
    prog->FragDataBindings = string_to_uint_map_ctor();
    prog->FragDataIndexBindings = string_to_uint_map_ctor();
 
-   prog->Geom.VerticesOut = 0;
-   prog->Geom.InputType = GL_TRIANGLES;
-   prog->Geom.OutputType = GL_TRIANGLE_STRIP;
    prog->Geom.UsesEndPrimitive = false;
    prog->Geom.UsesStreams = false;
 
    prog->TransformFeedback.BufferMode = GL_INTERLEAVED_ATTRIBS;
 
-   prog->InfoLog = ralloc_strdup(prog, "");
+   exec_list_make_empty(&prog->EmptyUniformLocations);
+
+   prog->data->InfoLog = ralloc_strdup(prog->data, "");
 }
 
 /**
  * Allocate a new gl_shader_program object, initialize it.
- * Called via ctx->Driver.NewShaderProgram()
  */
-static struct gl_shader_program *
+struct gl_shader_program *
 _mesa_new_shader_program(GLuint name)
 {
    struct gl_shader_program *shProg;
    shProg = rzalloc(NULL, struct gl_shader_program);
    if (shProg) {
       shProg->Name = name;
+      shProg->data = create_shader_program_data();
+      if (!shProg->data) {
+         ralloc_free(shProg);
+         return NULL;
+      }
       init_shader_program(shProg);
    }
    return shProg;
@@ -265,19 +315,28 @@ _mesa_new_shader_program(GLuint name)
  * Clear (free) the shader program state that gets produced by linking.
  */
 void
-_mesa_clear_shader_program_data(struct gl_shader_program *shProg)
+_mesa_clear_shader_program_data(struct gl_context *ctx,
+                                struct gl_shader_program *shProg)
 {
-   unsigned i;
-
-   if (shProg->UniformStorage) {
-      for (i = 0; i < shProg->NumUniformStorage; ++i)
-         _mesa_uniform_detach_all_driver_storage(&shProg->UniformStorage[i]);
-      ralloc_free(shProg->UniformStorage);
-      shProg->NumUniformStorage = 0;
-      shProg->UniformStorage = NULL;
+   for (gl_shader_stage sh = 0; sh < MESA_SHADER_STAGES; sh++) {
+      if (shProg->_LinkedShaders[sh] != NULL) {
+         _mesa_delete_linked_shader(ctx, shProg->_LinkedShaders[sh]);
+         shProg->_LinkedShaders[sh] = NULL;
+      }
    }
 
-   if (shProg->UniformRemapTable) {
+   shProg->data->linked_stages = 0;
+
+   if (shProg->data->UniformStorage && !shProg->data->cache_fallback) {
+      for (unsigned i = 0; i < shProg->data->NumUniformStorage; ++i)
+         _mesa_uniform_detach_all_driver_storage(&shProg->data->
+                                                    UniformStorage[i]);
+      ralloc_free(shProg->data->UniformStorage);
+      shProg->data->NumUniformStorage = 0;
+      shProg->data->UniformStorage = NULL;
+   }
+
+   if (shProg->UniformRemapTable && !shProg->data->cache_fallback) {
       ralloc_free(shProg->UniformRemapTable);
       shProg->NumUniformRemapTable = 0;
       shProg->UniformRemapTable = NULL;
@@ -288,26 +347,30 @@ _mesa_clear_shader_program_data(struct gl_shader_program *shProg)
       shProg->UniformHash = NULL;
    }
 
-   assert(shProg->InfoLog != NULL);
-   ralloc_free(shProg->InfoLog);
-   shProg->InfoLog = ralloc_strdup(shProg, "");
+   assert(shProg->data->InfoLog != NULL);
+   ralloc_free(shProg->data->InfoLog);
+   shProg->data->InfoLog = ralloc_strdup(shProg->data, "");
 
-   ralloc_free(shProg->UniformBlocks);
-   shProg->UniformBlocks = NULL;
-   shProg->NumBufferInterfaceBlocks = 0;
-   for (i = 0; i < MESA_SHADER_STAGES; i++) {
-      ralloc_free(shProg->UniformBlockStageIndex[i]);
-      shProg->UniformBlockStageIndex[i] = NULL;
+   if (!shProg->data->cache_fallback) {
+      ralloc_free(shProg->data->UniformBlocks);
+      shProg->data->UniformBlocks = NULL;
+      shProg->data->NumUniformBlocks = 0;
+
+      ralloc_free(shProg->data->ShaderStorageBlocks);
+      shProg->data->ShaderStorageBlocks = NULL;
+      shProg->data->NumShaderStorageBlocks = 0;
    }
 
-   ralloc_free(shProg->AtomicBuffers);
-   shProg->AtomicBuffers = NULL;
-   shProg->NumAtomicBuffers = 0;
+   if (shProg->data->AtomicBuffers && !shProg->data->cache_fallback) {
+      ralloc_free(shProg->data->AtomicBuffers);
+      shProg->data->AtomicBuffers = NULL;
+      shProg->data->NumAtomicBuffers = 0;
+   }
 
-   if (shProg->ProgramResourceList) {
-      ralloc_free(shProg->ProgramResourceList);
-      shProg->ProgramResourceList = NULL;
-      shProg->NumProgramResourceList = 0;
+   if (shProg->data->ProgramResourceList) {
+      ralloc_free(shProg->data->ProgramResourceList);
+      shProg->data->ProgramResourceList = NULL;
+      shProg->data->NumProgramResourceList = 0;
    }
 }
 
@@ -321,11 +384,10 @@ _mesa_free_shader_program_data(struct gl_context *ctx,
                                struct gl_shader_program *shProg)
 {
    GLuint i;
-   gl_shader_stage sh;
 
    assert(shProg->Type == GL_SHADER_PROGRAM_MESA);
 
-   _mesa_clear_shader_program_data(shProg);
+   _mesa_clear_shader_program_data(ctx, shProg);
 
    if (shProg->AttributeBindings) {
       string_to_uint_map_dtor(shProg->AttributeBindings);
@@ -359,14 +421,6 @@ _mesa_free_shader_program_data(struct gl_context *ctx,
    shProg->TransformFeedback.VaryingNames = NULL;
    shProg->TransformFeedback.NumVarying = 0;
 
-
-   for (sh = 0; sh < MESA_SHADER_STAGES; sh++) {
-      if (shProg->_LinkedShaders[sh] != NULL) {
-	 ctx->Driver.DeleteShader(ctx, shProg->_LinkedShaders[sh]);
-	 shProg->_LinkedShaders[sh] = NULL;
-      }
-   }
-
    free(shProg->Label);
    shProg->Label = NULL;
 }
@@ -374,13 +428,14 @@ _mesa_free_shader_program_data(struct gl_context *ctx,
 
 /**
  * Free/delete a shader program object.
- * Called via ctx->Driver.DeleteShaderProgram().
  */
-static void
-_mesa_delete_shader_program(struct gl_context *ctx, struct gl_shader_program *shProg)
+void
+_mesa_delete_shader_program(struct gl_context *ctx,
+                            struct gl_shader_program *shProg)
 {
    _mesa_free_shader_program_data(ctx, shProg);
-
+   if (!shProg->data->cache_fallback)
+      _mesa_reference_shader_program_data(ctx, &shProg->data, NULL);
    ralloc_free(shProg);
 }
 
@@ -438,9 +493,5 @@ _mesa_lookup_shader_program_err(struct gl_context *ctx, GLuint name,
 void
 _mesa_init_shader_object_functions(struct dd_function_table *driver)
 {
-   driver->NewShader = _mesa_new_shader;
-   driver->DeleteShader = _mesa_delete_shader;
-   driver->NewShaderProgram = _mesa_new_shader_program;
-   driver->DeleteShaderProgram = _mesa_delete_shader_program;
    driver->LinkShader = _mesa_ir_link_shader;
 }

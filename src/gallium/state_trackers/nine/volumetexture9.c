@@ -48,19 +48,24 @@ NineVolumeTexture9_ctor( struct NineVolumeTexture9 *This,
         This, pParams, Width, Height, Depth, Levels,
         Usage, Format, Pool, pSharedHandle);
 
+    user_assert(Width && Height && Depth, D3DERR_INVALIDCALL);
+
+    /* user_assert(!pSharedHandle || Pool == D3DPOOL_DEFAULT, D3DERR_INVALIDCALL); */
+    user_assert(!pSharedHandle, D3DERR_INVALIDCALL); /* TODO */
+
     /* An IDirect3DVolume9 cannot be bound as a render target can it ? */
     user_assert(!(Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)),
                 D3DERR_INVALIDCALL);
     user_assert(!(Usage & D3DUSAGE_AUTOGENMIPMAP), D3DERR_INVALIDCALL);
 
-    user_assert(!pSharedHandle, D3DERR_INVALIDCALL); /* TODO */
-
     pf = d3d9_to_pipe_format_checked(screen, Format, PIPE_TEXTURE_3D, 0,
-                                     PIPE_BIND_SAMPLER_VIEW, FALSE);
+                                     PIPE_BIND_SAMPLER_VIEW, FALSE,
+                                     Pool == D3DPOOL_SCRATCH);
+
     if (pf == PIPE_FORMAT_NONE)
         return D3DERR_INVALIDCALL;
 
-    /* We support ATI1 and ATI2 hacks only for 2D textures */
+    /* We support ATI1 and ATI2 hacks only for 2D and Cube textures */
     if (Format == D3DFMT_ATI1 || Format == D3DFMT_ATI2)
         return D3DERR_INVALIDCALL;
 
@@ -89,9 +94,6 @@ NineVolumeTexture9_ctor( struct NineVolumeTexture9 *This,
 
     if (Usage & D3DUSAGE_DYNAMIC) {
         info->usage = PIPE_USAGE_DYNAMIC;
-        info->bind |=
-            PIPE_BIND_TRANSFER_READ |
-            PIPE_BIND_TRANSFER_WRITE;
     }
     if (Usage & D3DUSAGE_SOFTWAREPROCESSING)
         DBG("Application asked for Software Vertex Processing, "
@@ -137,7 +139,7 @@ NineVolumeTexture9_dtor( struct NineVolumeTexture9 *This )
     DBG("This=%p\n", This);
 
     if (This->volumes) {
-        for (l = 0; l < This->base.base.info.last_level; ++l)
+        for (l = 0; l <= This->base.base.info.last_level; ++l)
             NineUnknown_Destroy(&This->volumes[l]->base);
         FREE(This->volumes);
     }
@@ -145,7 +147,7 @@ NineVolumeTexture9_dtor( struct NineVolumeTexture9 *This )
     NineBaseTexture9_dtor(&This->base);
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolumeTexture9_GetLevelDesc( struct NineVolumeTexture9 *This,
                                  UINT Level,
                                  D3DVOLUME_DESC *pDesc )
@@ -157,7 +159,7 @@ NineVolumeTexture9_GetLevelDesc( struct NineVolumeTexture9 *This,
     return D3D_OK;
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolumeTexture9_GetVolumeLevel( struct NineVolumeTexture9 *This,
                                    UINT Level,
                                    IDirect3DVolume9 **ppVolumeLevel )
@@ -170,7 +172,7 @@ NineVolumeTexture9_GetVolumeLevel( struct NineVolumeTexture9 *This,
     return D3D_OK;
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolumeTexture9_LockBox( struct NineVolumeTexture9 *This,
                             UINT Level,
                             D3DLOCKED_BOX *pLockedVolume,
@@ -186,7 +188,7 @@ NineVolumeTexture9_LockBox( struct NineVolumeTexture9 *This,
                                Flags);
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolumeTexture9_UnlockBox( struct NineVolumeTexture9 *This,
                               UINT Level )
 {
@@ -197,7 +199,7 @@ NineVolumeTexture9_UnlockBox( struct NineVolumeTexture9 *This,
     return NineVolume9_UnlockBox(This->volumes[Level]);
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolumeTexture9_AddDirtyBox( struct NineVolumeTexture9 *This,
                                 const D3DBOX *pDirtyBox )
 {
@@ -220,9 +222,13 @@ NineVolumeTexture9_AddDirtyBox( struct NineVolumeTexture9 *This,
         This->dirty_box.height = This->base.base.info.height0;
         This->dirty_box.depth = This->base.base.info.depth0;
     } else {
-        struct pipe_box box;
-        d3dbox_to_pipe_box(&box, pDirtyBox);
-        u_box_union_3d(&This->dirty_box, &This->dirty_box, &box);
+        if (This->dirty_box.width == 0) {
+            d3dbox_to_pipe_box(&This->dirty_box, pDirtyBox);
+        } else {
+            struct pipe_box box;
+            d3dbox_to_pipe_box(&box, pDirtyBox);
+            u_box_union_3d(&This->dirty_box, &This->dirty_box, &box);
+        }
         This->dirty_box.x = MAX2(This->dirty_box.x, 0);
         This->dirty_box.y = MAX2(This->dirty_box.y, 0);
         This->dirty_box.z = MAX2(This->dirty_box.z, 0);
@@ -241,9 +247,9 @@ IDirect3DVolumeTexture9Vtbl NineVolumeTexture9_vtable = {
     (void *)NineUnknown_AddRef,
     (void *)NineUnknown_Release,
     (void *)NineUnknown_GetDevice, /* actually part of Resource9 iface */
-    (void *)NineResource9_SetPrivateData,
-    (void *)NineResource9_GetPrivateData,
-    (void *)NineResource9_FreePrivateData,
+    (void *)NineUnknown_SetPrivateData,
+    (void *)NineUnknown_GetPrivateData,
+    (void *)NineUnknown_FreePrivateData,
     (void *)NineResource9_SetPriority,
     (void *)NineResource9_GetPriority,
     (void *)NineBaseTexture9_PreLoad,

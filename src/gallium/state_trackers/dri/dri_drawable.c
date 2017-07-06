@@ -217,8 +217,12 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
                     GLint format, __DRIdrawable *dPriv)
 {
    struct dri_context *ctx = dri_context(pDRICtx);
+   struct st_context_iface *st = ctx->st;
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct pipe_resource *pt;
+
+   if (st->thread_finish)
+      st->thread_finish(st);
 
    dri_drawable_validate_att(ctx, drawable, ST_ATTACHMENT_FRONT_LEFT);
 
@@ -231,11 +235,11 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
       if (format == __DRI_TEXTURE_FORMAT_RGB)  {
          /* only need to cover the formats recognized by dri_fill_st_visual */
          switch (internal_format) {
-         case PIPE_FORMAT_B8G8R8A8_UNORM:
-            internal_format = PIPE_FORMAT_B8G8R8X8_UNORM;
+         case PIPE_FORMAT_BGRA8888_UNORM:
+            internal_format = PIPE_FORMAT_BGRX8888_UNORM;
             break;
-         case PIPE_FORMAT_A8R8G8B8_UNORM:
-            internal_format = PIPE_FORMAT_X8R8G8B8_UNORM;
+         case PIPE_FORMAT_ARGB8888_UNORM:
+            internal_format = PIPE_FORMAT_XRGB8888_UNORM;
             break;
          default:
             break;
@@ -443,6 +447,7 @@ dri_flush(__DRIcontext *cPriv,
 {
    struct dri_context *ctx = dri_context(cPriv);
    struct dri_drawable *drawable = dri_drawable(dPriv);
+   struct st_context_iface *st;
    unsigned flush_flags;
    boolean swap_msaa_buffers = FALSE;
 
@@ -450,6 +455,10 @@ dri_flush(__DRIcontext *cPriv,
       assert(0);
       return;
    }
+
+   st = ctx->st;
+   if (st->thread_finish)
+      st->thread_finish(st);
 
    if (drawable) {
       /* prevent recursion */
@@ -465,12 +474,12 @@ dri_flush(__DRIcontext *cPriv,
    /* Flush the drawable. */
    if ((flags & __DRI2_FLUSH_DRAWABLE) &&
        drawable->textures[ST_ATTACHMENT_BACK_LEFT]) {
-      struct pipe_context *pipe = ctx->st->pipe;
+      struct pipe_context *pipe = st->pipe;
 
       if (drawable->stvis.samples > 1 &&
           reason == __DRI2_THROTTLE_SWAPBUFFER) {
          /* Resolve the MSAA back buffer. */
-         dri_pipe_blit(ctx->st->pipe,
+         dri_pipe_blit(st->pipe,
                        drawable->textures[ST_ATTACHMENT_BACK_LEFT],
                        drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]);
 
@@ -492,8 +501,10 @@ dri_flush(__DRIcontext *cPriv,
 
       if (pipe->invalidate_resource &&
           (flags & __DRI2_FLUSH_INVALIDATE_ANCILLARY)) {
-         pipe->invalidate_resource(pipe, drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
-         pipe->invalidate_resource(pipe, drawable->msaa_textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+         if (drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL])
+            pipe->invalidate_resource(pipe, drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+         if (drawable->msaa_textures[ST_ATTACHMENT_DEPTH_STENCIL])
+            pipe->invalidate_resource(pipe, drawable->msaa_textures[ST_ATTACHMENT_DEPTH_STENCIL]);
       }
    }
 
@@ -523,11 +534,11 @@ dri_flush(__DRIcontext *cPriv,
 
       fence = swap_fences_pop_front(drawable);
       if (fence) {
-         (void) screen->fence_finish(screen, fence, PIPE_TIMEOUT_INFINITE);
+         (void) screen->fence_finish(screen, NULL, fence, PIPE_TIMEOUT_INFINITE);
          screen->fence_reference(screen, &fence, NULL);
       }
 
-      ctx->st->flush(ctx->st, flush_flags, &fence);
+      st->flush(st, flush_flags, &fence);
 
       if (fence) {
          swap_fences_push_back(drawable, fence);
@@ -535,7 +546,7 @@ dri_flush(__DRIcontext *cPriv,
       }
    }
    else if (flags & (__DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT)) {
-      ctx->st->flush(ctx->st, flush_flags, NULL);
+      st->flush(st, flush_flags, NULL);
    }
 
    if (drawable) {

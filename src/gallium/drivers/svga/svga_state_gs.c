@@ -53,13 +53,9 @@ translate_geometry_program(struct svga_context *svga,
                            const struct svga_geometry_shader *gs,
                            const struct svga_compile_key *key)
 {
-   if (svga_have_vgpu10(svga)) {
-      return svga_tgsi_vgpu10_translate(svga, &gs->base, key,
-                                        PIPE_SHADER_GEOMETRY);
-   }
-   else {
-      return svga_tgsi_vgpu9_translate(&gs->base, key, PIPE_SHADER_GEOMETRY);
-   }
+   assert(svga_have_vgpu10(svga));
+   return svga_tgsi_vgpu10_translate(svga, &gs->base, key,
+                                     PIPE_SHADER_GEOMETRY);
 }
 
 
@@ -76,7 +72,7 @@ compile_gs(struct svga_context *svga,
    enum pipe_error ret = PIPE_ERROR;
 
    variant = translate_geometry_program(svga, gs, key);
-   if (variant == NULL) {
+   if (!variant) {
       /* some problem during translation, try the dummy shader */
       const struct tgsi_token *dummy = get_dummy_geometry_shader();
       if (!dummy) {
@@ -86,7 +82,7 @@ compile_gs(struct svga_context *svga,
       FREE((void *) gs->base.tokens);
       gs->base.tokens = dummy;
       variant = translate_geometry_program(svga, gs, key);
-      if (variant == NULL) {
+      if (!variant) {
          return PIPE_ERROR;
       }
    }
@@ -179,22 +175,26 @@ emit_hw_gs(struct svga_context *svga, unsigned dirty)
    enum pipe_error ret = PIPE_OK;
    struct svga_compile_key key;
 
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_EMITGS);
+
    /* If there's a user-defined GS, we should have a pointer to a derived
     * GS.  This should have been resolved in update_tgsi_transform().
     */
    if (svga->curr.user_gs)
       assert(svga->curr.gs);
 
-   if (gs == NULL) {
+   if (!gs) {
       if (svga->state.hw_draw.gs != NULL) {
 
          /** The previous geometry shader is made inactive.
           *  Needs to unbind the geometry shader.
           */
          ret = svga_set_shader(svga, SVGA3D_SHADERTYPE_GS, NULL);
+         if (ret != PIPE_OK)
+            goto done;
          svga->state.hw_draw.gs = NULL;
       }
-      return ret;
+      goto done;
    }
 
    /* If there is stream output info for this geometry shader, then use
@@ -222,7 +222,7 @@ emit_hw_gs(struct svga_context *svga, unsigned dirty)
       if (!variant) {
          ret = compile_gs(svga, gs, &key, &variant);
          if (ret != PIPE_OK)
-            return ret;
+            goto done;
 
          /* insert the new variant at head of linked list */
          assert(variant);
@@ -235,14 +235,16 @@ emit_hw_gs(struct svga_context *svga, unsigned dirty)
       /* Bind the new variant */
       ret = svga_set_shader(svga, SVGA3D_SHADERTYPE_GS, variant);
       if (ret != PIPE_OK)
-         return ret;
+         goto done;
 
       svga->rebind.flags.gs = FALSE;
       svga->dirty |= SVGA_NEW_GS_VARIANT;
       svga->state.hw_draw.gs = variant;
    }
 
-   return PIPE_OK;
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
+   return ret;
 }
 
 struct svga_tracked_state svga_hw_gs =

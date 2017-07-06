@@ -49,6 +49,7 @@ PUSH_REFN(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t flags)
 
 #define SUBC_3D(m) 3, (m)
 #define NV50_3D(n) SUBC_3D(NV50_3D_##n)
+#define NV84_3D(n) SUBC_3D(NV84_3D_##n)
 #define NVA0_3D(n) SUBC_3D(NVA0_3D_##n)
 
 #define SUBC_2D(m) 4, (m)
@@ -57,8 +58,8 @@ PUSH_REFN(struct nouveau_pushbuf *push, struct nouveau_bo *bo, uint32_t flags)
 #define SUBC_M2MF(m) 5, (m)
 #define NV50_M2MF(n) SUBC_M2MF(NV50_M2MF_##n)
 
-#define SUBC_COMPUTE(m) 6, (m)
-#define NV50_COMPUTE(n) SUBC_COMPUTE(NV50_COMPUTE_##n)
+#define SUBC_CP(m) 6, (m)
+#define NV50_CP(n) SUBC_CP(NV50_COMPUTE_##n)
 
 
 static inline uint32_t

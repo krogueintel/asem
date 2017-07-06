@@ -66,12 +66,19 @@ lib@OSMESA_LIB@_la_LIBADD = \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
 	$(SHARED_GLAPI_LIB) \
 	$(OSMESA_LIB_DEPS) \
-	$(CLOCK_LIB)
+	$(CLOCK_LIB) \
+	$(LIBUNWIND_LIBS)
 
-if HAVE_MESA_LLVM
+if HAVE_GALLIUM_LLVM
 AM_CPPFLAGS += -DGALLIUM_LLVMPIPE
 lib@OSMESA_LIB@_la_LDFLAGS += $(LLVM_LDFLAGS)
 lib@OSMESA_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la $(LLVM_LIBS)
+endif
+
+if HAVE_GALLIUM_SWR
+AM_CPPFLAGS += -DGALLIUM_SWR
+lib@OSMESA_LIB@_la_LDFLAGS += $(LLVM_LDFLAGS)
+lib@OSMESA_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/swr/libmesaswr.la $(LLVM_LIBS)
 endif
 
 EXTRA_lib@OSMESA_LIB@_la_DEPENDENCIES = osmesa.sym

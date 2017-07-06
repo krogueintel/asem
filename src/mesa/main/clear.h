@@ -43,6 +43,8 @@ _mesa_ClearColorIiEXT(GLint r, GLint g, GLint b, GLint a);
 extern void GLAPIENTRY
 _mesa_ClearColorIuiEXT(GLuint r, GLuint g, GLuint b, GLuint a);
 
+void GLAPIENTRY
+_mesa_Clear_no_error(GLbitfield mask);
 
 extern void GLAPIENTRY
 _mesa_Clear( GLbitfield mask );
@@ -75,6 +77,6 @@ _mesa_ClearBufferfi(GLenum buffer, GLint drawbuffer,
 
 extern void GLAPIENTRY
 _mesa_ClearNamedFramebufferfi(GLuint framebuffer, GLenum buffer,
-                              GLfloat depth, GLint stencil);
+                              GLint drawbuffer, GLfloat depth, GLint stencil);
 
 #endif

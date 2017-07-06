@@ -34,7 +34,6 @@
 #endif
 
 #include "util/u_format.h"
-#include "util/u_gen_mipmap.h"
 
 #define DBG_CHANNEL DBG_BASETEXTURE
 
@@ -65,7 +64,6 @@ NineBaseTexture9_ctor( struct NineBaseTexture9 *This,
         return hr;
 
     This->format = format;
-    This->pipe = pParams->device->pipe;
     This->mipfilter = (Usage & D3DUSAGE_AUTOGENMIPMAP) ?
         D3DTEXF_LINEAR : D3DTEXF_NONE;
     This->managed.lod = 0;
@@ -109,7 +107,7 @@ NineBaseTexture9_dtor( struct NineBaseTexture9 *This )
     NineResource9_dtor(&This->base);
 }
 
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineBaseTexture9_SetLOD( struct NineBaseTexture9 *This,
                          DWORD LODNew )
 {
@@ -130,7 +128,7 @@ NineBaseTexture9_SetLOD( struct NineBaseTexture9 *This,
     return old;
 }
 
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineBaseTexture9_GetLOD( struct NineBaseTexture9 *This )
 {
     DBG("This=%p\n", This);
@@ -138,7 +136,7 @@ NineBaseTexture9_GetLOD( struct NineBaseTexture9 *This )
     return This->managed.lod;
 }
 
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineBaseTexture9_GetLevelCount( struct NineBaseTexture9 *This )
 {
     DBG("This=%p\n", This);
@@ -148,7 +146,7 @@ NineBaseTexture9_GetLevelCount( struct NineBaseTexture9 *This )
     return This->base.info.last_level + 1;
 }
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineBaseTexture9_SetAutoGenFilterType( struct NineBaseTexture9 *This,
                                        D3DTEXTUREFILTERTYPE FilterType )
 {
@@ -165,7 +163,7 @@ NineBaseTexture9_SetAutoGenFilterType( struct NineBaseTexture9 *This,
     return D3D_OK;
 }
 
-D3DTEXTUREFILTERTYPE WINAPI
+D3DTEXTUREFILTERTYPE NINE_WINAPI
 NineBaseTexture9_GetAutoGenFilterType( struct NineBaseTexture9 *This )
 {
     DBG("This=%p\n", This);
@@ -203,17 +201,6 @@ NineBaseTexture9_UploadSelf( struct NineBaseTexture9 *This )
 
         pipe_sampler_view_reference(&This->view[0], NULL);
         pipe_sampler_view_reference(&This->view[1], NULL);
-
-        if (This->bind_count) {
-            /* mark state dirty */
-            struct nine_state *state = &This->base.base.device->state;
-            unsigned s;
-            for (s = 0; s < NINE_MAX_SAMPLERS; ++s)
-                if (state->texture[s] == This)
-                    state->changed.texture |= 1 << s;
-            if (state->changed.texture)
-                state->changed.group |= NINE_STATE_TEXTURE;
-        }
 
         /* Allocate a new resource */
         hr = NineBaseTexture9_CreatePipeResource(This, This->managed.lod_resident != -1);
@@ -319,7 +306,7 @@ NineBaseTexture9_UploadSelf( struct NineBaseTexture9 *This )
 
             if (tex->dirty_box.width) {
                 for (l = min_level_dirty; l <= last_level; ++l) {
-                    u_box_minify_2d(&box, &tex->dirty_box, l);
+                    u_box_minify_3d(&box, &tex->dirty_box, l);
                     NineVolume9_UploadSelf(tex->volumes[l], &box);
                 }
                 memset(&tex->dirty_box, 0, sizeof(tex->dirty_box));
@@ -379,14 +366,23 @@ NineBaseTexture9_UploadSelf( struct NineBaseTexture9 *This )
     if (This->base.usage & D3DUSAGE_AUTOGENMIPMAP)
         This->dirty_mip = TRUE;
 
+    /* Set again the textures currently bound to update the texture data */
+    if (This->bind_count) {
+        struct nine_state *state = &This->base.base.device->state;
+        unsigned s;
+        for (s = 0; s < NINE_MAX_SAMPLERS; ++s)
+            /* Dirty tracking is done in device9 state, not nine_context. */
+            if (state->texture[s] == This)
+                nine_context_set_texture(This->base.base.device, s, This);
+    }
+
     DBG("DONE, generate mip maps = %i\n", This->dirty_mip);
     return D3D_OK;
 }
 
-void WINAPI
+void NINE_WINAPI
 NineBaseTexture9_GenerateMipSubLevels( struct NineBaseTexture9 *This )
 {
-    struct pipe_resource *resource;
     unsigned base_level = 0;
     unsigned last_level = This->base.info.last_level - This->managed.lod;
     unsigned first_layer = 0;
@@ -409,11 +405,10 @@ NineBaseTexture9_GenerateMipSubLevels( struct NineBaseTexture9 *This )
 
     last_layer = util_max_layer(This->view[0]->texture, base_level);
 
-    resource = This->base.resource;
-
-    util_gen_mipmap(This->pipe, resource,
-                    resource->format, base_level, last_level,
-                    first_layer, last_layer, filter);
+    nine_context_gen_mipmap(This->base.base.device, (struct NineUnknown *)This,
+                            This->base.resource,
+                            base_level, last_level,
+                            first_layer, last_layer, filter);
 
     This->dirty_mip = FALSE;
 }
@@ -422,7 +417,7 @@ HRESULT
 NineBaseTexture9_CreatePipeResource( struct NineBaseTexture9 *This,
                                      BOOL CopyData )
 {
-    struct pipe_context *pipe = This->pipe;
+    struct pipe_context *pipe;
     struct pipe_screen *screen = This->base.info.screen;
     struct pipe_resource templ;
     unsigned l, m;
@@ -469,6 +464,8 @@ NineBaseTexture9_CreatePipeResource( struct NineBaseTexture9 *This,
         box.height = u_minify(templ.height0, l);
         box.depth = u_minify(templ.depth0, l);
 
+        pipe = nine_context_get_pipe_acquire(This->base.base.device);
+
         for (; l <= templ.last_level; ++l, ++m) {
             pipe->resource_copy_region(pipe,
                                        res, l, 0, 0, 0,
@@ -477,23 +474,25 @@ NineBaseTexture9_CreatePipeResource( struct NineBaseTexture9 *This,
             box.height = u_minify(box.height, 1);
             box.depth = u_minify(box.depth, 1);
         }
+
+        nine_context_get_pipe_release(This->base.base.device);
     }
     pipe_resource_reference(&old, NULL);
 
     return D3D_OK;
 }
 
-#define SWIZZLE_TO_REPLACE(s) (s == UTIL_FORMAT_SWIZZLE_0 || \
-                               s == UTIL_FORMAT_SWIZZLE_1 || \
-                               s == UTIL_FORMAT_SWIZZLE_NONE)
+#define SWIZZLE_TO_REPLACE(s) (s == PIPE_SWIZZLE_0 || \
+                               s == PIPE_SWIZZLE_1 || \
+                               s == PIPE_SWIZZLE_NONE)
 
 HRESULT
 NineBaseTexture9_UpdateSamplerView( struct NineBaseTexture9 *This,
                                     const int sRGB )
 {
     const struct util_format_description *desc;
-    struct pipe_context *pipe = This->pipe;
-    struct pipe_screen *screen = pipe->screen;
+    struct pipe_context *pipe;
+    struct pipe_screen *screen = NineDevice9_GetScreen(This->base.base.device);
     struct pipe_resource *resource = This->base.resource;
     struct pipe_sampler_view templ;
     enum pipe_format srgb_format;
@@ -511,10 +510,10 @@ NineBaseTexture9_UpdateSamplerView( struct NineBaseTexture9 *This,
 
     pipe_sampler_view_reference(&This->view[sRGB], NULL);
 
-    swizzle[0] = PIPE_SWIZZLE_RED;
-    swizzle[1] = PIPE_SWIZZLE_GREEN;
-    swizzle[2] = PIPE_SWIZZLE_BLUE;
-    swizzle[3] = PIPE_SWIZZLE_ALPHA;
+    swizzle[0] = PIPE_SWIZZLE_X;
+    swizzle[1] = PIPE_SWIZZLE_Y;
+    swizzle[2] = PIPE_SWIZZLE_Z;
+    swizzle[3] = PIPE_SWIZZLE_W;
     desc = util_format_description(resource->format);
     if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
         /* msdn doc is incomplete here and wrong.
@@ -528,19 +527,19 @@ NineBaseTexture9_UpdateSamplerView( struct NineBaseTexture9 *This,
          * all channel */
         if (This->format == D3DFMT_DF16 ||
             This->format == D3DFMT_DF24) {
-            swizzle[1] = PIPE_SWIZZLE_ZERO;
-            swizzle[2] = PIPE_SWIZZLE_ZERO;
-            swizzle[3] = PIPE_SWIZZLE_ONE;
+            swizzle[1] = PIPE_SWIZZLE_0;
+            swizzle[2] = PIPE_SWIZZLE_0;
+            swizzle[3] = PIPE_SWIZZLE_1;
         } else {
-            swizzle[1] = PIPE_SWIZZLE_RED;
-            swizzle[2] = PIPE_SWIZZLE_RED;
-            swizzle[3] = PIPE_SWIZZLE_RED;
+            swizzle[1] = PIPE_SWIZZLE_X;
+            swizzle[2] = PIPE_SWIZZLE_X;
+            swizzle[3] = PIPE_SWIZZLE_X;
         }
     } else if (resource->format == PIPE_FORMAT_RGTC2_UNORM) {
-        swizzle[0] = PIPE_SWIZZLE_GREEN;
-        swizzle[1] = PIPE_SWIZZLE_RED;
-        swizzle[2] = PIPE_SWIZZLE_ONE;
-        swizzle[3] = PIPE_SWIZZLE_ONE;
+        swizzle[0] = PIPE_SWIZZLE_Y;
+        swizzle[1] = PIPE_SWIZZLE_X;
+        swizzle[2] = PIPE_SWIZZLE_1;
+        swizzle[3] = PIPE_SWIZZLE_1;
     } else if (resource->format != PIPE_FORMAT_A8_UNORM &&
                resource->format != PIPE_FORMAT_RGTC1_UNORM) {
         /* exceptions:
@@ -550,7 +549,7 @@ NineBaseTexture9_UpdateSamplerView( struct NineBaseTexture9 *This,
          * should have 1.0 for non-defined values */
         for (i = 0; i < 4; i++) {
             if (SWIZZLE_TO_REPLACE(desc->swizzle[i]))
-                swizzle[i] = PIPE_SWIZZLE_ONE;
+                swizzle[i] = PIPE_SWIZZLE_1;
         }
     }
 
@@ -573,14 +572,16 @@ NineBaseTexture9_UpdateSamplerView( struct NineBaseTexture9 *This,
     templ.swizzle_a = swizzle[3];
     templ.target = resource->target;
 
+    pipe = nine_context_get_pipe_acquire(This->base.base.device);
     This->view[sRGB] = pipe->create_sampler_view(pipe, resource, &templ);
+    nine_context_get_pipe_release(This->base.base.device);
 
     DBG("sampler view = %p(resource = %p)\n", This->view[sRGB], resource);
 
     return This->view ? D3D_OK : D3DERR_DRIVERINTERNALERROR;
 }
 
-void WINAPI
+void NINE_WINAPI
 NineBaseTexture9_PreLoad( struct NineBaseTexture9 *This )
 {
     DBG("This=%p\n", This);

@@ -31,7 +31,6 @@
 #include "main/mtypes.h"
 #include "main/imports.h"
 #include "main/macros.h"
-#include "main/colormac.h"
 #include "main/renderbuffer.h"
 #include "main/framebuffer.h"
 
@@ -177,7 +176,7 @@ i915_emit_invarient_state(struct intel_context *intel)
 {
    BATCH_LOCALS;
 
-   BEGIN_BATCH(17);
+   BEGIN_BATCH(15);
 
    OUT_BATCH(_3DSTATE_AA_CMD |
              AA_LINE_ECAAR_WIDTH_ENABLE |
@@ -200,11 +199,6 @@ i915_emit_invarient_state(struct intel_context *intel)
              CSB_TCB(2, 2) |
              CSB_TCB(3, 3) |
              CSB_TCB(4, 4) | CSB_TCB(5, 5) | CSB_TCB(6, 6) | CSB_TCB(7, 7));
-
-   /* Need to initialize this to zero.
-    */
-   OUT_BATCH(_3DSTATE_LOAD_STATE_IMMEDIATE_1 | I1_LOAD_S(3) | (0));
-   OUT_BATCH(0);
 
    OUT_BATCH(_3DSTATE_SCISSOR_RECT_0_CMD);
    OUT_BATCH(0);

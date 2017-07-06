@@ -24,8 +24,13 @@ struct push_context {
    struct translate *translate;
 
    bool primitive_restart;
+
+   bool need_vertex_id;
+   int32_t index_bias;
+
    uint32_t prim;
    uint32_t restart_index;
+   uint32_t start_instance;
    uint32_t instance_id;
 };
 
@@ -74,9 +79,15 @@ emit_vertices_i08(struct push_context *ctx, unsigned start, unsigned count)
 
       size = ctx->vertex_words * nr;
 
+      if (unlikely(ctx->need_vertex_id)) {
+         BEGIN_NV04(ctx->push, NV84_3D(VERTEX_ID_BASE), 1);
+         PUSH_DATA (ctx->push, *elts + ctx->index_bias);
+      }
+
       BEGIN_NI04(ctx->push, NV50_3D(VERTEX_DATA), size);
 
-      ctx->translate->run_elts8(ctx->translate, elts, nr, 0, ctx->instance_id,
+      ctx->translate->run_elts8(ctx->translate, elts, nr,
+                                ctx->start_instance, ctx->instance_id,
                                 ctx->push->cur);
 
       ctx->push->cur += size;
@@ -107,9 +118,15 @@ emit_vertices_i16(struct push_context *ctx, unsigned start, unsigned count)
 
       size = ctx->vertex_words * nr;
 
+      if (unlikely(ctx->need_vertex_id)) {
+         BEGIN_NV04(ctx->push, NV84_3D(VERTEX_ID_BASE), 1);
+         PUSH_DATA (ctx->push, *elts + ctx->index_bias);
+      }
+
       BEGIN_NI04(ctx->push, NV50_3D(VERTEX_DATA), size);
 
-      ctx->translate->run_elts16(ctx->translate, elts, nr, 0, ctx->instance_id,
+      ctx->translate->run_elts16(ctx->translate, elts, nr,
+                                 ctx->start_instance, ctx->instance_id,
                                  ctx->push->cur);
 
       ctx->push->cur += size;
@@ -140,9 +157,15 @@ emit_vertices_i32(struct push_context *ctx, unsigned start, unsigned count)
 
       size = ctx->vertex_words * nr;
 
+      if (unlikely(ctx->need_vertex_id)) {
+         BEGIN_NV04(ctx->push, NV84_3D(VERTEX_ID_BASE), 1);
+         PUSH_DATA (ctx->push, *elts + ctx->index_bias);
+      }
+
       BEGIN_NI04(ctx->push, NV50_3D(VERTEX_DATA), size);
 
-      ctx->translate->run_elts(ctx->translate, elts, nr, 0, ctx->instance_id,
+      ctx->translate->run_elts(ctx->translate, elts, nr,
+                               ctx->start_instance, ctx->instance_id,
                                ctx->push->cur);
 
       ctx->push->cur += size;
@@ -161,13 +184,22 @@ emit_vertices_i32(struct push_context *ctx, unsigned start, unsigned count)
 static void
 emit_vertices_seq(struct push_context *ctx, unsigned start, unsigned count)
 {
+   uint32_t elts = 0;
+
    while (count) {
       unsigned push = MIN2(count, ctx->packet_vertex_limit);
       unsigned size = ctx->vertex_words * push;
 
+      if (unlikely(ctx->need_vertex_id)) {
+         /* For non-indexed draws, gl_VertexID goes up after each vertex. */
+         BEGIN_NV04(ctx->push, NV84_3D(VERTEX_ID_BASE), 1);
+         PUSH_DATA (ctx->push, elts++);
+      }
+
       BEGIN_NI04(ctx->push, NV50_3D(VERTEX_DATA), size);
 
-      ctx->translate->run(ctx->translate, start, push, 0, ctx->instance_id,
+      ctx->translate->run(ctx->translate, start, push,
+                          ctx->start_instance, ctx->instance_id,
                           ctx->push->cur);
       ctx->push->cur += size;
       count -= push;
@@ -212,11 +244,19 @@ nv50_push_vbo(struct nv50_context *nv50, const struct pipe_draw_info *info)
    unsigned i, index_size;
    unsigned inst_count = info->instance_count;
    unsigned vert_count = info->count;
-   bool apply_bias = info->indexed && info->index_bias;
+   bool apply_bias = info->index_size && info->index_bias;
 
    ctx.push = nv50->base.pushbuf;
    ctx.translate = nv50->vertex->translate;
-   ctx.packet_vertex_limit = nv50->vertex->packet_vertex_limit;
+
+   ctx.need_vertex_id = nv50->screen->base.class_3d >= NV84_3D_CLASS &&
+      nv50->vertprog->vp.need_vertex_id && (nv50->vertex->num_elements < 32);
+   ctx.index_bias = info->index_bias;
+   ctx.instance_id = 0;
+
+   /* For indexed draws, gl_VertexID must be emitted for every vertex. */
+   ctx.packet_vertex_limit =
+      ctx.need_vertex_id ? 1 : nv50->vertex->packet_vertex_limit;
    ctx.vertex_words = nv50->vertex->vertex_size;
 
    assert(nv50->num_vtxbufs <= PIPE_MAX_ATTRIBS);
@@ -224,11 +264,11 @@ nv50_push_vbo(struct nv50_context *nv50, const struct pipe_draw_info *info)
       const struct pipe_vertex_buffer *vb = &nv50->vtxbuf[i];
       const uint8_t *data;
 
-      if (unlikely(vb->buffer))
+      if (unlikely(!vb->is_user_buffer))
          data = nouveau_resource_map_offset(&nv50->base,
-            nv04_resource(vb->buffer), vb->buffer_offset, NOUVEAU_BO_RD);
+            nv04_resource(vb->buffer.resource), vb->buffer_offset, NOUVEAU_BO_RD);
       else
-         data = vb->user_buffer;
+         data = vb->buffer.user;
 
       if (apply_bias && likely(!(nv50->vertex->instance_bufs & (1 << i))))
          data += (ptrdiff_t)info->index_bias * vb->stride;
@@ -236,17 +276,17 @@ nv50_push_vbo(struct nv50_context *nv50, const struct pipe_draw_info *info)
       ctx.translate->set_buffer(ctx.translate, i, data, vb->stride, ~0);
    }
 
-   if (info->indexed) {
-      if (nv50->idxbuf.buffer) {
+   if (info->index_size) {
+      if (!info->has_user_indices) {
          ctx.idxbuf = nouveau_resource_map_offset(&nv50->base,
-            nv04_resource(nv50->idxbuf.buffer), nv50->idxbuf.offset,
+            nv04_resource(info->index.resource), info->start * info->index_size,
             NOUVEAU_BO_RD);
       } else {
-         ctx.idxbuf = nv50->idxbuf.user_buffer;
+         ctx.idxbuf = info->index.user;
       }
       if (!ctx.idxbuf)
          return;
-      index_size = nv50->idxbuf.index_size;
+      index_size = info->index_size;
       ctx.primitive_restart = info->primitive_restart;
       ctx.restart_index = info->restart_index;
    } else {
@@ -267,7 +307,7 @@ nv50_push_vbo(struct nv50_context *nv50, const struct pipe_draw_info *info)
       ctx.restart_index = 0;
    }
 
-   ctx.instance_id = info->start_instance;
+   ctx.start_instance = info->start_instance;
    ctx.prim = nv50_prim_gl(info->mode);
 
    if (info->primitive_restart) {
@@ -306,5 +346,11 @@ nv50_push_vbo(struct nv50_context *nv50, const struct pipe_draw_info *info)
 
       ctx.instance_id++;
       ctx.prim |= NV50_3D_VERTEX_BEGIN_GL_INSTANCE_NEXT;
+   }
+
+   if (unlikely(ctx.need_vertex_id)) {
+      /* Reset gl_VertexID to prevent future indexed draws to be confused. */
+      BEGIN_NV04(ctx.push, NV84_3D(VERTEX_ID_BASE), 1);
+      PUSH_DATA (ctx.push, nv50->state.index_bias);
    }
 }

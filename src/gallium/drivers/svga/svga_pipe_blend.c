@@ -37,6 +37,9 @@
 static inline unsigned
 svga_translate_blend_factor(const struct svga_context *svga, unsigned factor)
 {
+   /* Note: there is no SVGA3D_BLENDOP_[INV]BLENDFACTORALPHA so
+    * we can't translate PIPE_BLENDFACTOR_[INV_]CONST_ALPHA properly.
+    */
    switch (factor) {
    case PIPE_BLENDFACTOR_ZERO:            return SVGA3D_BLENDOP_ZERO;
    case PIPE_BLENDFACTOR_SRC_ALPHA:       return SVGA3D_BLENDOP_SRCALPHA;
@@ -142,6 +145,9 @@ svga_create_blend_state(struct pipe_context *pipe,
    struct svga_blend_state *blend = CALLOC_STRUCT( svga_blend_state );
    unsigned i;
 
+   if (!blend)
+      return NULL;
+
    /* Fill in the per-rendertarget blend state.  We currently only
     * support independent blend enable and colormask per render target.
     */
@@ -243,6 +249,15 @@ svga_create_blend_state(struct pipe_context *pipe,
          blend->rt[i].srcblend_alpha = blend->rt[i].srcblend;
          blend->rt[i].dstblend_alpha = blend->rt[i].dstblend;
          blend->rt[i].blendeq_alpha = blend->rt[i].blendeq;
+
+         if (templ->logicop_func == PIPE_LOGICOP_XOR) {
+            pipe_debug_message(&svga->debug.callback, CONFORMANCE,
+                               "XOR logicop mode has limited support");
+         }
+         else if (templ->logicop_func != PIPE_LOGICOP_COPY) {
+            pipe_debug_message(&svga->debug.callback, CONFORMANCE,
+                               "general logicops are not supported");
+         }
       }
       else {
          /* Note: the vgpu10 device does not yet support independent
@@ -321,6 +336,10 @@ svga_create_blend_state(struct pipe_context *pipe,
       define_blend_state_object(svga, blend);
    }
 
+   svga->hud.num_blend_objects++;
+   SVGA_STATS_COUNT_INC(svga_screen(svga->pipe.screen)->sws,
+                        SVGA_STATS_COUNT_BLENDSTATE);
+
    return blend;
 }
 
@@ -359,6 +378,7 @@ static void svga_delete_blend_state(struct pipe_context *pipe,
    }
 
    FREE(blend);
+   svga->hud.num_blend_objects--;
 }
 
 static void svga_set_blend_color( struct pipe_context *pipe,

@@ -326,8 +326,9 @@ nv30_set_sample_mask(struct pipe_context *pipe, unsigned sample_mask)
 }
 
 static void
-nv30_set_constant_buffer(struct pipe_context *pipe, uint shader, uint index,
-                         struct pipe_constant_buffer *cb)
+nv30_set_constant_buffer(struct pipe_context *pipe,
+                         enum pipe_shader_type shader, uint index,
+                         const struct pipe_constant_buffer *cb)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
    struct pipe_resource *buf = cb ? cb->buffer : NULL;
@@ -379,8 +380,9 @@ nv30_set_framebuffer_state(struct pipe_context *pipe,
        struct nv30_miptree *zeta_mt = nv30_miptree(fb->zsbuf->texture);
 
        if (color_mt->swizzled != zeta_mt->swizzled ||
-           (util_format_get_blocksize(fb->zsbuf->format) > 2) !=
-           (util_format_get_blocksize(fb->cbufs[0]->format) > 2)) {
+           (color_mt->swizzled &&
+            (util_format_get_blocksize(fb->zsbuf->format) > 2) !=
+            (util_format_get_blocksize(fb->cbufs[0]->format) > 2))) {
           nv30->framebuffer.zsbuf = NULL;
           debug_printf("Mismatched color and zeta formats, ignoring zeta.\n");
        }
@@ -436,23 +438,6 @@ nv30_set_vertex_buffers(struct pipe_context *pipe,
     nv30->dirty |= NV30_NEW_ARRAYS;
 }
 
-static void
-nv30_set_index_buffer(struct pipe_context *pipe,
-                      const struct pipe_index_buffer *ib)
-{
-    struct nv30_context *nv30 = nv30_context(pipe);
-
-    if (ib) {
-       pipe_resource_reference(&nv30->idxbuf.buffer, ib->buffer);
-       nv30->idxbuf.index_size = ib->index_size;
-       nv30->idxbuf.offset = ib->offset;
-       nv30->idxbuf.user_buffer = ib->user_buffer;
-    } else {
-       pipe_resource_reference(&nv30->idxbuf.buffer, NULL);
-       nv30->idxbuf.user_buffer = NULL;
-    }
-}
-
 void
 nv30_state_init(struct pipe_context *pipe)
 {
@@ -479,5 +464,4 @@ nv30_state_init(struct pipe_context *pipe)
    pipe->set_viewport_states = nv30_set_viewport_states;
 
    pipe->set_vertex_buffers = nv30_set_vertex_buffers;
-   pipe->set_index_buffer = nv30_set_index_buffer;
 }

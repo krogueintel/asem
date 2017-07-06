@@ -134,8 +134,8 @@ i915_use_passthrough_shader(struct i915_fragment_shader *fs)
    if (fs->program) {
       memcpy(fs->program, passthrough_program, sizeof(passthrough_program));
       memcpy(fs->decl, passthrough_decl, sizeof(passthrough_decl));
-      fs->program_len = Elements(passthrough_program);
-      fs->decl_len = Elements(passthrough_decl);
+      fs->program_len = ARRAY_SIZE(passthrough_program);
+      fs->decl_len = ARRAY_SIZE(passthrough_decl);
    }
    fs->num_constants = 0;
 }
@@ -500,15 +500,6 @@ i915_translate_instruction(struct i915_fp_compile *p,
    uint tmp = 0;
 
    switch (inst->Instruction.Opcode) {
-   case TGSI_OPCODE_ABS:
-      src0 = src_vector(p, &inst->Src[0], fs);
-      i915_emit_arith(p,
-                      A0_MAX,
-                      get_result_vector(p, &inst->Dst[0]),
-                      get_result_flags(inst), 0,
-                      src0, negate(src0, 1, 1, 1, 1), 0);
-      break;
-
    case TGSI_OPCODE_ADD:
       emit_simple_arith(p, inst, A0_ADD, 2, fs);
       break;
@@ -585,7 +576,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
   case TGSI_OPCODE_DDX:
   case TGSI_OPCODE_DDY:
       /* XXX We just output 0 here */
-      debug_printf("Punting DDX/DDX\n");
+      debug_printf("Punting DDX/DDY\n");
       src0 = get_result_vector(p, &inst->Dst[0]);
       i915_emit_arith(p,
                       A0_MOV,
@@ -1029,17 +1020,6 @@ i915_translate_instruction(struct i915_fp_compile *p,
                       A0_DEST_CHANNEL_ALL, 0,
                       get_result_vector(p, &inst->Dst[0]),
                       negate(tmp, 1, 1, 1, 1), 0);
-      break;
-
-   case TGSI_OPCODE_SUB:
-      src0 = src_vector(p, &inst->Src[0], fs);
-      src1 = src_vector(p, &inst->Src[1], fs);
-
-      i915_emit_arith(p,
-                      A0_ADD,
-                      get_result_vector(p, &inst->Dst[0]),
-                      get_result_flags(inst), 0,
-                      src0, negate(src1, 1, 1, 1, 1), 0);
       break;
 
    case TGSI_OPCODE_TEX:

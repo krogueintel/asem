@@ -31,6 +31,8 @@
 
 #include "swrast/swrast.h"
 #include "tnl/tnl.h"
+#include "util/bitscan.h"
+#include "main/framebuffer.h"
 
 static void
 nouveau_alpha_func(struct gl_context *ctx, GLenum func, GLfloat ref)
@@ -122,7 +124,7 @@ nouveau_draw_buffers(struct gl_context *ctx, GLsizei n, const GLenum *buffers)
 static void
 nouveau_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 {
-	int i;
+	GLbitfield mask;
 
 	switch (cap) {
 	case GL_ALPHA_TEST:
@@ -187,9 +189,10 @@ nouveau_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 		context_dirty(ctx, LIGHT_MODEL);
 		context_dirty(ctx, LIGHT_ENABLE);
 
-		for (i = 0; i < MAX_LIGHTS; i++) {
-			if (ctx->Light.Light[i].Enabled)
-				context_dirty_i(ctx, LIGHT_SOURCE, i);
+		mask = ctx->Light._EnabledLights;
+		while (mask) {
+			const int i = u_bit_scan(&mask);
+			context_dirty_i(ctx, LIGHT_SOURCE, i);
 		}
 
 		context_dirty(ctx, MATERIAL_FRONT_AMBIENT);
@@ -393,8 +396,7 @@ nouveau_tex_env(struct gl_context *ctx, GLenum target, GLenum pname,
 
 static void
 nouveau_tex_parameter(struct gl_context *ctx,
-		      struct gl_texture_object *t, GLenum pname,
-		      const GLfloat *params)
+		      struct gl_texture_object *t, GLenum pname)
 {
 	switch (pname) {
 	case GL_TEXTURE_MAG_FILTER:
@@ -450,9 +452,13 @@ nouveau_state_emit(struct gl_context *ctx)
 }
 
 static void
-nouveau_update_state(struct gl_context *ctx, GLbitfield new_state)
+nouveau_update_state(struct gl_context *ctx)
 {
+	GLbitfield new_state = ctx->NewState;
 	int i;
+
+	if (new_state & (_NEW_SCISSOR | _NEW_BUFFERS | _NEW_VIEWPORT))
+		_mesa_update_draw_buffer_bounds(ctx, ctx->DrawBuffer);
 
 	if (new_state & (_NEW_PROJECTION | _NEW_MODELVIEW))
 		context_dirty(ctx, PROJECTION);
@@ -492,7 +498,6 @@ nouveau_update_state(struct gl_context *ctx, GLbitfield new_state)
 
 	_swrast_InvalidateState(ctx, new_state);
 	_tnl_InvalidateState(ctx, new_state);
-	_vbo_InvalidateState(ctx, new_state);
 
 	nouveau_state_emit(ctx);
 }

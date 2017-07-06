@@ -35,6 +35,7 @@
 #include "radeon/radeon_video.h"
 #include "radeon/radeon_uvd.h"
 #include "radeon/radeon_vce.h"
+#include "radeon/radeon_vcn_dec.h"
 
 /**
  * creates an video buffer with an UVD compatible memory layout
@@ -97,17 +98,15 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 		pbs[i] = &resources[i]->resource.buf;
 	}
 
-	rvid_join_surfaces(ctx->b.ws, templ.bind, pbs, surfaces);
+	rvid_join_surfaces(&ctx->b, pbs, surfaces);
 
 	for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
 		if (!resources[i])
 			continue;
 
-		/* recreate the CS handle */
-		resources[i]->resource.cs_buf = ctx->b.ws->buffer_get_cs_handle(
-			resources[i]->resource.buf);
+		/* reset the address */
 		resources[i]->resource.gpu_address = ctx->b.ws->buffer_get_virtual_address(
-			resources[i]->resource.cs_buf);
+			resources[i]->resource.buf);
 	}
 
 	template.height *= array_size;
@@ -115,33 +114,37 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 
 error:
 	for (i = 0; i < VL_NUM_COMPONENTS; ++i)
-		pipe_resource_reference((struct pipe_resource **)&resources[i], NULL);
+		r600_texture_reference(&resources[i], NULL);
 
 	return NULL;
 }
 
 /* set the decoding target buffer offsets */
-static struct radeon_winsys_cs_handle* si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
+static struct pb_buffer* si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
 {
+	struct si_screen *sscreen = (struct si_screen*)buf->base.context->screen;
 	struct r600_texture *luma = (struct r600_texture *)buf->resources[0];
 	struct r600_texture *chroma = (struct r600_texture *)buf->resources[1];
+	enum ruvd_surface_type type =  (sscreen->b.chip_class >= GFX9) ?
+					RUVD_SURFACE_TYPE_GFX9 :
+					RUVD_SURFACE_TYPE_LEGACY;
 
 	msg->body.decode.dt_field_mode = buf->base.interlaced;
 
-	ruvd_set_dt_surfaces(msg, &luma->surface, &chroma->surface);
+	ruvd_set_dt_surfaces(msg, &luma->surface, &chroma->surface, type);
 
-	return luma->resource.cs_buf;
+	return luma->resource.buf;
 }
 
 /* get the radeon resources for VCE */
 static void si_vce_get_buffer(struct pipe_resource *resource,
-			      struct radeon_winsys_cs_handle **handle,
+			      struct pb_buffer **handle,
 			      struct radeon_surf **surface)
 {
 	struct r600_texture *res = (struct r600_texture *)resource;
 
 	if (handle)
-		*handle = res->resource.cs_buf;
+		*handle = res->resource.buf;
 
 	if (surface)
 		*surface = &res->surface;
@@ -154,9 +157,11 @@ struct pipe_video_codec *si_uvd_create_decoder(struct pipe_context *context,
 					       const struct pipe_video_codec *templ)
 {
 	struct si_context *ctx = (struct si_context *)context;
+	bool vcn = (ctx->b.family == CHIP_RAVEN) ? true : false;
 
         if (templ->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
                 return rvce_create_encoder(context, templ, ctx->b.ws, si_vce_get_buffer);
 
-	return ruvd_create_decoder(context, templ, si_uvd_set_dtb);
+	return (vcn) ? 	radeon_create_decoder(context, templ) :
+		ruvd_create_decoder(context, templ, si_uvd_set_dtb);
 }

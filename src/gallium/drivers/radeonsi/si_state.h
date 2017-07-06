@@ -30,35 +30,57 @@
 #include "si_pm4.h"
 #include "radeon/r600_pipe_common.h"
 
-#define SI_NUM_SHADERS (PIPE_SHADER_TESS_EVAL+1)
-#define SI_MAX_ATTRIBS 16
+#include "pipebuffer/pb_slab.h"
+
+#define SI_NUM_GRAPHICS_SHADERS (PIPE_SHADER_TESS_EVAL+1)
+#define SI_NUM_SHADERS (PIPE_SHADER_COMPUTE+1)
+
+#define SI_MAX_ATTRIBS			16
+#define SI_NUM_VERTEX_BUFFERS		SI_MAX_ATTRIBS
+#define SI_NUM_SAMPLERS			32 /* OpenGL textures units per shader */
+#define SI_NUM_CONST_BUFFERS		16
+#define SI_NUM_IMAGES			16
+#define SI_NUM_SHADER_BUFFERS		16
 
 struct si_screen;
 struct si_shader;
+struct si_shader_selector;
 
 struct si_state_blend {
 	struct si_pm4_state	pm4;
 	uint32_t		cb_target_mask;
+	bool			alpha_to_coverage;
 	bool			alpha_to_one;
 	bool			dual_src_blend;
+	/* Set 0xf or 0x0 (4 bits) per render target if the following is
+	 * true. ANDed with spi_shader_col_format.
+	 */
+	unsigned		blend_enable_4bit;
+	unsigned		need_src_alpha_4bit;
 };
 
 struct si_state_rasterizer {
 	struct si_pm4_state	pm4;
 	/* poly offset states for 16-bit, 24-bit, and 32-bit zbuffers */
-	struct si_pm4_state	pm4_poly_offset[3];
-	bool			flatshade;
-	bool			two_side;
-	bool			multisample_enable;
-	bool			line_stipple_enable;
-	unsigned		sprite_coord_enable;
+	struct si_pm4_state	*pm4_poly_offset;
 	unsigned		pa_sc_line_stipple;
 	unsigned		pa_cl_clip_cntl;
-	unsigned		clip_plane_enable;
-	bool			poly_stipple_enable;
-	bool			line_smooth;
-	bool			poly_smooth;
-	bool			uses_poly_offset;
+	unsigned		sprite_coord_enable:8;
+	unsigned		clip_plane_enable:8;
+	unsigned		flatshade:1;
+	unsigned		two_side:1;
+	unsigned		multisample_enable:1;
+	unsigned		force_persample_interp:1;
+	unsigned		line_stipple_enable:1;
+	unsigned		poly_stipple_enable:1;
+	unsigned		line_smooth:1;
+	unsigned		poly_smooth:1;
+	unsigned		uses_poly_offset:1;
+	unsigned		clamp_fragment_color:1;
+	unsigned		clamp_vertex_color:1;
+	unsigned		rasterizer_discard:1;
+	unsigned		scissor_enable:1;
+	unsigned		clip_halfz:1;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -78,12 +100,23 @@ struct si_stencil_ref {
 	struct si_dsa_stencil_ref_part	dsa_part;
 };
 
-struct si_vertex_element
+struct si_vertex_elements
 {
-	unsigned			count;
+	uint32_t			instance_divisors[SI_MAX_ATTRIBS];
 	uint32_t			rsrc_word3[SI_MAX_ATTRIBS];
-	uint32_t			format_size[SI_MAX_ATTRIBS];
-	struct pipe_vertex_element	elements[SI_MAX_ATTRIBS];
+	uint16_t			src_offset[SI_MAX_ATTRIBS];
+	uint8_t				fix_fetch[SI_MAX_ATTRIBS];
+	uint8_t				format_size[SI_MAX_ATTRIBS];
+	uint8_t				vertex_buffer_index[SI_MAX_ATTRIBS];
+
+	uint8_t				count;
+	bool				uses_instance_divisors;
+
+	uint16_t			first_vb_use_mask;
+	/* Vertex buffer descriptor list size aligned for optimal prefetch. */
+	uint16_t			desc_list_byte_size;
+	uint16_t			instance_divisor_is_one; /* bitmask of inputs */
+	uint16_t			instance_divisor_is_fetched;  /* bitmask of inputs */
 };
 
 union si_state {
@@ -103,10 +136,13 @@ union si_state {
 	struct si_pm4_state	*array[0];
 };
 
+#define SI_NUM_STATES (sizeof(union si_state) / sizeof(struct si_pm4_state *))
+
 union si_state_atoms {
 	struct {
 		/* The order matters. */
-		struct r600_atom *cache_flush;
+		struct r600_atom *prefetch_L2;
+		struct r600_atom *render_cond;
 		struct r600_atom *streamout_begin;
 		struct r600_atom *streamout_enable; /* must be after streamout_begin */
 		struct r600_atom *framebuffer;
@@ -114,7 +150,7 @@ union si_state_atoms {
 		struct r600_atom *db_render_state;
 		struct r600_atom *msaa_config;
 		struct r600_atom *sample_mask;
-		struct r600_atom *cb_target_mask;
+		struct r600_atom *cb_render_state;
 		struct r600_atom *blend_color;
 		struct r600_atom *clip_regs;
 		struct r600_atom *clip_state;
@@ -123,6 +159,7 @@ union si_state_atoms {
 		struct r600_atom *viewports;
 		struct r600_atom *stencil_ref;
 		struct r600_atom *spi_map;
+		struct r600_atom *scratch_state;
 	} s;
 	struct r600_atom *array[0];
 };
@@ -134,42 +171,51 @@ struct si_shader_data {
 	uint32_t		sh_base[SI_NUM_SHADERS];
 };
 
-#define SI_NUM_USER_SAMPLERS            16 /* AKA OpenGL textures units per shader */
-#define SI_POLY_STIPPLE_SAMPLER         SI_NUM_USER_SAMPLERS
-#define SI_NUM_SAMPLERS                 (SI_POLY_STIPPLE_SAMPLER + 1)
+/* Private read-write buffer slots. */
+enum {
+	SI_ES_RING_ESGS,
+	SI_GS_RING_ESGS,
 
-/* User sampler views:   0..15
- * Polygon stipple tex:  16
- * FMASK sampler views:  17..33 (no sampler states)
- */
-#define SI_FMASK_TEX_OFFSET		SI_NUM_SAMPLERS
-#define SI_NUM_SAMPLER_VIEWS		(SI_FMASK_TEX_OFFSET + SI_NUM_SAMPLERS)
-#define SI_NUM_SAMPLER_STATES		SI_NUM_SAMPLERS
+	SI_RING_GSVS,
 
-/* User constant buffers:   0..15
- * Driver state constants:  16
- */
-#define SI_NUM_USER_CONST_BUFFERS	16
-#define SI_DRIVER_STATE_CONST_BUF	SI_NUM_USER_CONST_BUFFERS
-#define SI_NUM_CONST_BUFFERS		(SI_DRIVER_STATE_CONST_BUF + 1)
+	SI_VS_STREAMOUT_BUF0,
+	SI_VS_STREAMOUT_BUF1,
+	SI_VS_STREAMOUT_BUF2,
+	SI_VS_STREAMOUT_BUF3,
 
-/* Read-write buffer slots.
+	SI_HS_CONST_DEFAULT_TESS_LEVELS,
+	SI_VS_CONST_INSTANCE_DIVISORS,
+	SI_VS_CONST_CLIP_PLANES,
+	SI_PS_CONST_POLY_STIPPLE,
+	SI_PS_CONST_SAMPLE_POSITIONS,
+
+	SI_NUM_RW_BUFFERS,
+};
+
+/* Indices into sctx->descriptors, laid out so that gfx and compute pipelines
+ * are contiguous:
  *
- * Ring buffers:        0..1
- * Streamout buffers:   2..5
+ *  0 - rw buffers
+ *  1 - vertex const buffers
+ *  2 - vertex shader buffers
+ *   ...
+ *  5 - fragment const buffers
+ *   ...
+ *  21 - compute const buffers
+ *   ...
  */
-#define SI_RING_TESS_FACTOR	0 /* for HS (TCS)  */
-#define SI_RING_ESGS		0 /* for ES, GS */
-#define SI_RING_GSVS		1 /* for GS, VS */
-#define SI_RING_GSVS_1		2 /* 1, 2, 3 for GS */
-#define SI_RING_GSVS_2		3
-#define SI_RING_GSVS_3		4
-#define SI_NUM_RING_BUFFERS	5
-#define SI_SO_BUF_OFFSET	SI_NUM_RING_BUFFERS
-#define SI_NUM_RW_BUFFERS	(SI_SO_BUF_OFFSET + 4)
+enum {
+	SI_SHADER_DESCS_CONST_AND_SHADER_BUFFERS,
+	SI_SHADER_DESCS_SAMPLERS_AND_IMAGES,
+	SI_NUM_SHADER_DESCS,
+};
 
-#define SI_NUM_VERTEX_BUFFERS	SI_MAX_ATTRIBS
-
+#define SI_DESCS_RW_BUFFERS            0
+#define SI_DESCS_FIRST_SHADER          1
+#define SI_DESCS_FIRST_COMPUTE         (SI_DESCS_FIRST_SHADER + \
+                                        PIPE_SHADER_COMPUTE * SI_NUM_SHADER_DESCS)
+#define SI_NUM_DESCS                   (SI_DESCS_FIRST_SHADER + \
+                                        SI_NUM_SHADERS * SI_NUM_SHADER_DESCS)
 
 /* This represents descriptors in memory, such as buffer resources,
  * image resources, and sampler states.
@@ -177,42 +223,64 @@ struct si_shader_data {
 struct si_descriptors {
 	/* The list of descriptors in malloc'd memory. */
 	uint32_t *list;
-	/* The size of one descriptor. */
-	unsigned element_dw_size;
-	/* The maximum number of descriptors. */
-	unsigned num_elements;
-	/* Whether the list has been changed and should be re-uploaded. */
-	bool list_dirty;
+	/* The list in mapped GPU memory. */
+	uint32_t *gpu_list;
+	/* Slots that have been changed and need to be uploaded. */
+	uint64_t dirty_mask;
 
 	/* The buffer where the descriptors have been uploaded. */
 	struct r600_resource *buffer;
-	unsigned buffer_offset;
+	int buffer_offset; /* can be negative if not using lower slots */
 
-	/* The i-th bit is set if that element is enabled (non-NULL resource). */
-	uint64_t enabled_mask;
+	/* The size of one descriptor. */
+	ubyte element_dw_size;
+	/* The maximum number of descriptors. */
+	ubyte num_elements;
 
-	/* The shader userdata offset within a shader where the 64-bit pointer to the descriptor
-	 * array will be stored. */
-	unsigned shader_userdata_offset;
-	/* Whether the pointer should be re-emitted. */
-	bool pointer_dirty;
+	/* Offset in CE RAM */
+	uint16_t ce_offset;
+
+	/* Slots allocated in CE RAM. If we get active slots outside of this
+	 * range, direct uploads to memory will be used instead. This basically
+	 * governs switching between onchip (CE) and offchip (upload) modes.
+	 */
+	ubyte first_ce_slot;
+	ubyte num_ce_slots;
+
+	/* Slots that are used by currently-bound shaders.
+	 * With CE: It determines which slots are dumped to L2.
+	 *          It doesn't skip uploads to CE RAM.
+	 * Without CE: It determines which slots are uploaded.
+	 */
+	ubyte first_active_slot;
+	ubyte num_active_slots;
+
+	/* Whether CE is used to upload this descriptor array. */
+	bool uses_ce;
+
+	/* The SGPR index where the 64-bit pointer to the descriptor array will
+	 * be stored. */
+	ubyte shader_userdata_offset;
 };
 
 struct si_sampler_views {
-	struct si_descriptors		desc;
-	struct pipe_sampler_view	*views[SI_NUM_SAMPLER_VIEWS];
-};
+	struct pipe_sampler_view	*views[SI_NUM_SAMPLERS];
+	struct si_sampler_state		*sampler_states[SI_NUM_SAMPLERS];
 
-struct si_sampler_states {
-	struct si_descriptors		desc;
-	void				*saved_states[2]; /* saved for u_blitter */
+	/* The i-th bit is set if that element is enabled (non-NULL resource). */
+	unsigned			enabled_mask;
 };
 
 struct si_buffer_resources {
-	struct si_descriptors		desc;
-	enum radeon_bo_usage		shader_usage; /* READ, WRITE, or READWRITE */
-	enum radeon_bo_priority		priority;
 	struct pipe_resource		**buffers; /* this has num_buffers elements */
+
+	enum radeon_bo_usage		shader_usage:4; /* READ, WRITE, or READWRITE */
+	enum radeon_bo_usage		shader_usage_constbuf:4;
+	enum radeon_bo_priority		priority:6;
+	enum radeon_bo_priority		priority_constbuf:6;
+
+	/* The i-th bit is set if that element is enabled (non-NULL resource). */
+	unsigned			enabled_mask;
 };
 
 #define si_pm4_block_idx(member) \
@@ -224,6 +292,7 @@ struct si_buffer_resources {
 #define si_pm4_bind_state(sctx, member, value) \
 	do { \
 		(sctx)->queued.named.member = (value); \
+		(sctx)->dirty_states |= 1 << si_pm4_block_idx(member); \
 	} while(0)
 
 #define si_pm4_delete_state(sctx, member, value) \
@@ -236,19 +305,53 @@ struct si_buffer_resources {
 	} while(0)
 
 /* si_descriptors.c */
-void si_set_ring_buffer(struct pipe_context *ctx, uint shader, uint slot,
+void si_ce_save_all_descriptors_at_ib_end(struct si_context* sctx);
+void si_ce_restore_all_descriptors_at_ib_start(struct si_context *sctx);
+void si_ce_enable_loads(struct radeon_winsys_cs *ib);
+void si_set_mutable_tex_desc_fields(struct si_screen *sscreen,
+				    struct r600_texture *tex,
+				    const struct legacy_surf_level *base_level_info,
+				    unsigned base_level, unsigned first_level,
+				    unsigned block_width, bool is_stencil,
+				    uint32_t *state);
+void si_get_pipe_constant_buffer(struct si_context *sctx, uint shader,
+				 uint slot, struct pipe_constant_buffer *cbuf);
+void si_get_shader_buffers(struct si_context *sctx,
+			   enum pipe_shader_type shader,
+			   uint start_slot, uint count,
+			   struct pipe_shader_buffer *sbuf);
+void si_set_ring_buffer(struct pipe_context *ctx, uint slot,
 			struct pipe_resource *buffer,
 			unsigned stride, unsigned num_records,
 			bool add_tid, bool swizzle,
 			unsigned element_size, unsigned index_stride, uint64_t offset);
 void si_init_all_descriptors(struct si_context *sctx);
-bool si_upload_shader_descriptors(struct si_context *sctx);
+bool si_upload_vertex_buffer_descriptors(struct si_context *sctx);
+bool si_upload_graphics_shader_descriptors(struct si_context *sctx);
+bool si_upload_compute_shader_descriptors(struct si_context *sctx);
 void si_release_all_descriptors(struct si_context *sctx);
 void si_all_descriptors_begin_new_cs(struct si_context *sctx);
+void si_all_resident_buffers_begin_new_cs(struct si_context *sctx);
 void si_upload_const_buffer(struct si_context *sctx, struct r600_resource **rbuffer,
 			    const uint8_t *ptr, unsigned size, uint32_t *const_offset);
+void si_update_all_texture_descriptors(struct si_context *sctx);
 void si_shader_change_notify(struct si_context *sctx);
-void si_emit_shader_userdata(struct si_context *sctx, struct r600_atom *atom);
+void si_update_needs_color_decompress_masks(struct si_context *sctx);
+void si_emit_graphics_shader_userdata(struct si_context *sctx,
+                                      struct r600_atom *atom);
+void si_emit_compute_shader_userdata(struct si_context *sctx);
+void si_set_rw_buffer(struct si_context *sctx,
+		      uint slot, const struct pipe_constant_buffer *input);
+void si_set_active_descriptors(struct si_context *sctx, unsigned desc_idx,
+			       uint64_t new_active_mask);
+void si_set_active_descriptors_for_shader(struct si_context *sctx,
+					  struct si_shader_selector *sel);
+bool si_bindless_descriptor_can_reclaim_slab(void *priv,
+					     struct pb_slab_entry *entry);
+struct pb_slab *si_bindless_descriptor_slab_alloc(void *priv, unsigned heap,
+						  unsigned entry_size,
+						  unsigned group_index);
+void si_bindless_descriptor_slab_free(void *priv, struct pb_slab *pslab);
 
 /* si_state.c */
 struct si_shader_selector;
@@ -256,19 +359,25 @@ struct si_shader_selector;
 void si_init_atom(struct si_context *sctx, struct r600_atom *atom,
 		  struct r600_atom **list_elem,
 		  void (*emit_func)(struct si_context *ctx, struct r600_atom *state));
-boolean si_is_format_supported(struct pipe_screen *screen,
-                               enum pipe_format format,
-                               enum pipe_texture_target target,
-                               unsigned sample_count,
-                               unsigned usage);
 void si_init_state_functions(struct si_context *sctx);
-unsigned cik_bank_wh(unsigned bankwh);
-unsigned cik_db_pipe_config(struct si_screen *sscreen, unsigned tile_mode);
-unsigned cik_macro_tile_aspect(unsigned macro_tile_aspect);
-unsigned cik_tile_split(unsigned tile_split);
-unsigned si_array_mode(unsigned mode);
-uint32_t si_num_banks(struct si_screen *sscreen, struct r600_texture *tex);
-unsigned si_tile_mode_index(struct r600_texture *rtex, unsigned level, bool stencil);
+void si_init_screen_state_functions(struct si_screen *sscreen);
+void
+si_make_buffer_descriptor(struct si_screen *screen, struct r600_resource *buf,
+			  enum pipe_format format,
+			  unsigned offset, unsigned size,
+			  uint32_t *state);
+void
+si_make_texture_descriptor(struct si_screen *screen,
+			   struct r600_texture *tex,
+			   bool sampler,
+			   enum pipe_texture_target target,
+			   enum pipe_format pipe_format,
+			   const unsigned char state_swizzle[4],
+			   unsigned first_level, unsigned last_level,
+			   unsigned first_layer, unsigned last_layer,
+			   unsigned width, unsigned height, unsigned depth,
+			   uint32_t *state,
+			   uint32_t *fmask_state);
 struct pipe_sampler_view *
 si_create_sampler_view_custom(struct pipe_context *ctx,
 			      struct pipe_resource *texture,
@@ -279,10 +388,53 @@ si_create_sampler_view_custom(struct pipe_context *ctx,
 /* si_state_shader.c */
 bool si_update_shaders(struct si_context *sctx);
 void si_init_shader_functions(struct si_context *sctx);
+bool si_init_shader_cache(struct si_screen *sscreen);
+void si_destroy_shader_cache(struct si_screen *sscreen);
+void si_init_shader_selector_async(void *job, int thread_index);
+void si_get_active_slot_masks(const struct tgsi_shader_info *info,
+			      uint32_t *const_and_shader_buffers,
+			      uint64_t *samplers_and_images);
 
 /* si_state_draw.c */
-void si_emit_cache_flush(struct si_context *sctx, struct r600_atom *atom);
+void si_init_ia_multi_vgt_param_table(struct si_context *sctx);
+void si_emit_cache_flush(struct si_context *sctx);
+void si_ce_pre_draw_synchronization(struct si_context *sctx);
+void si_ce_post_draw_synchronization(struct si_context *sctx);
 void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *dinfo);
 void si_trace_emit(struct si_context *sctx);
+
+
+static inline unsigned
+si_tile_mode_index(struct r600_texture *rtex, unsigned level, bool stencil)
+{
+	if (stencil)
+		return rtex->surface.u.legacy.stencil_tiling_index[level];
+	else
+		return rtex->surface.u.legacy.tiling_index[level];
+}
+
+static inline unsigned si_get_constbuf_slot(unsigned slot)
+{
+	/* Constant buffers are in slots [16..31], ascending */
+	return SI_NUM_SHADER_BUFFERS + slot;
+}
+
+static inline unsigned si_get_shaderbuf_slot(unsigned slot)
+{
+	/* shader buffers are in slots [15..0], descending */
+	return SI_NUM_SHADER_BUFFERS - 1 - slot;
+}
+
+static inline unsigned si_get_sampler_slot(unsigned slot)
+{
+	/* samplers are in slots [8..39], ascending */
+	return SI_NUM_IMAGES / 2 + slot;
+}
+
+static inline unsigned si_get_image_slot(unsigned slot)
+{
+	/* images are in slots [15..0] (sampler slots [7..0]), descending */
+	return SI_NUM_IMAGES - 1 - slot;
+}
 
 #endif

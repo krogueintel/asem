@@ -188,7 +188,7 @@ nouveau_context_init(struct gl_context *ctx, gl_api api,
 	ctx->Extensions.EXT_blend_minmax = true;
 	ctx->Extensions.EXT_texture_filter_anisotropic = true;
 	ctx->Extensions.NV_texture_env_combine4 = true;
-	ctx->Const.MaxColorAttachments = 1;
+	ctx->Const.MaxDrawBuffers = ctx->Const.MaxColorAttachments = 1;
 
 	/* This effectively disables 3D textures */
 	ctx->Const.Max3DTextureLevels = 1;
@@ -259,9 +259,9 @@ nouveau_update_renderbuffers(__DRIcontext *dri_ctx, __DRIdrawable *draw)
 	else if (fb->Visual.haveStencilBuffer)
 		attachments[i++] = __DRI_BUFFER_STENCIL;
 
-	buffers = (*screen->dri2.loader->getBuffers)(draw, &draw->w, &draw->h,
-						     attachments, i, &count,
-						     draw->loaderPrivate);
+	buffers = screen->dri2.loader->getBuffers(draw, &draw->w, &draw->h,
+						  attachments, i, &count,
+						  draw->loaderPrivate);
 	if (buffers == NULL)
 		return;
 

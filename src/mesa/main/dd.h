@@ -35,6 +35,7 @@
 
 #include "glheader.h"
 
+struct gl_bitmap_atlas;
 struct gl_buffer_object;
 struct gl_context;
 struct gl_display_list;
@@ -48,6 +49,8 @@ struct gl_shader;
 struct gl_shader_program;
 struct gl_texture_image;
 struct gl_texture_object;
+struct gl_memory_info;
+struct util_queue_monitoring;
 
 /* GL_ARB_vertex_buffer_object */
 /* Modifies GL_MAP_UNSYNCHRONIZED_BIT to allow driver to fail (return
@@ -61,7 +64,7 @@ struct gl_texture_object;
  * want to provoke the driver to throw away the old storage, we will
  * respect the contents of already referenced data.
  */
-#define MESA_MAP_NOWAIT_BIT       0x0040
+#define MESA_MAP_NOWAIT_BIT       0x4000
 
 
 /**
@@ -91,14 +94,7 @@ struct dd_function_table {
     * This is in addition to any state change callbacks Mesa may already have
     * made.
     */
-   void (*UpdateState)( struct gl_context *ctx, GLbitfield new_state );
-
-   /**
-    * Resize the given framebuffer to the given size.
-    * XXX OBSOLETE: this function will be removed in the future.
-    */
-   void (*ResizeBuffers)( struct gl_context *ctx, struct gl_framebuffer *fb,
-                          GLuint width, GLuint height);
+   void (*UpdateState)(struct gl_context *ctx);
 
    /**
     * This is called whenever glFinish() is called.
@@ -116,12 +112,6 @@ struct dd_function_table {
     *                 renderbuffers need to be cleared.
     */
    void (*Clear)( struct gl_context *ctx, GLbitfield buffers );
-
-   /**
-    * Execute glAccum command.
-    */
-   void (*Accum)( struct gl_context *ctx, GLenum op, GLfloat value );
-
 
    /**
     * Execute glRasterPos, updating the ctx->Current.Raster fields
@@ -166,6 +156,14 @@ struct dd_function_table {
 		   GLint x, GLint y, GLsizei width, GLsizei height,
 		   const struct gl_pixelstore_attrib *unpack,
 		   const GLubyte *bitmap );
+
+   /**
+    * Called by display list code for optimized glCallLists/glBitmap rendering
+    * The driver must support texture rectangles of width 1024 or more.
+    */
+   void (*DrawAtlasBitmaps)(struct gl_context *ctx,
+                            const struct gl_bitmap_atlas *atlas,
+                            GLuint count, const GLubyte *ids);
    /*@}*/
 
    
@@ -187,22 +185,24 @@ struct dd_function_table {
                                       GLenum srcFormat, GLenum srcType );
 
    /**
-    * Determine sample counts support for a particular target and format
+    * Queries different driver parameters for a particular target and format.
+    * Since ARB_internalformat_query2 introduced several new query parameters
+    * over ARB_internalformat_query, having one driver hook for each parameter
+    * is no longer feasible. So this is the generic entry-point for calls
+    * to glGetInternalFormativ and glGetInternalFormati64v, after Mesa has
+    * checked errors and default values.
     *
     * \param ctx            GL context
     * \param target         GL target enum
     * \param internalFormat GL format enum
-    * \param samples        Buffer to hold the returned sample counts.
-    *                       Drivers \b must \b not return more than 16 counts.
-    *
-    * \returns
-    * The number of sample counts actually written to \c samples.  If
-    * \c internaFormat is not renderable, zero is returned.
+    * \param pname          GL enum that specifies the info to query.
+    * \param params         Buffer to hold the result of the query.
     */
-   size_t (*QuerySamplesForFormat)(struct gl_context *ctx,
-                                   GLenum target,
-                                   GLenum internalFormat,
-                                   int samples[16]);
+   void (*QueryInternalFormat)(struct gl_context *ctx,
+                               GLenum target,
+                               GLenum internalFormat,
+                               GLenum pname,
+                               GLint *params);
 
    /**
     * Called by glTexImage[123]D() and glCopyTexImage[12]D()
@@ -309,9 +309,10 @@ struct dd_function_table {
     * \return GL_TRUE if the image is OK, GL_FALSE if too large
     */
    GLboolean (*TestProxyTexImage)(struct gl_context *ctx, GLenum target,
-                                  GLint level, mesa_format format,
+                                  GLuint numLevels, GLint level,
+                                  mesa_format format, GLuint numSamples,
                                   GLint width, GLint height,
-                                  GLint depth, GLint border);
+                                  GLint depth);
    /*@}*/
 
    
@@ -469,14 +470,16 @@ struct dd_function_table {
     * \name Vertex/fragment program functions
     */
    /*@{*/
-   /** Bind a vertex/fragment program */
-   void (*BindProgram)(struct gl_context *ctx, GLenum target,
-                       struct gl_program *prog);
    /** Allocate a new program */
    struct gl_program * (*NewProgram)(struct gl_context *ctx, GLenum target,
-                                     GLuint id);
+                                     GLuint id, bool is_arb_asm);
    /** Delete a program */
    void (*DeleteProgram)(struct gl_context *ctx, struct gl_program *prog);   
+   /**
+    * Allocate a program to associate with the new ATI fragment shader (optional)
+    */
+   struct gl_program * (*NewATIfs)(struct gl_context *ctx,
+                                   struct ati_fragment_shader *curProg);
    /**
     * Notify driver that a program string (and GPU code) has been specified
     * or modified.  Return GL_TRUE or GL_FALSE to indicate if the program is
@@ -529,22 +532,15 @@ struct dd_function_table {
    /** Set the blend equation */
    void (*BlendEquationSeparate)(struct gl_context *ctx,
                                  GLenum modeRGB, GLenum modeA);
-   void (*BlendEquationSeparatei)(struct gl_context *ctx, GLuint buffer,
-                                  GLenum modeRGB, GLenum modeA);
    /** Specify pixel arithmetic */
    void (*BlendFuncSeparate)(struct gl_context *ctx,
                              GLenum sfactorRGB, GLenum dfactorRGB,
                              GLenum sfactorA, GLenum dfactorA);
-   void (*BlendFuncSeparatei)(struct gl_context *ctx, GLuint buffer,
-                              GLenum sfactorRGB, GLenum dfactorRGB,
-                              GLenum sfactorA, GLenum dfactorA);
    /** Specify a plane against which all geometry is clipped */
    void (*ClipPlane)(struct gl_context *ctx, GLenum plane, const GLfloat *eq);
    /** Enable and disable writing of frame buffer color components */
    void (*ColorMask)(struct gl_context *ctx, GLboolean rmask, GLboolean gmask,
                      GLboolean bmask, GLboolean amask );
-   void (*ColorMaskIndexed)(struct gl_context *ctx, GLuint buf, GLboolean rmask,
-                            GLboolean gmask, GLboolean bmask, GLboolean amask);
    /** Cause a material color to track the current color */
    void (*ColorMaterial)(struct gl_context *ctx, GLenum face, GLenum mode);
    /** Specify whether front- or back-facing facets can be culled */
@@ -565,8 +561,6 @@ struct dd_function_table {
    void (*Enable)(struct gl_context *ctx, GLenum cap, GLboolean state);
    /** Specify fog parameters */
    void (*Fogfv)(struct gl_context *ctx, GLenum pname, const GLfloat *params);
-   /** Specify implementation-specific hints */
-   void (*Hint)(struct gl_context *ctx, GLenum target, GLenum mode);
    /** Set light source parameters.
     * Note: for GL_POSITION and GL_SPOT_DIRECTION, params will have already
     * been transformed to eye-space.
@@ -614,10 +608,9 @@ struct dd_function_table {
    /** Set texture environment parameters */
    void (*TexEnv)(struct gl_context *ctx, GLenum target, GLenum pname,
                   const GLfloat *param);
-   /** Set texture parameters */
+   /** Set texture parameter (callee gets param value from the texObj) */
    void (*TexParameter)(struct gl_context *ctx,
-                        struct gl_texture_object *texObj,
-                        GLenum pname, const GLfloat *params);
+                        struct gl_texture_object *texObj, GLenum pname);
    /** Set the viewport */
    void (*Viewport)(struct gl_context *ctx);
    /*@}*/
@@ -655,6 +648,11 @@ struct dd_function_table {
                               struct gl_buffer_object *dst,
                               GLintptr readOffset, GLintptr writeOffset,
                               GLsizeiptr size );
+
+   void (*InvalidateBufferSubData)( struct gl_context *ctx,
+                                    struct gl_buffer_object *obj,
+                                    GLintptr offset,
+                                    GLsizeiptr length );
 
    /* Returns pointer to the start of the mapped range.
     * May return NULL if MESA_MAP_NOWAIT_BIT is set in access:
@@ -743,12 +741,22 @@ struct dd_function_table {
    void (*EndQuery)(struct gl_context *ctx, struct gl_query_object *q);
    void (*CheckQuery)(struct gl_context *ctx, struct gl_query_object *q);
    void (*WaitQuery)(struct gl_context *ctx, struct gl_query_object *q);
+   /*
+    * \pname the value requested to be written (GL_QUERY_RESULT, etc)
+    * \ptype the type of the value requested to be written:
+    *    GL_UNSIGNED_INT, GL_UNSIGNED_INT64_ARB,
+    *    GL_INT, GL_INT64_ARB
+    */
+   void (*StoreQueryResult)(struct gl_context *ctx, struct gl_query_object *q,
+                            struct gl_buffer_object *buf, intptr_t offset,
+                            GLenum pname, GLenum ptype);
    /*@}*/
 
    /**
     * \name Performance monitors
     */
    /*@{*/
+   void (*InitPerfMonitorGroups)(struct gl_context *ctx);
    struct gl_perf_monitor_object * (*NewPerfMonitor)(struct gl_context *ctx);
    void (*DeletePerfMonitor)(struct gl_context *ctx,
                              struct gl_perf_monitor_object *m);
@@ -769,29 +777,53 @@ struct dd_function_table {
                                 GLint *bytesWritten);
    /*@}*/
 
-
    /**
-    * \name Vertex Array objects
+    * \name Performance Query objects
     */
    /*@{*/
-   struct gl_vertex_array_object * (*NewArrayObject)(struct gl_context *ctx, GLuint id);
-   void (*DeleteArrayObject)(struct gl_context *ctx, struct gl_vertex_array_object *);
-   void (*BindArrayObject)(struct gl_context *ctx, struct gl_vertex_array_object *);
+   unsigned (*InitPerfQueryInfo)(struct gl_context *ctx);
+   void (*GetPerfQueryInfo)(struct gl_context *ctx,
+                            unsigned queryIndex,
+                            const char **name,
+                            GLuint *dataSize,
+                            GLuint *numCounters,
+                            GLuint *numActive);
+   void (*GetPerfCounterInfo)(struct gl_context *ctx,
+                              unsigned queryIndex,
+                              unsigned counterIndex,
+                              const char **name,
+                              const char **desc,
+                              GLuint *offset,
+                              GLuint *data_size,
+                              GLuint *type_enum,
+                              GLuint *data_type_enum,
+                              GLuint64 *raw_max);
+   struct gl_perf_query_object * (*NewPerfQueryObject)(struct gl_context *ctx,
+                                                       unsigned queryIndex);
+   void (*DeletePerfQuery)(struct gl_context *ctx,
+                           struct gl_perf_query_object *obj);
+   bool (*BeginPerfQuery)(struct gl_context *ctx,
+                          struct gl_perf_query_object *obj);
+   void (*EndPerfQuery)(struct gl_context *ctx,
+                        struct gl_perf_query_object *obj);
+   void (*WaitPerfQuery)(struct gl_context *ctx,
+                         struct gl_perf_query_object *obj);
+   bool (*IsPerfQueryReady)(struct gl_context *ctx,
+                            struct gl_perf_query_object *obj);
+   void (*GetPerfQueryData)(struct gl_context *ctx,
+                            struct gl_perf_query_object *obj,
+                            GLsizei dataSize,
+                            GLuint *data,
+                            GLuint *bytesWritten);
    /*@}*/
+
 
    /**
-    * \name GLSL-related functions (ARB extensions and OpenGL 2.x)
+    * \name GREMEDY debug/marker functions
     */
    /*@{*/
-   struct gl_shader *(*NewShader)(struct gl_context *ctx,
-                                  GLuint name, GLenum type);
-   void (*DeleteShader)(struct gl_context *ctx, struct gl_shader *shader);
-   struct gl_shader_program *(*NewShaderProgram)(GLuint name);
-   void (*DeleteShaderProgram)(struct gl_context *ctx,
-                               struct gl_shader_program *shProg);
-   void (*UseProgram)(struct gl_context *ctx, struct gl_shader_program *shProg);
+   void (*EmitStringMarker)(struct gl_context *ctx, const GLchar *string, GLsizei len);
    /*@}*/
-
 
    /**
     * \name Support for multiple T&L engines
@@ -825,66 +857,14 @@ struct dd_function_table {
     */
    GLbitfield NeedFlush;
 
-   /** Need to call SaveFlushVertices() upon state change? */
+   /** Need to call vbo_save_SaveFlushVertices() upon state change? */
    GLboolean SaveNeedFlush;
-
-   /* Called prior to any of the GLvertexformat functions being
-    * called.  Paired with Driver.FlushVertices().
-    */
-   void (*BeginVertices)( struct gl_context *ctx );
-
-   /**
-    * If inside glBegin()/glEnd(), it should assert(0).  Otherwise, if
-    * FLUSH_STORED_VERTICES bit in \p flags is set flushes any buffered
-    * vertices, if FLUSH_UPDATE_CURRENT bit is set updates
-    * __struct gl_contextRec::Current and gl_light_attrib::Material
-    *
-    * Note that the default T&L engine never clears the
-    * FLUSH_UPDATE_CURRENT bit, even after performing the update.
-    */
-   void (*FlushVertices)( struct gl_context *ctx, GLuint flags );
-   void (*SaveFlushVertices)( struct gl_context *ctx );
-
-   /**
-    * Give the driver the opportunity to hook in its own vtxfmt for
-    * compiling optimized display lists.  This is called on each valid
-    * glBegin() during list compilation.
-    */
-   GLboolean (*NotifySaveBegin)( struct gl_context *ctx, GLenum mode );
 
    /**
     * Notify driver that the special derived value _NeedEyeCoords has
     * changed.
     */
    void (*LightingSpaceChange)( struct gl_context *ctx );
-
-   /**
-    * Called by glNewList().
-    *
-    * Let the T&L component know what is going on with display lists
-    * in time to make changes to dispatch tables, etc.
-    */
-   void (*NewList)( struct gl_context *ctx, GLuint list, GLenum mode );
-   /**
-    * Called by glEndList().
-    *
-    * \sa dd_function_table::NewList.
-    */
-   void (*EndList)( struct gl_context *ctx );
-
-   /**
-    * Called by glCallList(s).
-    *
-    * Notify the T&L component before and after calling a display list.
-    */
-   void (*BeginCallList)( struct gl_context *ctx, 
-			  struct gl_display_list *dlist );
-   /**
-    * Called by glEndCallList().
-    *
-    * \sa dd_function_table::BeginCallList.
-    */
-   void (*EndCallList)( struct gl_context *ctx );
 
    /**@}*/
 
@@ -963,8 +943,6 @@ struct dd_function_table {
     */
    struct gl_sampler_object * (*NewSamplerObject)(struct gl_context *ctx,
                                                   GLuint name);
-   void (*DeleteSamplerObject)(struct gl_context *ctx,
-                               struct gl_sampler_object *samp);
 
    /**
     * \name Return a timestamp in nanoseconds as defined by GL_ARB_timer_query.
@@ -1007,13 +985,19 @@ struct dd_function_table {
     * \name GL_ARB_shader_image_load_store interface.
     */
    /** @{ */
-   void (*BindImageTexture)(struct gl_context *ctx,
-                            struct gl_image_unit *unit,
-                            struct gl_texture_object *texObj,
-                            GLint level, GLboolean layered, GLint layer,
-                            GLenum access, GLenum format);
-
    void (*MemoryBarrier)(struct gl_context *ctx, GLbitfield barriers);
+   /** @} */
+
+   /**
+    * GL_MESA_shader_framebuffer_fetch_non_coherent rendering barrier.
+    *
+    * On return from this function any framebuffer contents written by
+    * previous draw commands are guaranteed to be visible from subsequent
+    * fragment shader invocations using the
+    * MESA_shader_framebuffer_fetch_non_coherent interface.
+    */
+   /** @{ */
+   void (*BlendBarrier)(struct gl_context *ctx);
    /** @} */
 
    /**
@@ -1022,6 +1006,68 @@ struct dd_function_table {
    /*@{*/
    void (*DispatchCompute)(struct gl_context *ctx, const GLuint *num_groups);
    void (*DispatchComputeIndirect)(struct gl_context *ctx, GLintptr indirect);
+   /*@}*/
+
+   /**
+    * \name GL_ARB_compute_variable_group_size interface
+    */
+   /*@{*/
+   void (*DispatchComputeGroupSize)(struct gl_context *ctx,
+                                    const GLuint *num_groups,
+                                    const GLuint *group_size);
+   /*@}*/
+
+   /**
+    * Query information about memory. Device memory is e.g. VRAM. Staging
+    * memory is e.g. GART. All sizes are in kilobytes.
+    */
+   void (*QueryMemoryInfo)(struct gl_context *ctx,
+                           struct gl_memory_info *info);
+
+   /**
+    * Indicate that this thread is being used by Mesa as a background drawing
+    * thread for the given GL context.
+    *
+    * If this function is called more than once from any given thread, each
+    * subsequent call overrides the context that was passed in the previous
+    * call.  Mesa takes advantage of this to re-use a background thread to
+    * perform drawing on behalf of multiple contexts.
+    *
+    * Mesa may sometimes call this function from a non-background thread
+    * (i.e. a thread that has already been bound to a context using
+    * __DriverAPIRec::MakeCurrent()); when this happens, ctx will be equal to
+    * the context that is bound to this thread.
+    *
+    * Mesa will only call this function if GL multithreading is enabled.
+    */
+   void (*SetBackgroundContext)(struct gl_context *ctx,
+                                struct util_queue_monitoring *queue_info);
+
+   /**
+    * \name GL_ARB_sparse_buffer interface
+    */
+   /*@{*/
+   void (*BufferPageCommitment)(struct gl_context *ctx,
+                                struct gl_buffer_object *bufferObj,
+                                GLintptr offset, GLsizeiptr size,
+                                GLboolean commit);
+   /*@}*/
+
+   /**
+    * \name GL_ARB_bindless_texture interface
+    */
+   /*@{*/
+   GLuint64 (*NewTextureHandle)(struct gl_context *ctx,
+                                struct gl_texture_object *texObj,
+                                struct gl_sampler_object *sampObj);
+   void (*DeleteTextureHandle)(struct gl_context *ctx, GLuint64 handle);
+   void (*MakeTextureHandleResident)(struct gl_context *ctx, GLuint64 handle,
+                                     bool resident);
+   GLuint64 (*NewImageHandle)(struct gl_context *ctx,
+                              struct gl_image_unit *imgObj);
+   void (*DeleteImageHandle)(struct gl_context *ctx, GLuint64 handle);
+   void (*MakeImageHandleResident)(struct gl_context *ctx, GLuint64 handle,
+                                   GLenum access, bool resident);
    /*@}*/
 };
 
@@ -1198,6 +1244,8 @@ typedef struct {
    void (GLAPIENTRYP VertexAttribL3dv)( GLuint index, const GLdouble *v);
    void (GLAPIENTRYP VertexAttribL4dv)( GLuint index, const GLdouble *v);
 
+   void (GLAPIENTRYP VertexAttribL1ui64ARB)( GLuint index, GLuint64EXT x);
+   void (GLAPIENTRYP VertexAttribL1ui64vARB)( GLuint index, const GLuint64EXT *v);
 } GLvertexformat;
 
 

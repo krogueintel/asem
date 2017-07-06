@@ -34,22 +34,12 @@
 #include "main/mtypes.h"
 #include "main/mm.h"
 
-#ifdef __cplusplus
-extern "C" {
-	/* Evil hack for using libdrm in a c++ compiler. */
-	#define virtual virt
-#endif
-
-#include "drm.h"
-#include "intel_bufmgr.h"
+#include <drm.h>
+#include <intel_bufmgr.h>
+#include <i915_drm.h>
 
 #include "intel_screen.h"
 #include "intel_tex_obj.h"
-#include "i915_drm.h"
-
-#ifdef __cplusplus
-	#undef virtual
-#endif
 
 #include "tnl/t_vertex.h"
 
@@ -104,13 +94,6 @@ extern void intelFallback(struct intel_context *intel, GLbitfield bit,
 #define unlikely(expr) (expr)
 #endif
 #endif
-
-struct intel_sync_object {
-   struct gl_sync_object Base;
-
-   /** Batch associated with this sync object */
-   drm_intel_bo *bo;
-};
 
 struct intel_batchbuffer {
    /** Current batchbuffer being queued up. */
@@ -254,22 +237,6 @@ struct intel_context
     * the contents of the fake front buffer to the real front buffer.
     */
    bool front_buffer_dirty;
-
-   /**
-    * Track whether front-buffer rendering is currently enabled
-    *
-    * A separate flag is used to track this in order to support MRT more
-    * easily.
-    */
-   bool is_front_buffer_rendering;
-   /**
-    * Track whether front-buffer is the current read target.
-    *
-    * This is closely associated with is_front_buffer_rendering, but may
-    * be set separately.  The DRI2 fake front buffer must be referenced
-    * either way.
-    */
-   bool is_front_buffer_reading;
 
    bool use_early_z;
 
@@ -474,9 +441,5 @@ intel_context(struct gl_context * ctx)
 {
    return (struct intel_context *) ctx;
 }
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

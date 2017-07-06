@@ -140,9 +140,9 @@ util_destroy_blit(struct blit_state *ctx)
    if (ctx->vs)
       pipe->delete_vs_state(pipe, ctx->vs);
 
-   for (i = 0; i < Elements(ctx->fs); i++) {
-      for (j = 0; j < Elements(ctx->fs[i]); j++) {
-         for (k = 0; k < Elements(ctx->fs[i][j]); k++) {
+   for (i = 0; i < ARRAY_SIZE(ctx->fs); i++) {
+      for (j = 0; j < ARRAY_SIZE(ctx->fs[i]); j++) {
+         for (k = 0; k < ARRAY_SIZE(ctx->fs[i][j]); k++) {
             if (ctx->fs[i][j][k])
                pipe->delete_fs_state(pipe, ctx->fs[i][j][k]);
          }
@@ -180,11 +180,13 @@ set_fragment_shader(struct blit_state *ctx, uint writemask,
    if (!ctx->fs[pipe_tex][writemask][idx]) {
       unsigned tgsi_tex = util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
 
+      /* OpenGL does not allow blits from signed to unsigned integer
+       * or vice versa. */
       ctx->fs[pipe_tex][writemask][idx] =
          util_make_fragment_tex_shader_writemask(ctx->pipe, tgsi_tex,
                                                  TGSI_INTERPOLATE_LINEAR,
                                                  writemask,
-                                                 stype);
+                                                 stype, stype, false, false);
    }
 
    cso_set_fragment_shader_handle(ctx->cso, ctx->fs[pipe_tex][writemask][idx]);
@@ -314,16 +316,16 @@ regions_overlap(int srcX0, int srcY0,
                 int dstX0, int dstY0,
                 int dstX1, int dstY1)
 {
-   if (MAX2(srcX0, srcX1) < MIN2(dstX0, dstX1))
+   if (MAX2(srcX0, srcX1) <= MIN2(dstX0, dstX1))
       return FALSE; /* src completely left of dst */
 
-   if (MAX2(dstX0, dstX1) < MIN2(srcX0, srcX1))
+   if (MAX2(dstX0, dstX1) <= MIN2(srcX0, srcX1))
       return FALSE; /* dst completely left of src */
 
-   if (MAX2(srcY0, srcY1) < MIN2(dstY0, dstY1))
+   if (MAX2(srcY0, srcY1) <= MIN2(dstY0, dstY1))
       return FALSE; /* src completely above dst */
 
-   if (MAX2(dstY0, dstY1) < MIN2(srcY0, srcY1))
+   if (MAX2(dstY0, dstY1) <= MIN2(srcY0, srcY1))
       return FALSE; /* dst completely above src */
 
    return TRUE; /* some overlap */
@@ -541,23 +543,24 @@ util_blit_pixels_tex(struct blit_state *ctx,
                                                  PIPE_BIND_RENDER_TARGET));
 
    /* save state (restored below) */
-   cso_save_blend(ctx->cso);
-   cso_save_depth_stencil_alpha(ctx->cso);
-   cso_save_rasterizer(ctx->cso);
-   cso_save_sample_mask(ctx->cso);
-   cso_save_min_samples(ctx->cso);
-   cso_save_fragment_samplers(ctx->cso);
-   cso_save_fragment_sampler_views(ctx->cso);
-   cso_save_stream_outputs(ctx->cso);
-   cso_save_viewport(ctx->cso);
-   cso_save_framebuffer(ctx->cso);
-   cso_save_fragment_shader(ctx->cso);
-   cso_save_vertex_shader(ctx->cso);
-   cso_save_tessctrl_shader(ctx->cso);
-   cso_save_tesseval_shader(ctx->cso);
-   cso_save_geometry_shader(ctx->cso);
-   cso_save_vertex_elements(ctx->cso);
-   cso_save_aux_vertex_buffer_slot(ctx->cso);
+   cso_save_state(ctx->cso, (CSO_BIT_BLEND |
+                             CSO_BIT_DEPTH_STENCIL_ALPHA |
+                             CSO_BIT_RASTERIZER |
+                             CSO_BIT_SAMPLE_MASK |
+                             CSO_BIT_MIN_SAMPLES |
+                             CSO_BIT_FRAGMENT_SAMPLERS |
+                             CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
+                             CSO_BIT_STREAM_OUTPUTS |
+                             CSO_BIT_VIEWPORT |
+                             CSO_BIT_FRAMEBUFFER |
+                             CSO_BIT_PAUSE_QUERIES |
+                             CSO_BIT_FRAGMENT_SHADER |
+                             CSO_BIT_VERTEX_SHADER |
+                             CSO_BIT_TESSCTRL_SHADER |
+                             CSO_BIT_TESSEVAL_SHADER |
+                             CSO_BIT_GEOMETRY_SHADER |
+                             CSO_BIT_VERTEX_ELEMENTS |
+                             CSO_BIT_AUX_VERTEX_BUFFER_SLOT));
 
    /* set misc state we care about */
    cso_set_blend(ctx->cso, &ctx->blend_write_color);
@@ -625,21 +628,5 @@ util_blit_pixels_tex(struct blit_state *ctx,
                            2); /* attribs/vert */
 
    /* restore state we changed */
-   cso_restore_blend(ctx->cso);
-   cso_restore_depth_stencil_alpha(ctx->cso);
-   cso_restore_rasterizer(ctx->cso);
-   cso_restore_sample_mask(ctx->cso);
-   cso_restore_min_samples(ctx->cso);
-   cso_restore_fragment_samplers(ctx->cso);
-   cso_restore_fragment_sampler_views(ctx->cso);
-   cso_restore_viewport(ctx->cso);
-   cso_restore_framebuffer(ctx->cso);
-   cso_restore_fragment_shader(ctx->cso);
-   cso_restore_vertex_shader(ctx->cso);
-   cso_restore_tessctrl_shader(ctx->cso);
-   cso_restore_tesseval_shader(ctx->cso);
-   cso_restore_geometry_shader(ctx->cso);
-   cso_restore_vertex_elements(ctx->cso);
-   cso_restore_aux_vertex_buffer_slot(ctx->cso);
-   cso_restore_stream_outputs(ctx->cso);
+   cso_restore_state(ctx->cso);
 }

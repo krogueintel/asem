@@ -36,17 +36,17 @@
  */
 #if defined(_MSC_VER)
 
-#  if _MSC_VER < 1500
-#    error "Microsoft Visual Studio 2008 or higher required"
+#  if _MSC_VER < 1800 || (_MSC_FULL_VER < 180031101 && !defined(__clang__))
+#    error "Microsoft Visual Studio 2013 Update 4 or higher required"
 #  endif
 
    /*
-    * Visual Studio 2012 will complain if we define the `inline` keyword, but
+    * Visual Studio will complain if we define the `inline` keyword, but
     * actually it only supports the keyword on C++.
     *
     * To avoid this the _ALLOW_KEYWORD_MACROS must be set.
     */
-#  if (_MSC_VER >= 1700) && !defined(_ALLOW_KEYWORD_MACROS)
+#  if !defined(_ALLOW_KEYWORD_MACROS)
 #    define _ALLOW_KEYWORD_MACROS
 #  endif
 
@@ -81,8 +81,6 @@
      /* Intel compiler supports inline keyword */
 #  elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
 #    define inline __inline
-#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-     /* C99 supports inline keyword */
 #  elif (__STDC_VERSION__ >= 199901L)
      /* C99 supports inline keyword */
 #  else
@@ -100,8 +98,6 @@
 #ifndef restrict
 #  if (__STDC_VERSION__ >= 199901L)
      /* C99 */
-#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-     /* C99 */
 #  elif defined(__GNUC__)
 #    define restrict __restrict__
 #  elif defined(_MSC_VER)
@@ -117,8 +113,6 @@
  */
 #ifndef __func__
 #  if (__STDC_VERSION__ >= 199901L)
-     /* C99 */
-#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
      /* C99 */
 #  elif defined(__GNUC__)
 #    define __func__ __FUNCTION__
@@ -139,6 +133,51 @@ test_c99_compat_h(const void * restrict a,
    return __func__;
 }
 #endif
+
+
+/* Fallback definitions, for build systems other than autoconfig which don't
+ * auto-detect these things. */
+#ifdef HAVE_NO_AUTOCONF
+
+#  ifndef _WIN32
+#    define HAVE_PTHREAD
+#    define HAVE_POSIX_MEMALIGN
+#  endif
+
+#  ifdef __GNUC__
+#    if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 2)
+#      error "GCC version 4.2 or higher required"
+#    endif
+
+     /* https://gcc.gnu.org/onlinedocs/gcc-4.2.4/gcc/Other-Builtins.html */
+#    define HAVE___BUILTIN_CLZ 1
+#    define HAVE___BUILTIN_CLZLL 1
+#    define HAVE___BUILTIN_CTZ 1
+#    define HAVE___BUILTIN_EXPECT 1
+#    define HAVE___BUILTIN_FFS 1
+#    define HAVE___BUILTIN_FFSLL 1
+#    define HAVE___BUILTIN_POPCOUNT 1
+#    define HAVE___BUILTIN_POPCOUNTLL 1
+     /* https://gcc.gnu.org/onlinedocs/gcc-4.2.4/gcc/Function-Attributes.html */
+#    define HAVE_FUNC_ATTRIBUTE_FLATTEN 1
+#    define HAVE_FUNC_ATTRIBUTE_UNUSED 1
+#    define HAVE_FUNC_ATTRIBUTE_FORMAT 1
+#    define HAVE_FUNC_ATTRIBUTE_PACKED 1
+#    define HAVE_FUNC_ATTRIBUTE_ALIAS 1
+
+#    if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)
+       /* https://gcc.gnu.org/onlinedocs/gcc-4.3.6/gcc/Other-Builtins.html */
+#      define HAVE___BUILTIN_BSWAP32 1
+#      define HAVE___BUILTIN_BSWAP64 1
+#    endif
+
+#    if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)
+#      define HAVE___BUILTIN_UNREACHABLE 1
+#    endif
+
+#  endif /* __GNUC__ */
+
+#endif /* !HAVE_AUTOCONF */
 
 
 #endif /* _C99_COMPAT_H_ */

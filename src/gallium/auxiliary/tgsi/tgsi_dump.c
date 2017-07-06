@@ -25,10 +25,13 @@
  * 
  **************************************************************************/
 
+#include <inttypes.h>
+
 #include "util/u_debug.h"
 #include "util/u_string.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include "tgsi_dump.h"
 #include "tgsi_info.h"
 #include "tgsi_iterate.h"
@@ -42,6 +45,8 @@ static const int indent_spaces = 3;
 struct dump_ctx
 {
    struct tgsi_iterate_context iter;
+
+   boolean dump_float_as_hex;
 
    uint instno;
    uint immno;
@@ -84,10 +89,13 @@ dump_enum(
 #define CHR(C)          ctx->dump_printf( ctx, "%c", C )
 #define UIX(I)          ctx->dump_printf( ctx, "0x%x", I )
 #define UID(I)          ctx->dump_printf( ctx, "%u", I )
+#define SI64D(I)        ctx->dump_printf( ctx, "%"PRId64, I )
+#define UI64D(I)        ctx->dump_printf( ctx, "%"PRIu64, I )
 #define INSTID(I)       ctx->dump_printf( ctx, "% 3u", I )
 #define SID(I)          ctx->dump_printf( ctx, "%d", I )
 #define FLT(F)          ctx->dump_printf( ctx, "%10.4f", F )
 #define DBL(D)          ctx->dump_printf( ctx, "%10.8f", D )
+#define HFLT(F)         ctx->dump_printf( ctx, "0x%08x", fui((F)) )
 #define ENM(E,ENUMS)    dump_enum( ctx, E, ENUMS, sizeof( ENUMS ) / sizeof( *ENUMS ) )
 
 const char *
@@ -250,8 +258,25 @@ dump_imm_data(struct tgsi_iterate_context *iter,
          i++;
          break;
       }
+      case TGSI_IMM_INT64: {
+         union di d;
+         d.i = data[i].Uint | (uint64_t)data[i+1].Uint << 32;
+         SI64D( d.i );
+         i++;
+         break;
+      }
+      case TGSI_IMM_UINT64: {
+         union di d;
+         d.ui = data[i].Uint | (uint64_t)data[i+1].Uint << 32;
+         UI64D( d.ui );
+         i++;
+         break;
+      }
       case TGSI_IMM_FLOAT32:
-         FLT( data[i].Float );
+         if (ctx->dump_float_as_hex)
+            HFLT( data[i].Float );
+         else
+            FLT( data[i].Float );
          break;
       case TGSI_IMM_UINT32:
          UID(data[i].Uint);
@@ -288,17 +313,17 @@ iter_declaration(
     * two dimensional
     */
    if (decl->Declaration.File == TGSI_FILE_INPUT &&
-       (iter->processor.Processor == TGSI_PROCESSOR_GEOMETRY ||
+       (iter->processor.Processor == PIPE_SHADER_GEOMETRY ||
         (!patch &&
-         (iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL ||
-          iter->processor.Processor == TGSI_PROCESSOR_TESS_EVAL)))) {
+         (iter->processor.Processor == PIPE_SHADER_TESS_CTRL ||
+          iter->processor.Processor == PIPE_SHADER_TESS_EVAL)))) {
       TXT("[]");
    }
 
    /* all non-patch tess ctrl shader outputs are two dimensional */
    if (decl->Declaration.File == TGSI_FILE_OUTPUT &&
        !patch &&
-       iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL) {
+       iter->processor.Processor == PIPE_SHADER_TESS_CTRL) {
       TXT("[]");
    }
 
@@ -339,15 +364,45 @@ iter_declaration(
          UID( decl->Semantic.Index );
          CHR( ']' );
       }
+
+      if (decl->Semantic.StreamX != 0 || decl->Semantic.StreamY != 0 ||
+          decl->Semantic.StreamZ != 0 || decl->Semantic.StreamW != 0) {
+         TXT(", STREAM(");
+         UID(decl->Semantic.StreamX);
+         TXT(", ");
+         UID(decl->Semantic.StreamY);
+         TXT(", ");
+         UID(decl->Semantic.StreamZ);
+         TXT(", ");
+         UID(decl->Semantic.StreamW);
+         CHR(')');
+      }
    }
 
-   if (decl->Declaration.File == TGSI_FILE_RESOURCE) {
+   if (decl->Declaration.File == TGSI_FILE_IMAGE) {
       TXT(", ");
-      ENM(decl->Resource.Resource, tgsi_texture_names);
-      if (decl->Resource.Writable)
+      ENM(decl->Image.Resource, tgsi_texture_names);
+      TXT(", ");
+      TXT(util_format_name(decl->Image.Format));
+      if (decl->Image.Writable)
          TXT(", WR");
-      if (decl->Resource.Raw)
+      if (decl->Image.Raw)
          TXT(", RAW");
+   }
+
+   if (decl->Declaration.File == TGSI_FILE_BUFFER) {
+      if (decl->Declaration.Atomic)
+         TXT(", ATOMIC");
+   }
+
+   if (decl->Declaration.File == TGSI_FILE_MEMORY) {
+      switch (decl->Declaration.MemType) {
+      /* Note: ,GLOBAL is optional / the default */
+      case TGSI_MEMORY_TYPE_GLOBAL:  TXT(", GLOBAL");  break;
+      case TGSI_MEMORY_TYPE_SHARED:  TXT(", SHARED");  break;
+      case TGSI_MEMORY_TYPE_PRIVATE: TXT(", PRIVATE"); break;
+      case TGSI_MEMORY_TYPE_INPUT:   TXT(", INPUT");   break;
+      }
    }
 
    if (decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
@@ -370,7 +425,7 @@ iter_declaration(
    }
 
    if (decl->Declaration.Interpolate) {
-      if (iter->processor.Processor == TGSI_PROCESSOR_FRAGMENT &&
+      if (iter->processor.Processor == PIPE_SHADER_FRAGMENT &&
           decl->Declaration.File == TGSI_FILE_INPUT)
       {
          TXT( ", " );
@@ -413,6 +468,7 @@ tgsi_dump_declaration(
    const struct tgsi_full_declaration *decl )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -445,6 +501,9 @@ iter_property(
       case TGSI_PROPERTY_FS_COORD_PIXEL_CENTER:
          ENM(prop->u[i].Data, tgsi_fs_coord_pixel_center_names);
          break;
+      case TGSI_PROPERTY_NEXT_SHADER:
+         ENM(prop->u[i].Data, tgsi_processor_type_names);
+         break;
       default:
          SID( prop->u[i].Data );
          break;
@@ -461,6 +520,7 @@ void tgsi_dump_property(
    const struct tgsi_full_property *prop )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -492,6 +552,7 @@ tgsi_dump_immediate(
    const struct tgsi_full_immediate *imm )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -516,30 +577,6 @@ iter_instruction(
    for(i = 0; (int)i < ctx->indent; ++i)
       TXT( "  " );
    ctx->indent += info->post_indent;
-
-   if (inst->Instruction.Predicate) {
-      CHR( '(' );
-
-      if (inst->Predicate.Negate)
-         CHR( '!' );
-
-      TXT( "PRED[" );
-      SID( inst->Predicate.Index );
-      CHR( ']' );
-
-      if (inst->Predicate.SwizzleX != TGSI_SWIZZLE_X ||
-          inst->Predicate.SwizzleY != TGSI_SWIZZLE_Y ||
-          inst->Predicate.SwizzleZ != TGSI_SWIZZLE_Z ||
-          inst->Predicate.SwizzleW != TGSI_SWIZZLE_W) {
-         CHR( '.' );
-         ENM( inst->Predicate.SwizzleX, tgsi_swizzle_names );
-         ENM( inst->Predicate.SwizzleY, tgsi_swizzle_names );
-         ENM( inst->Predicate.SwizzleZ, tgsi_swizzle_names );
-         ENM( inst->Predicate.SwizzleW, tgsi_swizzle_names );
-      }
-
-      TXT( ") " );
-   }
 
    TXT( info->mnemonic );
 
@@ -610,17 +647,37 @@ iter_instruction(
       }
    }
 
-   switch (inst->Instruction.Opcode) {
-   case TGSI_OPCODE_IF:
-   case TGSI_OPCODE_UIF:
-   case TGSI_OPCODE_ELSE:
-   case TGSI_OPCODE_BGNLOOP:
-   case TGSI_OPCODE_ENDLOOP:
-   case TGSI_OPCODE_CAL:
-   case TGSI_OPCODE_BGNSUB:
-      TXT( " :" );
-      UID( inst->Label.Label );
-      break;
+   if (inst->Instruction.Memory) {
+      uint32_t qualifier = inst->Memory.Qualifier;
+      while (qualifier) {
+         int bit = ffs(qualifier) - 1;
+         qualifier &= ~(1U << bit);
+         TXT(", ");
+         ENM(bit, tgsi_memory_names);
+      }
+      if (inst->Memory.Texture) {
+         TXT( ", " );
+         ENM( inst->Memory.Texture, tgsi_texture_names );
+      }
+      if (inst->Memory.Format) {
+         TXT( ", " );
+         TXT( util_format_name(inst->Memory.Format) );
+      }
+   }
+
+   if (inst->Instruction.Label) {
+      switch (inst->Instruction.Opcode) {
+      case TGSI_OPCODE_IF:
+      case TGSI_OPCODE_UIF:
+      case TGSI_OPCODE_ELSE:
+      case TGSI_OPCODE_BGNLOOP:
+      case TGSI_OPCODE_ENDLOOP:
+      case TGSI_OPCODE_CAL:
+      case TGSI_OPCODE_BGNSUB:
+         TXT( " :" );
+         UID( inst->Label.Label );
+         break;
+      }
    }
 
    /* update indentation */
@@ -642,12 +699,14 @@ tgsi_dump_instruction(
    uint instno )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.instno = instno;
    ctx.immno = instno;
    ctx.indent = 0;
    ctx.dump_printf = dump_ctx_printf;
    ctx.indentation = 0;
+   ctx.file = NULL;
 
    iter_instruction( &ctx.iter, (struct tgsi_full_instruction *)inst );
 }
@@ -662,23 +721,30 @@ prolog(
    return TRUE;
 }
 
+static void
+init_dump_ctx(struct dump_ctx *ctx, uint flags)
+{
+   memset(ctx, 0, sizeof(*ctx));
+
+   ctx->iter.prolog = prolog;
+   ctx->iter.iterate_instruction = iter_instruction;
+   ctx->iter.iterate_declaration = iter_declaration;
+   ctx->iter.iterate_immediate = iter_immediate;
+   ctx->iter.iterate_property = iter_property;
+
+   if (flags & TGSI_DUMP_FLOAT_AS_HEX)
+      ctx->dump_float_as_hex = TRUE;
+}
+
 void
 tgsi_dump_to_file(const struct tgsi_token *tokens, uint flags, FILE *file)
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
-   ctx.iter.prolog = prolog;
-   ctx.iter.iterate_instruction = iter_instruction;
-   ctx.iter.iterate_declaration = iter_declaration;
-   ctx.iter.iterate_immediate = iter_immediate;
-   ctx.iter.iterate_property = iter_property;
-   ctx.iter.epilog = NULL;
+   init_dump_ctx(&ctx, flags);
 
-   ctx.instno = 0;
-   ctx.immno = 0;
-   ctx.indent = 0;
    ctx.dump_printf = dump_ctx_printf;
-   ctx.indentation = 0;
    ctx.file = file;
 
    tgsi_iterate_shader( tokens, &ctx.iter );
@@ -696,6 +762,7 @@ struct str_dump_ctx
    char *str;
    char *ptr;
    int left;
+   bool nospace;
 };
 
 static void
@@ -703,7 +770,7 @@ str_dump_ctx_printf(struct dump_ctx *ctx, const char *format, ...)
 {
    struct str_dump_ctx *sctx = (struct str_dump_ctx *)ctx;
    
-   if(sctx->left > 1) {
+   if (!sctx->nospace) {
       int written;
       va_list ap;
       va_start(ap, format);
@@ -714,14 +781,17 @@ str_dump_ctx_printf(struct dump_ctx *ctx, const char *format, ...)
        * vsnprintf:
        */
       if (written > 0) {
-         written = MIN2(sctx->left, written);
+         if (written >= sctx->left) {
+            sctx->nospace = true;
+            written = sctx->left;
+         }
          sctx->ptr += written;
          sctx->left -= written;
       }
    }
 }
 
-void
+bool
 tgsi_dump_str(
    const struct tgsi_token *tokens,
    uint flags,
@@ -729,27 +799,21 @@ tgsi_dump_str(
    size_t size)
 {
    struct str_dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
-   ctx.base.iter.prolog = prolog;
-   ctx.base.iter.iterate_instruction = iter_instruction;
-   ctx.base.iter.iterate_declaration = iter_declaration;
-   ctx.base.iter.iterate_immediate = iter_immediate;
-   ctx.base.iter.iterate_property = iter_property;
-   ctx.base.iter.epilog = NULL;
+   init_dump_ctx(&ctx.base, flags);
 
-   ctx.base.instno = 0;
-   ctx.base.immno = 0;
-   ctx.base.indent = 0;
    ctx.base.dump_printf = &str_dump_ctx_printf;
-   ctx.base.indentation = 0;
-   ctx.base.file = NULL;
 
    ctx.str = str;
    ctx.str[0] = 0;
    ctx.ptr = str;
    ctx.left = (int)size;
+   ctx.nospace = false;
 
    tgsi_iterate_shader( tokens, &ctx.base.iter );
+
+   return !ctx.nospace;
 }
 
 void
@@ -760,6 +824,7 @@ tgsi_dump_instruction_str(
    size_t size)
 {
    struct str_dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.base.instno = instno;
    ctx.base.immno = instno;
@@ -772,6 +837,7 @@ tgsi_dump_instruction_str(
    ctx.str[0] = 0;
    ctx.ptr = str;
    ctx.left = (int)size;
+   ctx.nospace = false;
 
    iter_instruction( &ctx.base.iter, (struct tgsi_full_instruction *)inst );
 }

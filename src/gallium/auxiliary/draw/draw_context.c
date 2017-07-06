@@ -72,7 +72,7 @@ draw_create_context(struct pipe_context *pipe, void *context,
                     boolean try_llvm)
 {
    struct draw_context *draw = CALLOC_STRUCT( draw_context );
-   if (draw == NULL)
+   if (!draw)
       goto err_out;
 
    /* we need correct cpu caps for disabling denorms in draw_vbo() */
@@ -206,9 +206,8 @@ void draw_destroy( struct draw_context *draw )
       }
    }
 
-   for (i = 0; i < draw->pt.nr_vertex_buffers; i++) {
-      pipe_resource_reference(&draw->pt.vertex_buffer[i].buffer, NULL);
-   }
+   for (i = 0; i < draw->pt.nr_vertex_buffers; i++)
+      pipe_vertex_buffer_unreference(&draw->pt.vertex_buffer[i]);
 
    /* Not so fast -- we're just borrowing this at the moment.
     * 
@@ -440,7 +439,7 @@ draw_set_mapped_vertex_buffer(struct draw_context *draw,
 
 void
 draw_set_mapped_constant_buffer(struct draw_context *draw,
-                                unsigned shader_type,
+                                enum pipe_shader_type shader_type,
                                 unsigned slot,
                                 const void *buffer,
                                 unsigned size )
@@ -556,7 +555,7 @@ draw_alloc_extra_vertex_attrib(struct draw_context *draw,
    num_outputs = draw_current_shader_outputs(draw);
    n = draw->extra_shader_outputs.num;
 
-   assert(n < Elements(draw->extra_shader_outputs.semantic_name));
+   assert(n < ARRAY_SIZE(draw->extra_shader_outputs.semantic_name));
 
    draw->extra_shader_outputs.semantic_name[n] = semantic_name;
    draw->extra_shader_outputs.semantic_index[n] = semantic_index;
@@ -720,7 +719,7 @@ draw_total_gs_outputs(const struct draw_context *draw)
  */
 void
 draw_texture_sampler(struct draw_context *draw,
-                     uint shader,
+                     enum pipe_shader_type shader,
                      struct tgsi_sampler *sampler)
 {
    if (shader == PIPE_SHADER_VERTEX) {
@@ -731,7 +730,41 @@ draw_texture_sampler(struct draw_context *draw,
    }
 }
 
+/**
+ * Provide TGSI image objects for vertex/geometry shaders that use
+ * texture fetches.  This state only needs to be set once per context.
+ * This might only be used by software drivers for the time being.
+ */
+void
+draw_image(struct draw_context *draw,
+           enum pipe_shader_type shader,
+           struct tgsi_image *image)
+{
+   if (shader == PIPE_SHADER_VERTEX) {
+      draw->vs.tgsi.image = image;
+   } else {
+      debug_assert(shader == PIPE_SHADER_GEOMETRY);
+      draw->gs.tgsi.image = image;
+   }
+}
 
+/**
+ * Provide TGSI buffer objects for vertex/geometry shaders that use
+ * load/store/atomic ops.  This state only needs to be set once per context.
+ * This might only be used by software drivers for the time being.
+ */
+void
+draw_buffer(struct draw_context *draw,
+            enum pipe_shader_type shader,
+            struct tgsi_buffer *buffer)
+{
+   if (shader == PIPE_SHADER_VERTEX) {
+      draw->vs.tgsi.buffer = buffer;
+   } else {
+      debug_assert(shader == PIPE_SHADER_GEOMETRY);
+      draw->gs.tgsi.buffer = buffer;
+   }
+}
 
 
 void draw_set_render( struct draw_context *draw, 
@@ -744,9 +777,6 @@ void draw_set_render( struct draw_context *draw,
 /**
  * Tell the draw module where vertex indexes/elements are located, and
  * their size (in bytes).
- *
- * Note: the caller must apply the pipe_index_buffer::offset value to
- * the address.  The draw module doesn't do that.
  */
 void
 draw_set_indexes(struct draw_context *draw,
@@ -853,12 +883,12 @@ draw_current_shader_clipvertex_output(const struct draw_context *draw)
 }
 
 uint
-draw_current_shader_clipdistance_output(const struct draw_context *draw, int index)
+draw_current_shader_ccdistance_output(const struct draw_context *draw, int index)
 {
    debug_assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
    if (draw->gs.geometry_shader)
-      return draw->gs.geometry_shader->clipdistance_output[index];
-   return draw->vs.clipdistance_output[index];
+      return draw->gs.geometry_shader->ccdistance_output[index];
+   return draw->vs.ccdistance_output[index];
 }
 
 
@@ -868,16 +898,6 @@ draw_current_shader_num_written_clipdistances(const struct draw_context *draw)
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->info.num_written_clipdistance;
    return draw->vs.vertex_shader->info.num_written_clipdistance;
-}
-
-
-uint
-draw_current_shader_culldistance_output(const struct draw_context *draw, int index)
-{
-   debug_assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
-   if (draw->gs.geometry_shader)
-      return draw->gs.geometry_shader->culldistance_output[index];
-   return draw->vs.vertex_shader->culldistance_output[index];
 }
 
 uint
@@ -940,7 +960,7 @@ draw_set_mapped_so_targets(struct draw_context *draw,
 
 void
 draw_set_sampler_views(struct draw_context *draw,
-                       unsigned shader_stage,
+                       enum pipe_shader_type shader_stage,
                        struct pipe_sampler_view **views,
                        unsigned num)
 {
@@ -961,7 +981,7 @@ draw_set_sampler_views(struct draw_context *draw,
 
 void
 draw_set_samplers(struct draw_context *draw,
-                  unsigned shader_stage,
+                  enum pipe_shader_type shader_stage,
                   struct pipe_sampler_state **samplers,
                   unsigned num)
 {
@@ -987,7 +1007,7 @@ draw_set_samplers(struct draw_context *draw,
 
 void
 draw_set_mapped_texture(struct draw_context *draw,
-                        unsigned shader_stage,
+                        enum pipe_shader_type shader_stage,
                         unsigned sview_idx,
                         uint32_t width, uint32_t height, uint32_t depth,
                         uint32_t first_level, uint32_t last_level,
@@ -1012,7 +1032,8 @@ draw_set_mapped_texture(struct draw_context *draw,
  * different ways of setting textures, and drivers typically only support one.
  */
 int
-draw_get_shader_param_no_llvm(unsigned shader, enum pipe_shader_cap param)
+draw_get_shader_param_no_llvm(enum pipe_shader_type shader,
+                              enum pipe_shader_cap param)
 {
    switch(shader) {
    case PIPE_SHADER_VERTEX:
@@ -1030,7 +1051,7 @@ draw_get_shader_param_no_llvm(unsigned shader, enum pipe_shader_cap param)
  * draw_get_shader_param_no_llvm instead.
  */
 int
-draw_get_shader_param(unsigned shader, enum pipe_shader_cap param)
+draw_get_shader_param(enum pipe_shader_type shader, enum pipe_shader_cap param)
 {
 
 #ifdef HAVE_LLVM

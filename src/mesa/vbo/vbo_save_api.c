@@ -78,6 +78,8 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/api_arrayelt.h"
 #include "main/vtxfmt.h"
 #include "main/dispatch.h"
+#include "main/state.h"
+#include "util/bitscan.h"
 
 #include "vbo_context.h"
 #include "vbo_noop.h"
@@ -330,8 +332,7 @@ _save_reset_counters(struct gl_context *ctx)
  * previous prim.
  */
 static void
-merge_prims(struct gl_context *ctx,
-            struct _mesa_prim *prim_list,
+merge_prims(struct _mesa_prim *prim_list,
             GLuint *prim_count)
 {
    GLuint i;
@@ -361,6 +362,51 @@ merge_prims(struct gl_context *ctx,
    *prim_count = prev_prim - prim_list + 1;
 }
 
+
+/**
+ * Convert GL_LINE_LOOP primitive into GL_LINE_STRIP so that drivers
+ * don't have to worry about handling the _mesa_prim::begin/end flags.
+ * See https://bugs.freedesktop.org/show_bug.cgi?id=81174
+ */
+static void
+convert_line_loop_to_strip(struct vbo_save_context *save,
+                           struct vbo_save_vertex_list *node)
+{
+   struct _mesa_prim *prim = &node->prim[node->prim_count - 1];
+
+   assert(prim->mode == GL_LINE_LOOP);
+
+   if (prim->end) {
+      /* Copy the 0th vertex to end of the buffer and extend the
+       * vertex count by one to finish the line loop.
+       */
+      const GLuint sz = save->vertex_size;
+      /* 0th vertex: */
+      const fi_type *src = save->buffer + prim->start * sz;
+      /* end of buffer: */
+      fi_type *dst = save->buffer + (prim->start + prim->count) * sz;
+
+      memcpy(dst, src, sz * sizeof(float));
+
+      prim->count++;
+      node->count++;
+      save->vert_count++;
+      save->buffer_ptr += sz;
+      save->vertex_store->used += sz;
+   }
+
+   if (!prim->begin) {
+      /* Drawing the second or later section of a long line loop.
+       * Skip the 0th vertex.
+       */
+      prim->start++;
+      prim->count--;
+   }
+
+   prim->mode = GL_LINE_STRIP;
+}
+
+
 /**
  * Insert the active immediate struct onto the display list currently
  * being built.
@@ -385,6 +431,7 @@ _save_compile_vertex_list(struct gl_context *ctx)
 
    /* Duplicate our template, increment refcounts to the storage structs:
     */
+   node->enabled = save->enabled;
    memcpy(node->attrsz, save->attrsz, sizeof(node->attrsz));
    memcpy(node->attrtype, save->attrtype, sizeof(node->attrtype));
    node->vertex_size = save->vertex_size;
@@ -442,7 +489,11 @@ _save_compile_vertex_list(struct gl_context *ctx)
     */
    save->copied.nr = _save_copy_vertices(ctx, node, save->buffer);
 
-   merge_prims(ctx, node->prim, &node->prim_count);
+   if (node->prim[node->prim_count - 1].mode == GL_LINE_LOOP) {
+      convert_line_loop_to_strip(save, node);
+   }
+
+   merge_prims(node->prim, &node->prim_count);
 
    /* Deal with GL_COMPILE_AND_EXECUTE:
     */
@@ -482,6 +533,10 @@ _save_compile_vertex_list(struct gl_context *ctx)
       save->vertex_store = alloc_vertex_store(ctx);
       save->buffer_ptr = vbo_save_map_vertex_store(ctx, save->vertex_store);
       save->out_of_memory = save->buffer_ptr == NULL;
+   }
+   else {
+      /* update buffer_ptr for next vertex */
+      save->buffer_ptr = save->vertex_store->buffer + save->vertex_store->used;
    }
 
    if (save->prim_store->used > VBO_SAVE_PRIM_SIZE - 6) {
@@ -549,8 +604,7 @@ static void
 _save_wrap_filled_vertex(struct gl_context *ctx)
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
-   fi_type *data = save->copied.buffer;
-   GLuint i;
+   unsigned numComponents;
 
    /* Emit a glEnd to close off the last vertex list.
     */
@@ -560,12 +614,12 @@ _save_wrap_filled_vertex(struct gl_context *ctx)
     */
    assert(save->max_vert - save->vert_count > save->copied.nr);
 
-   for (i = 0; i < save->copied.nr; i++) {
-      memcpy(save->buffer_ptr, data, save->vertex_size * sizeof(GLfloat));
-      data += save->vertex_size;
-      save->buffer_ptr += save->vertex_size;
-      save->vert_count++;
-   }
+   numComponents = save->copied.nr * save->vertex_size;
+   memcpy(save->buffer_ptr,
+          save->copied.buffer,
+          numComponents * sizeof(fi_type));
+   save->buffer_ptr += numComponents;
+   save->vert_count += save->copied.nr;
 }
 
 
@@ -573,14 +627,15 @@ static void
 _save_copy_to_current(struct gl_context *ctx)
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
-   GLuint i;
+   GLbitfield64 enabled = save->enabled & (~BITFIELD64_BIT(VBO_ATTRIB_POS));
 
-   for (i = VBO_ATTRIB_POS + 1; i < VBO_ATTRIB_MAX; i++) {
-      if (save->attrsz[i]) {
-         save->currentsz[i][0] = save->attrsz[i];
-         COPY_CLEAN_4V_TYPE_AS_UNION(save->current[i], save->attrsz[i],
-                                     save->attrptr[i], save->attrtype[i]);
-      }
+   while (enabled) {
+      const int i = u_bit_scan64(&enabled);
+      assert(save->attrsz[i]);
+
+      save->currentsz[i][0] = save->attrsz[i];
+      COPY_CLEAN_4V_TYPE_AS_UNION(save->current[i], save->attrsz[i],
+                                  save->attrptr[i], save->attrtype[i]);
    }
 }
 
@@ -589,9 +644,11 @@ static void
 _save_copy_from_current(struct gl_context *ctx)
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
-   GLint i;
+   GLbitfield64 enabled = save->enabled & (~BITFIELD64_BIT(VBO_ATTRIB_POS));
 
-   for (i = VBO_ATTRIB_POS + 1; i < VBO_ATTRIB_MAX; i++) {
+   while (enabled) {
+      const int i = u_bit_scan64(&enabled);
+
       switch (save->attrsz[i]) {
       case 4:
          save->attrptr[i][3] = save->current[i][3];
@@ -601,7 +658,9 @@ _save_copy_from_current(struct gl_context *ctx)
          save->attrptr[i][1] = save->current[i][1];
       case 1:
          save->attrptr[i][0] = save->current[i][0];
+         break;
       case 0:
+         assert(0);
          break;
       }
    }
@@ -640,6 +699,7 @@ _save_upgrade_vertex(struct gl_context *ctx, GLuint attr, GLuint newsz)
     */
    oldsz = save->attrsz[attr];
    save->attrsz[attr] = newsz;
+   save->enabled |= BITFIELD64_BIT(attr);
 
    save->vertex_size += newsz - oldsz;
    save->max_vert = ((VBO_SAVE_BUFFER_SIZE - save->vertex_store->used) /
@@ -648,7 +708,8 @@ _save_upgrade_vertex(struct gl_context *ctx, GLuint attr, GLuint newsz)
 
    /* Recalculate all the attrptr[] values:
     */
-   for (i = 0, tmp = save->vertex; i < VBO_ATTRIB_MAX; i++) {
+   tmp = save->vertex;
+   for (i = 0; i < VBO_ATTRIB_MAX; i++) {
       if (save->attrsz[i]) {
          save->attrptr[i] = tmp;
          tmp += save->attrsz[i];
@@ -671,7 +732,6 @@ _save_upgrade_vertex(struct gl_context *ctx, GLuint attr, GLuint newsz)
    if (save->copied.nr) {
       const fi_type *data = save->copied.buffer;
       fi_type *dest = save->buffer;
-      GLuint j;
 
       /* Need to note this and fix up at runtime (or loopback):
        */
@@ -681,26 +741,27 @@ _save_upgrade_vertex(struct gl_context *ctx, GLuint attr, GLuint newsz)
       }
 
       for (i = 0; i < save->copied.nr; i++) {
-         for (j = 0; j < VBO_ATTRIB_MAX; j++) {
-            if (save->attrsz[j]) {
-               if (j == attr) {
-                  if (oldsz) {
-                     COPY_CLEAN_4V_TYPE_AS_UNION(dest, oldsz, data,
-                                                 save->attrtype[j]);
-                     data += oldsz;
-                     dest += newsz;
-                  }
-                  else {
-                     COPY_SZ_4V(dest, newsz, save->current[attr]);
-                     dest += newsz;
-                  }
+         GLbitfield64 enabled = save->enabled;
+         while (enabled) {
+            const int j = u_bit_scan64(&enabled);
+            assert(save->attrsz[j]);
+            if (j == attr) {
+               if (oldsz) {
+                  COPY_CLEAN_4V_TYPE_AS_UNION(dest, oldsz, data,
+                                              save->attrtype[j]);
+                  data += oldsz;
+                  dest += newsz;
                }
                else {
-                  GLint sz = save->attrsz[j];
-                  COPY_SZ_4V(dest, sz, data);
-                  data += sz;
-                  dest += sz;
+                  COPY_SZ_4V(dest, newsz, save->current[attr]);
+                  dest += newsz;
                }
+            }
+            else {
+               GLint sz = save->attrsz[j];
+               COPY_SZ_4V(dest, sz, data);
+               data += sz;
+               dest += sz;
             }
          }
       }
@@ -751,9 +812,10 @@ static void
 _save_reset_vertex(struct gl_context *ctx)
 {
    struct vbo_save_context *save = &vbo_context(ctx)->save;
-   GLuint i;
 
-   for (i = 0; i < VBO_ATTRIB_MAX; i++) {
+   while (save->enabled) {
+      const int i = u_bit_scan64(&save->enabled);
+      assert(save->attrsz[i]);
       save->attrsz[i] = 0;
       save->active_sz[i] = 0;
    }
@@ -970,8 +1032,7 @@ _save_CallLists(GLsizei n, GLenum type, const GLvoid * v)
 
 
 /**
- * Called via ctx->Driver.NotifySaveBegin() when a glBegin is getting
- * compiled into a display list.
+ * Called when a glBegin is getting compiled into a display list.
  * Updating of ctx->Driver.CurrentSavePrimitive is already taken care of.
  */
 GLboolean
@@ -1001,7 +1062,7 @@ vbo_save_NotifyBegin(struct gl_context *ctx, GLenum mode)
       _mesa_install_save_vtxfmt(ctx, &save->vtxfmt);
    }
 
-   /* We need to call SaveFlushVertices() if there's state change */
+   /* We need to call vbo_save_SaveFlushVertices() if there's state change */
    ctx->Driver.SaveNeedFlush = GL_TRUE;
 
    /* GL_TRUE means we've handled this glBegin here; don't compile a BEGIN
@@ -1099,6 +1160,9 @@ _save_OBE_DrawArrays(GLenum mode, GLint start, GLsizei count)
    if (save->out_of_memory)
       return;
 
+   /* Make sure to process any VBO binding changes */
+   _mesa_update_state(ctx);
+
    _ae_map_vbos(ctx);
 
    vbo_save_NotifyBegin(ctx, (mode | VBO_SAVE_PRIM_WEAK
@@ -1112,12 +1176,46 @@ _save_OBE_DrawArrays(GLenum mode, GLint start, GLsizei count)
 }
 
 
+static void GLAPIENTRY
+_save_OBE_MultiDrawArrays(GLenum mode, const GLint *first,
+                          const GLsizei *count, GLsizei primcount)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   GLint i;
+
+   if (!_mesa_is_valid_prim_mode(ctx, mode)) {
+      _mesa_compile_error(ctx, GL_INVALID_ENUM, "glMultiDrawArrays(mode)");
+      return;
+   }
+
+   if (primcount < 0) {
+      _mesa_compile_error(ctx, GL_INVALID_VALUE,
+                          "glMultiDrawArrays(primcount<0)");
+      return;
+   }
+
+   for (i = 0; i < primcount; i++) {
+      if (count[i] < 0) {
+         _mesa_compile_error(ctx, GL_INVALID_VALUE,
+                             "glMultiDrawArrays(count[i]<0)");
+         return;
+      }
+   }
+
+   for (i = 0; i < primcount; i++) {
+      if (count[i] > 0) {
+         _save_OBE_DrawArrays(mode, first[i], count[i]);
+      }
+   }
+}
+
+
 /* Could do better by copying the arrays and element list intact and
  * then emitting an indexed prim at runtime.
  */
 static void GLAPIENTRY
-_save_OBE_DrawElements(GLenum mode, GLsizei count, GLenum type,
-                       const GLvoid * indices)
+_save_OBE_DrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
+                                 const GLvoid * indices, GLint basevertex)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct vbo_save_context *save = &vbo_context(ctx)->save;
@@ -1142,6 +1240,9 @@ _save_OBE_DrawElements(GLenum mode, GLsizei count, GLenum type,
    if (save->out_of_memory)
       return;
 
+   /* Make sure to process any VBO binding changes */
+   _mesa_update_state(ctx);
+
    _ae_map_vbos(ctx);
 
    if (_mesa_is_bufferobj(indexbuf))
@@ -1154,15 +1255,15 @@ _save_OBE_DrawElements(GLenum mode, GLsizei count, GLenum type,
    switch (type) {
    case GL_UNSIGNED_BYTE:
       for (i = 0; i < count; i++)
-         CALL_ArrayElement(GET_DISPATCH(), (((GLubyte *) indices)[i]));
+         CALL_ArrayElement(GET_DISPATCH(), (basevertex + ((GLubyte *) indices)[i]));
       break;
    case GL_UNSIGNED_SHORT:
       for (i = 0; i < count; i++)
-         CALL_ArrayElement(GET_DISPATCH(), (((GLushort *) indices)[i]));
+         CALL_ArrayElement(GET_DISPATCH(), (basevertex + ((GLushort *) indices)[i]));
       break;
    case GL_UNSIGNED_INT:
       for (i = 0; i < count; i++)
-         CALL_ArrayElement(GET_DISPATCH(), (((GLuint *) indices)[i]));
+         CALL_ArrayElement(GET_DISPATCH(), (basevertex + ((GLuint *) indices)[i]));
       break;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glDrawElements(type)");
@@ -1172,6 +1273,13 @@ _save_OBE_DrawElements(GLenum mode, GLsizei count, GLenum type,
    CALL_End(GET_DISPATCH(), ());
 
    _ae_unmap_vbos(ctx);
+}
+
+static void GLAPIENTRY
+_save_OBE_DrawElements(GLenum mode, GLsizei count, GLenum type,
+                       const GLvoid * indices)
+{
+   _save_OBE_DrawElementsBaseVertex(mode, count, type, indices, 0);
 }
 
 
@@ -1382,6 +1490,9 @@ _save_vtxfmt_init(struct gl_context *ctx)
    vfmt->VertexAttribL3dv = _save_VertexAttribL3dv;
    vfmt->VertexAttribL4dv = _save_VertexAttribL4dv;
 
+   vfmt->VertexAttribL1ui64ARB = _save_VertexAttribL1ui64ARB;
+   vfmt->VertexAttribL1ui64vARB = _save_VertexAttribL1ui64vARB;
+
    /* This will all require us to fallback to saving the list as opcodes:
     */
    vfmt->CallList = _save_CallList;
@@ -1410,7 +1521,9 @@ vbo_initialize_save_dispatch(const struct gl_context *ctx,
                              struct _glapi_table *exec)
 {
    SET_DrawArrays(exec, _save_OBE_DrawArrays);
+   SET_MultiDrawArrays(exec, _save_OBE_MultiDrawArrays);
    SET_DrawElements(exec, _save_OBE_DrawElements);
+   SET_DrawElementsBaseVertex(exec, _save_OBE_DrawElementsBaseVertex);
    SET_DrawRangeElements(exec, _save_OBE_DrawRangeElements);
    SET_MultiDrawElementsEXT(exec, _save_OBE_MultiDrawElements);
    SET_MultiDrawElementsBaseVertex(exec, _save_OBE_MultiDrawElementsBaseVertex);
@@ -1544,7 +1657,7 @@ vbo_print_vertex_list(struct gl_context *ctx, void *data, FILE *f)
       node->vertex_store->bufferobj : NULL;
    (void) ctx;
 
-   fprintf(f, "VBO-VERTEX-LIST, %u vertices %d primitives, %d vertsize "
+   fprintf(f, "VBO-VERTEX-LIST, %u vertices, %d primitives, %d vertsize, "
            "buffer %p\n",
            node->count, node->prim_count, node->vertex_size,
            buffer);
@@ -1603,8 +1716,6 @@ vbo_save_api_init(struct vbo_save_context *save)
                                vbo_save_playback_vertex_list,
                                vbo_destroy_vertex_list,
                                vbo_print_vertex_list);
-
-   ctx->Driver.NotifySaveBegin = vbo_save_NotifyBegin;
 
    _save_vtxfmt_init(ctx);
    _save_current_init(ctx);

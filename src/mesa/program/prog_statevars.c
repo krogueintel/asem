@@ -40,6 +40,7 @@
 #include "prog_statevars.h"
 #include "prog_parameter.h"
 #include "main/samplerobj.h"
+#include "main/framebuffer.h"
 
 
 #define ONE_DIV_SQRT_LN2 (1.201122408786449815)
@@ -54,8 +55,10 @@
  */
 static void
 _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
-                  GLfloat *value)
+                  gl_constant_value *val)
 {
+   GLfloat *value = &val->f;
+
    switch (state[0]) {
    case STATE_MATERIAL:
       {
@@ -352,7 +355,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
       }
       return;
    case STATE_NUM_SAMPLES:
-      ((int *)value)[0] = ctx->DrawBuffer->Visual.samples;
+      val[0].i = MAX2(1, _mesa_geometric_samples(ctx->DrawBuffer));
       return;
    case STATE_DEPTH_RANGE:
       value[0] = ctx->ViewportArray[0].Near;                /* near       */
@@ -370,14 +373,17 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
                COPY_4V(value, ctx->FragmentProgram.Parameters[idx]);
                return;
             case STATE_LOCAL:
-               if (!ctx->FragmentProgram.Current->Base.LocalParams) {
-                  ctx->FragmentProgram.Current->Base.LocalParams =
-                     calloc(MAX_PROGRAM_LOCAL_PARAMS, sizeof(float[4]));
-                  if (!ctx->FragmentProgram.Current->Base.LocalParams)
+               if (!ctx->FragmentProgram.Current->arb.LocalParams) {
+                  ctx->FragmentProgram.Current->arb.LocalParams =
+                     rzalloc_array_size(ctx->FragmentProgram.Current,
+                                        sizeof(float[4]),
+                                        MAX_PROGRAM_LOCAL_PARAMS);
+                  if (!ctx->FragmentProgram.Current->arb.LocalParams)
                      return;
                }
 
-               COPY_4V(value, ctx->FragmentProgram.Current->Base.LocalParams[idx]);
+               COPY_4V(value,
+                       ctx->FragmentProgram.Current->arb.LocalParams[idx]);
                return;
             default:
                _mesa_problem(ctx, "Bad state switch in _mesa_fetch_state()");
@@ -396,14 +402,17 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
                COPY_4V(value, ctx->VertexProgram.Parameters[idx]);
                return;
             case STATE_LOCAL:
-               if (!ctx->VertexProgram.Current->Base.LocalParams) {
-                  ctx->VertexProgram.Current->Base.LocalParams =
-                     calloc(MAX_PROGRAM_LOCAL_PARAMS, sizeof(float[4]));
-                  if (!ctx->VertexProgram.Current->Base.LocalParams)
+               if (!ctx->VertexProgram.Current->arb.LocalParams) {
+                  ctx->VertexProgram.Current->arb.LocalParams =
+                     rzalloc_array_size(ctx->VertexProgram.Current,
+                                        sizeof(float[4]),
+                                        MAX_PROGRAM_LOCAL_PARAMS);
+                  if (!ctx->VertexProgram.Current->arb.LocalParams)
                      return;
                }
 
-               COPY_4V(value, ctx->VertexProgram.Current->Base.LocalParams[idx]);
+               COPY_4V(value,
+                       ctx->VertexProgram.Current->arb.LocalParams[idx]);
                return;
             default:
                _mesa_problem(ctx, "Bad state switch in _mesa_fetch_state()");
@@ -449,24 +458,6 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
                    1);
          return;
 
-      case STATE_TEXRECT_SCALE:
-         /* Value = { 1/texWidth, 1/texHeight, 0, 1 }.
-          * Used to convert unnormalized texcoords to normalized texcoords.
-          */
-         {
-            const int unit = (int) state[2];
-            const struct gl_texture_object *texObj
-               = ctx->Texture.Unit[unit]._Current;
-            if (texObj) {
-               struct gl_texture_image *texImage = texObj->Image[0][0];
-               ASSIGN_4V(value,
-                         (GLfloat) (1.0 / texImage->Width),
-                         (GLfloat) (1.0 / texImage->Height),
-                         0.0f, 1.0f);
-            }
-         }
-         return;
-
       case STATE_FOG_PARAMS_OPTIMIZED:
          /* for simpler per-vertex/pixel fog calcs. POW (for EXP/EXP2 fog)
           * might be more expensive than EX2 on some hw, plus it needs
@@ -474,7 +465,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
           * single MAD.
           * linear: fogcoord * -1/(end-start) + end/(end-start)
           * exp: 2^-(density/ln(2) * fogcoord)
-          * exp2: 2^-((density/(ln(2)^2) * fogcoord)^2)
+          * exp2: 2^-((density/(sqrt(ln(2))) * fogcoord)^2)
           */
          value[0] = (ctx->Fog.End == ctx->Fog.Start)
             ? 1.0f : (GLfloat)(-1.0F / (ctx->Fog.End - ctx->Fog.Start));
@@ -501,7 +492,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
                minImplSize = ctx->Const.MinPointSizeAA;
                maxImplSize = ctx->Const.MaxPointSize;
             }
-            else if (ctx->Point.SmoothFlag || ctx->Multisample._Enabled) {
+            else if (ctx->Point.SmoothFlag || _mesa_is_multisample_enabled(ctx)) {
                minImplSize = ctx->Const.MinPointSizeAA;
                maxImplSize = ctx->Const.MaxPointSizeAA;
             }
@@ -595,6 +586,21 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
          }
          return;
 
+      case STATE_TCS_PATCH_VERTICES_IN:
+         val[0].i = ctx->TessCtrlProgram.patch_vertices;
+         return;
+
+      case STATE_TES_PATCH_VERTICES_IN:
+         if (ctx->TessCtrlProgram._Current)
+            val[0].i = ctx->TessCtrlProgram._Current->info.tess.tcs_vertices_out;
+         else
+            val[0].i = ctx->TessCtrlProgram.patch_vertices;
+         return;
+
+      case STATE_ADVANCED_BLENDING_MODE:
+         val[0].i = ctx->Color.BlendEnabled ? ctx->Color._AdvancedBlendMode : 0;
+         return;
+
       /* XXX: make sure new tokens added here are also handled in the 
        * _mesa_program_state_flags() switch, below.
        */
@@ -635,9 +641,9 @@ _mesa_program_state_flags(const gl_state_index state[STATE_LENGTH])
       return _NEW_LIGHT;
 
    case STATE_TEXGEN:
-      return _NEW_TEXTURE;
+      return _NEW_TEXTURE_STATE;
    case STATE_TEXENV_COLOR:
-      return _NEW_TEXTURE | _NEW_BUFFERS | _NEW_FRAG_CLAMP;
+      return _NEW_TEXTURE_STATE | _NEW_BUFFERS | _NEW_FRAG_CLAMP;
 
    case STATE_FOG_COLOR:
       return _NEW_FOG | _NEW_BUFFERS | _NEW_FRAG_CLAMP;
@@ -685,8 +691,6 @@ _mesa_program_state_flags(const gl_state_index state[STATE_LENGTH])
       case STATE_NORMAL_SCALE:
          return _NEW_MODELVIEW;
 
-      case STATE_TEXRECT_SCALE:
-	 return _NEW_TEXTURE;
       case STATE_FOG_PARAMS_OPTIMIZED:
 	 return _NEW_FOG;
       case STATE_POINT_SIZE_CLAMPED:
@@ -704,6 +708,9 @@ _mesa_program_state_flags(const gl_state_index state[STATE_LENGTH])
       case STATE_FB_SIZE:
       case STATE_FB_WPOS_Y_TRANSFORM:
          return _NEW_BUFFERS;
+
+      case STATE_ADVANCED_BLENDING_MODE:
+         return _NEW_COLOR;
 
       default:
          /* unknown state indexes are silently ignored and
@@ -878,9 +885,6 @@ append_token(char *dst, gl_state_index k)
    case STATE_NORMAL_SCALE:
       append(dst, "normalScale");
       break;
-   case STATE_TEXRECT_SCALE:
-      append(dst, "texrectScale");
-      break;
    case STATE_FOG_PARAMS_OPTIMIZED:
       append(dst, "fogParamsOptimized");
       break;
@@ -910,6 +914,9 @@ append_token(char *dst, gl_state_index k)
       break;
    case STATE_FB_WPOS_Y_TRANSFORM:
       append(dst, "FbWposYTransform");
+      break;
+   case STATE_ADVANCED_BLENDING_MODE:
+      append(dst, "AdvancedBlendingMode");
       break;
    default:
       /* probably STATE_INTERNAL_DRIVER+i (driver private state) */
@@ -1070,7 +1077,7 @@ _mesa_load_state_parameters(struct gl_context *ctx,
       if (paramList->Parameters[i].Type == PROGRAM_STATE_VAR) {
          _mesa_fetch_state(ctx,
 			   paramList->Parameters[i].StateIndexes,
-                           &paramList->ParameterValues[i][0].f);
+                           &paramList->ParameterValues[i][0]);
       }
    }
 }

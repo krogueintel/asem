@@ -21,8 +21,6 @@
   <enum name="MINOR_VERSION"                    value="0x821C"/>
   <enum name="NUM_EXTENSIONS"                   value="0x821D"/>
   <enum name="CONTEXT_FLAGS"                    value="0x821E"/>
-  <enum name="DEPTH_BUFFER"                     value="0x8223"/>
-  <enum name="STENCIL_BUFFER"                   value="0x8224"/>
   <enum name="CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT"  value="0x0001"/>
   <enum name="RGBA32F"                          value="0x8814"/>
   <enum name="RGB32F"                           value="0x8815"/>
@@ -131,7 +129,7 @@
     <param name="value" type="const GLuint *"/>
   </function>
 
-  <function name="ClearBufferfv" es2="3.0">
+  <function name="ClearBufferfv" es2="3.0" marshal="custom">
     <param name="buffer" type="GLenum"/>
     <param name="drawbuffer" type="GLint"/>
     <param name="value" type="const GLfloat *"/>
@@ -158,7 +156,7 @@
 
   <!-- These functions alias ones form GL_ARB_draw_buffers2 -->
 
-  <function name="ColorMaski">
+  <function name="ColorMaski" es2="3.2">
     <param name="buf" type="GLuint"/>
     <param name="r" type="GLboolean"/>
     <param name="g" type="GLboolean"/>
@@ -178,17 +176,17 @@
     <param name="data" type="GLint *"/>
   </function>
 
-  <function name="Enablei">
+  <function name="Enablei" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="index" type="GLuint"/>
   </function>
 
-  <function name="Disablei">
+  <function name="Disablei" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="index" type="GLuint"/>
   </function>
 
-  <function name="IsEnabledi">
+  <function name="IsEnabledi" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="index" type="GLuint"/>
       <return type="GLboolean"/>
@@ -202,7 +200,7 @@
       <return type="GLint"/>
   </function>
 
-  <function name="BindFragDataLocation">
+  <function name="BindFragDataLocation" no_error="true">
     <param name="program" type="GLuint"/>
     <param name="colorNumber" type="GLuint"/>
     <param name="name" type="const GLchar *"/>
@@ -215,7 +213,7 @@
   <function name="EndTransformFeedback" es2="3.0">
   </function>
 
-  <function name="BindBufferRange" es2="3.0">
+  <function name="BindBufferRange" es2="3.0" no_error="true">
     <param name="target" type="GLenum"/>
     <param name="index" type="GLuint"/>
     <param name="buffer" type="GLuint"/>
@@ -258,7 +256,9 @@
 
   <!-- These functions alias ones from GL_EXT_gpu_shader4 -->
 
-  <function name="VertexAttribIPointer" es2="3.0">
+  <function name="VertexAttribIPointer" es2="3.0" marshal="async"
+            no_error="true"
+            marshal_fail="_mesa_glthread_is_non_vbo_vertex_attrib_pointer(ctx)">
     <param name="index" type="GLuint"/>
     <param name="size" type="GLint"/>
     <param name="type" type="GLenum"/>
@@ -448,25 +448,25 @@
 
   <!-- These functions alias ones from GL_EXT_texture_integer -->
 
-  <function name="TexParameterIiv">
+  <function name="TexParameterIiv" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="pname" type="GLenum"/>
     <param name="params" type="const GLint *"/>
   </function>
 
-  <function name="TexParameterIuiv">
+  <function name="TexParameterIuiv" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="pname" type="GLenum"/>
     <param name="params" type="const GLuint *"/>
   </function>
 
-  <function name="GetTexParameterIiv">
+  <function name="GetTexParameterIiv" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="pname" type="GLenum"/>
     <param name="params" type="GLint *"/>
   </function>
 
-  <function name="GetTexParameterIuiv">
+  <function name="GetTexParameterIuiv" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="pname" type="GLenum"/>
     <param name="params" type="GLuint *"/>
@@ -557,7 +557,7 @@
     <param name="primcount" type="GLsizei"/>
   </function>
 
-  <function name="TexBuffer">
+  <function name="TexBuffer" es2="3.2">
     <param name="target" type="GLenum"/>
     <param name="internalFormat" type="GLenum"/>
     <param name="buffer" type="GLuint"/>
@@ -607,7 +607,7 @@
     <param name="params" type="GLint64 *"/>
   </function>
 
-  <function name="FramebufferTexture">
+  <function name="FramebufferTexture" es2="3.2" no_error="true">
     <param name="target" type="GLenum"/>
     <param name="attachment" type="GLenum"/>
     <param name="texture" type="GLuint"/>
@@ -625,7 +625,7 @@
   <enum name="TEXTURE_SWIZZLE_A"                value="0x8E45"/>
   <enum name="TEXTURE_SWIZZLE_RGBA"             value="0x8E46"/>
 
-  <function name="VertexAttribDivisor" es2="3.0">
+  <function name="VertexAttribDivisor" es2="3.0" no_error="true">
     <param name="index" type="GLuint"/>
     <param name="divisor" type="GLuint"/>
   </function>

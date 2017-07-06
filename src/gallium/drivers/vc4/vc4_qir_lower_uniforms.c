@@ -22,14 +22,10 @@
  */
 
 /**
- * @file vc4_opt_algebraic.c
+ * @file vc4_qir_lower_uniforms.c
  *
- * This is the optimization pass for miscellaneous changes to instructions
- * where we can simplify the operation by some knowledge about the specific
- * operations.
- *
- * Mostly this will be a matter of turning things into MOVs so that they can
- * later be copy-propagated out.
+ * This is the pre-code-generation pass for fixing up instructions that try to
+ * read from multiple uniform values.
  */
 
 #include "vc4_qir.h"
@@ -81,8 +77,35 @@ is_lowerable_uniform(struct qinst *inst, int i)
         if (inst->src[i].file != QFILE_UNIF)
                 return false;
         if (qir_is_tex(inst))
-                return i != 1;
+                return i != qir_get_tex_uniform_src(inst);
         return true;
+}
+
+/* Returns the number of different uniform values referenced by the
+ * instruction.
+ */
+static uint32_t
+qir_get_instruction_uniform_count(struct qinst *inst)
+{
+        uint32_t count = 0;
+
+        for (int i = 0; i < qir_get_nsrc(inst); i++) {
+                if (inst->src[i].file != QFILE_UNIF)
+                        continue;
+
+                bool is_duplicate = false;
+                for (int j = 0; j < i; j++) {
+                        if (inst->src[j].file == QFILE_UNIF &&
+                            inst->src[j].index == inst->src[i].index) {
+                                is_duplicate = true;
+                                break;
+                        }
+                }
+                if (!is_duplicate)
+                        count++;
+        }
+
+        return count;
 }
 
 void
@@ -95,16 +118,10 @@ qir_lower_uniforms(struct vc4_compile *c)
          * than one uniform referenced, and add those uniform values to the
          * ht.
          */
-        list_for_each_entry(struct qinst, inst, &c->instructions, link) {
-                uint32_t nsrc = qir_get_op_nsrc(inst->op);
+        qir_for_each_inst_inorder(inst, c) {
+                uint32_t nsrc = qir_get_nsrc(inst);
 
-                uint32_t count = 0;
-                for (int i = 0; i < nsrc; i++) {
-                        if (inst->src[i].file == QFILE_UNIF)
-                                count++;
-                }
-
-                if (count <= 1)
+                if (qir_get_instruction_uniform_count(inst) <= 1)
                         continue;
 
                 for (int i = 0; i < nsrc; i++) {
@@ -129,42 +146,56 @@ qir_lower_uniforms(struct vc4_compile *c)
                         }
                 }
 
+                struct qreg unif = qir_reg(QFILE_UNIF, max_index);
+
                 /* Now, find the instructions using this uniform and make them
                  * reference a temp instead.
                  */
-                struct qreg temp = qir_get_temp(c);
-                struct qreg unif = { QFILE_UNIF, max_index };
-                struct qinst *mov = qir_inst(QOP_MOV, temp, unif, c->undef);
-                list_add(&mov->link, &c->instructions);
-                c->defs[temp.index] = mov;
-                list_for_each_entry(struct qinst, inst, &c->instructions, link) {
-                        uint32_t nsrc = qir_get_op_nsrc(inst->op);
+                qir_for_each_block(block, c) {
+                        struct qinst *mov = NULL;
 
-                        uint32_t count = 0;
-                        for (int i = 0; i < nsrc; i++) {
-                                if (inst->src[i].file == QFILE_UNIF)
-                                        count++;
-                        }
+                        qir_for_each_inst(inst, block) {
+                                uint32_t nsrc = qir_get_nsrc(inst);
 
-                        if (count <= 1)
-                                continue;
+                                uint32_t count = qir_get_instruction_uniform_count(inst);
 
-                        for (int i = 0; i < nsrc; i++) {
-                                if (is_lowerable_uniform(inst, i) &&
-                                    inst->src[i].index == max_index) {
-                                        inst->src[i] = temp;
-                                        remove_uniform(ht, unif);
-                                        count--;
+                                if (count <= 1)
+                                        continue;
+
+                                /* If the block doesn't have a load of hte
+                                 * uniform yet, add it.  We could potentially
+                                 * do better and CSE MOVs from multiple blocks
+                                 * into dominating blocks, except that may
+                                 * cause troubles for register allocation.
+                                 */
+                                if (!mov) {
+                                        mov = qir_inst(QOP_MOV, qir_get_temp(c),
+                                                       unif, c->undef);
+                                        list_add(&mov->link,
+                                                 &block->instructions);
+                                        c->defs[mov->dst.index] = mov;
                                 }
-                        }
 
-                        /* If the instruction doesn't need lowering any more,
-                         * then drop it from the list.
-                         */
-                        if (count <= 1) {
+                                bool removed = false;
                                 for (int i = 0; i < nsrc; i++) {
-                                        if (is_lowerable_uniform(inst, i))
-                                                remove_uniform(ht, inst->src[i]);
+                                        if (is_lowerable_uniform(inst, i) &&
+                                            inst->src[i].index == max_index) {
+                                                inst->src[i] = mov->dst;
+                                                remove_uniform(ht, unif);
+                                                removed = true;
+                                        }
+                                }
+                                if (removed)
+                                        count--;
+
+                                /* If the instruction doesn't need lowering any more,
+                                 * then drop it from the list.
+                                 */
+                                if (count <= 1) {
+                                        for (int i = 0; i < nsrc; i++) {
+                                                if (is_lowerable_uniform(inst, i))
+                                                        remove_uniform(ht, inst->src[i]);
+                                        }
                                 }
                         }
                 }

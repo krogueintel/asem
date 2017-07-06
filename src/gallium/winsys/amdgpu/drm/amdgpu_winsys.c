@@ -39,273 +39,64 @@
 #include <xf86drm.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include "amdgpu_id.h"
+#include "amd/common/amdgpu_id.h"
+#include "amd/common/sid.h"
+#include "amd/common/gfx9d.h"
 
-#define CIK_TILE_MODE_COLOR_2D			14
-
-#define CIK__GB_TILE_MODE__PIPE_CONFIG(x)        (((x) >> 6) & 0x1f)
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P2               0
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P4_8x16          4
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P4_16x16         5
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P4_16x32         6
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P4_32x32         7
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_16x16_8x16    8
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_16x32_8x16    9
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_8x16    10
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_16x32_16x16   11
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_16x16   12
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_16x32   13
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P8_32x64_32x32   14
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_8X16   16
-#define     CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_16X16  17
+#ifndef AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS
+#define AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS	0x1E
+#endif
 
 static struct util_hash_table *dev_tab = NULL;
-pipe_static_mutex(dev_tab_mutex);
-
-static unsigned cik_get_num_tile_pipes(struct amdgpu_gpu_info *info)
-{
-   unsigned mode2d = info->gb_tile_mode[CIK_TILE_MODE_COLOR_2D];
-
-   switch (CIK__GB_TILE_MODE__PIPE_CONFIG(mode2d)) {
-   case CIK__PIPE_CONFIG__ADDR_SURF_P2:
-   default:
-       return 2;
-   case CIK__PIPE_CONFIG__ADDR_SURF_P4_8x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P4_16x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P4_16x32:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P4_32x32:
-       return 4;
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_16x16_8x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_16x32_8x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_8x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_16x32_16x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_16x16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_32x32_16x32:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P8_32x64_32x32:
-       return 8;
-   case CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_8X16:
-   case CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_16X16:
-       return 16;
-   }
-}
-
-/* Convert Sea Islands register values GB_ADDR_CFG and MC_ADDR_CFG
- * into GB_TILING_CONFIG register which is only present on R600-R700. */
-static unsigned r600_get_gb_tiling_config(struct amdgpu_gpu_info *info)
-{
-   unsigned num_pipes = info->gb_addr_cfg & 0x7;
-   unsigned num_banks = info->mc_arb_ramcfg & 0x3;
-   unsigned pipe_interleave_bytes = (info->gb_addr_cfg >> 4) & 0x7;
-   unsigned row_size = (info->gb_addr_cfg >> 28) & 0x3;
-
-   return num_pipes | (num_banks << 4) |
-         (pipe_interleave_bytes << 8) |
-         (row_size << 12);
-}
+static mtx_t dev_tab_mutex = _MTX_INITIALIZER_NP;
 
 /* Helper function to do the ioctls needed for setup and init. */
-static boolean do_winsys_init(struct amdgpu_winsys *ws)
+static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
 {
-   struct amdgpu_buffer_size_alignments alignment_info = {};
-   struct amdgpu_heap_info vram, gtt;
-   struct drm_amdgpu_info_hw_ip dma = {}, uvd = {}, vce = {};
-   uint32_t vce_version = 0, vce_feature = 0;
-   int r, i, j;
+   if (!ac_query_gpu_info(fd, ws->dev, &ws->info, &ws->amdinfo))
+      goto fail;
 
-   /* Query hardware and driver information. */
-   r = amdgpu_query_gpu_info(ws->dev, &ws->amdinfo);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_gpu_info failed.\n");
+   /* LLVM 5.0 is required for GFX9. */
+   if (ws->info.chip_class >= GFX9 && HAVE_LLVM < 0x0500) {
+      fprintf(stderr, "amdgpu: LLVM 5.0 is required, got LLVM %i.%i\n",
+              HAVE_LLVM >> 8, HAVE_LLVM & 255);
       goto fail;
    }
 
-   r = amdgpu_query_buffer_size_alignment(ws->dev, &alignment_info);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_buffer_size_alignment failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_VRAM, 0, &vram);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_heap_info(vram) failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_GTT, 0, &gtt);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_heap_info(gtt) failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_hw_ip_info(ws->dev, AMDGPU_HW_IP_DMA, 0, &dma);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_hw_ip_info(dma) failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_hw_ip_info(ws->dev, AMDGPU_HW_IP_UVD, 0, &uvd);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_hw_ip_info(uvd) failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_hw_ip_info(ws->dev, AMDGPU_HW_IP_VCE, 0, &vce);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_hw_ip_info(vce) failed.\n");
-      goto fail;
-   }
-
-   r = amdgpu_query_firmware_version(ws->dev, AMDGPU_INFO_FW_VCE, 0, 0,
-				     &vce_version, &vce_feature);
-   if (r) {
-      fprintf(stderr, "amdgpu: amdgpu_query_firmware_version(vce) failed.\n");
-      goto fail;
-   }
-
-   /* Set chip identification. */
-   ws->info.pci_id = ws->amdinfo.asic_id; /* TODO: is this correct? */
-   ws->info.vce_harvest_config = ws->amdinfo.vce_harvest_config;
-
-   switch (ws->info.pci_id) {
-#define CHIPSET(pci_id, name, cfamily) case pci_id: ws->info.family = CHIP_##cfamily; break;
-#include "pci_ids/radeonsi_pci_ids.h"
-#undef CHIPSET
-
-   default:
-      fprintf(stderr, "amdgpu: Invalid PCI ID.\n");
-      goto fail;
-   }
-
-   if (ws->info.family >= CHIP_TONGA)
-      ws->info.chip_class = VI;
-   else if (ws->info.family >= CHIP_BONAIRE)
-      ws->info.chip_class = CIK;
-   else {
-      fprintf(stderr, "amdgpu: Unknown family.\n");
-      goto fail;
-   }
-
-   /* LLVM 3.6 is required for VI. */
-   if (ws->info.chip_class >= VI &&
-       (HAVE_LLVM < 0x0306 ||
-        (HAVE_LLVM == 0x0306 && MESA_LLVM_VERSION_PATCH < 1))) {
-      fprintf(stderr, "amdgpu: LLVM 3.6.1 is required, got LLVM %i.%i.%i\n",
-              HAVE_LLVM >> 8, HAVE_LLVM & 255, MESA_LLVM_VERSION_PATCH);
-      goto fail;
-   }
-
-   /* family and rev_id are for addrlib */
-   switch (ws->info.family) {
-   case CHIP_BONAIRE:
-      ws->family = FAMILY_CI;
-      ws->rev_id = CI_BONAIRE_M_A0;
-      break;
-   case CHIP_KAVERI:
-      ws->family = FAMILY_KV;
-      ws->rev_id = KV_SPECTRE_A0;
-      break;
-   case CHIP_KABINI:
-      ws->family = FAMILY_KV;
-      ws->rev_id = KB_KALINDI_A0;
-      break;
-   case CHIP_HAWAII:
-      ws->family = FAMILY_CI;
-      ws->rev_id = CI_HAWAII_P_A0;
-      break;
-   case CHIP_MULLINS:
-      ws->family = FAMILY_KV;
-      ws->rev_id = ML_GODAVARI_A0;
-      break;
-   case CHIP_TONGA:
-      ws->family = FAMILY_VI;
-      ws->rev_id = VI_TONGA_P_A0;
-      break;
-   case CHIP_ICELAND:
-      ws->family = FAMILY_VI;
-      ws->rev_id = VI_ICELAND_M_A0;
-      break;
-   case CHIP_CARRIZO:
-      ws->family = FAMILY_CZ;
-      ws->rev_id = CZ_CARRIZO_A0;
-      break;
-   case CHIP_FIJI:
-      ws->family = FAMILY_VI;
-      ws->rev_id = VI_FIJI_P_A0;
-      break;
-   default:
-      fprintf(stderr, "amdgpu: Unknown family.\n");
-      goto fail;
-   }
-
-   ws->addrlib = amdgpu_addr_create(ws);
+   ws->addrlib = amdgpu_addr_create(&ws->info, &ws->amdinfo);
    if (!ws->addrlib) {
       fprintf(stderr, "amdgpu: Cannot create addrlib.\n");
       goto fail;
    }
 
-   /* Set hardware information. */
-   ws->info.gart_size = gtt.heap_size;
-   ws->info.vram_size = vram.heap_size;
-   /* convert the shader clock from KHz to MHz */
-   ws->info.max_sclk = ws->amdinfo.max_engine_clk / 1000;
-   ws->info.max_se = ws->amdinfo.num_shader_engines;
-   ws->info.max_sh_per_se = ws->amdinfo.num_shader_arrays_per_engine;
-   ws->info.has_uvd = uvd.available_rings != 0;
-   ws->info.vce_fw_version =
-         vce.available_rings ? vce_version : 0;
-   ws->info.has_userptr = TRUE;
-   ws->info.r600_num_backends = ws->amdinfo.rb_pipes;
-   ws->info.r600_clock_crystal_freq = ws->amdinfo.gpu_counter_freq;
-   ws->info.r600_tiling_config = r600_get_gb_tiling_config(&ws->amdinfo);
-   ws->info.r600_num_tile_pipes = cik_get_num_tile_pipes(&ws->amdinfo);
-   ws->info.r600_max_pipes = ws->amdinfo.max_quad_shader_pipes; /* TODO: is this correct? */
-   ws->info.r600_virtual_address = TRUE;
-   ws->info.r600_has_dma = dma.available_rings != 0;
+   ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL;
 
-   /* Guess what the maximum compute unit number is by looking at the mask
-    * of enabled CUs.
-    */
-   for (i = 0; i < ws->info.max_se; i++)
-      for (j = 0; j < ws->info.max_sh_per_se; j++) {
-         unsigned max = util_last_bit(ws->amdinfo.cu_bitmap[i][j]);
-
-         if (ws->info.max_compute_units < max)
-            ws->info.max_compute_units = max;
-      }
-   ws->info.max_compute_units *= ws->info.max_se * ws->info.max_sh_per_se;
-
-   memcpy(ws->info.si_tile_mode_array, ws->amdinfo.gb_tile_mode,
-          sizeof(ws->amdinfo.gb_tile_mode));
-   ws->info.si_tile_mode_array_valid = TRUE;
-   ws->info.si_backend_enabled_mask = ws->amdinfo.enabled_rb_pipes_mask;
-
-   memcpy(ws->info.cik_macrotile_mode_array, ws->amdinfo.gb_macro_tile_mode,
-          sizeof(ws->amdinfo.gb_macro_tile_mode));
-   ws->info.cik_macrotile_mode_array_valid = TRUE;
-
-   ws->gart_page_size = alignment_info.size_remote;
-
-   return TRUE;
+   return true;
 
 fail:
-   if (ws->addrlib)
-      AddrDestroy(ws->addrlib);
    amdgpu_device_deinitialize(ws->dev);
    ws->dev = NULL;
-   return FALSE;
+   return false;
+}
+
+static void do_winsys_deinit(struct amdgpu_winsys *ws)
+{
+   AddrDestroy(ws->addrlib);
+   amdgpu_device_deinitialize(ws->dev);
 }
 
 static void amdgpu_winsys_destroy(struct radeon_winsys *rws)
 {
    struct amdgpu_winsys *ws = (struct amdgpu_winsys*)rws;
 
-   pipe_mutex_destroy(ws->bo_fence_lock);
+   if (util_queue_is_initialized(&ws->cs_queue))
+      util_queue_destroy(&ws->cs_queue);
 
-   ws->cman->destroy(ws->cman);
-   ws->kman->destroy(ws->kman);
-   AddrDestroy(ws->addrlib);
-
-   amdgpu_device_deinitialize(ws->dev);
+   mtx_destroy(&ws->bo_fence_lock);
+   pb_slabs_deinit(&ws->bo_slabs);
+   pb_cache_deinit(&ws->bo_cache);
+   mtx_destroy(&ws->global_bo_list_lock);
+   do_winsys_deinit(ws);
    FREE(rws);
 }
 
@@ -315,11 +106,11 @@ static void amdgpu_winsys_query_info(struct radeon_winsys *rws,
    *info = ((struct amdgpu_winsys *)rws)->info;
 }
 
-static boolean amdgpu_cs_request_feature(struct radeon_winsys_cs *rcs,
-                                         enum radeon_feature_id fid,
-                                         boolean enable)
+static bool amdgpu_cs_request_feature(struct radeon_winsys_cs *rcs,
+                                      enum radeon_feature_id fid,
+                                      bool enable)
 {
-   return FALSE;
+   return false;
 }
 
 static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
@@ -334,29 +125,54 @@ static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
       return ws->allocated_vram;
    case RADEON_REQUESTED_GTT_MEMORY:
       return ws->allocated_gtt;
+   case RADEON_MAPPED_VRAM:
+      return ws->mapped_vram;
+   case RADEON_MAPPED_GTT:
+      return ws->mapped_gtt;
    case RADEON_BUFFER_WAIT_TIME_NS:
       return ws->buffer_wait_time;
+   case RADEON_NUM_MAPPED_BUFFERS:
+      return ws->num_mapped_buffers;
    case RADEON_TIMESTAMP:
       amdgpu_query_info(ws->dev, AMDGPU_INFO_TIMESTAMP, 8, &retval);
       return retval;
-   case RADEON_NUM_CS_FLUSHES:
-      return ws->num_cs_flushes;
+   case RADEON_NUM_GFX_IBS:
+      return ws->num_gfx_IBs;
+   case RADEON_NUM_SDMA_IBS:
+      return ws->num_sdma_IBs;
    case RADEON_NUM_BYTES_MOVED:
       amdgpu_query_info(ws->dev, AMDGPU_INFO_NUM_BYTES_MOVED, 8, &retval);
       return retval;
+   case RADEON_NUM_EVICTIONS:
+      amdgpu_query_info(ws->dev, AMDGPU_INFO_NUM_EVICTIONS, 8, &retval);
+      return retval;
+   case RADEON_NUM_VRAM_CPU_PAGE_FAULTS:
+      amdgpu_query_info(ws->dev, AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS, 8, &retval);
+      return retval;
    case RADEON_VRAM_USAGE:
       amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_VRAM, 0, &heap);
+      return heap.heap_usage;
+   case RADEON_VRAM_VIS_USAGE:
+      amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_VRAM,
+                             AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED, &heap);
       return heap.heap_usage;
    case RADEON_GTT_USAGE:
       amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_GTT, 0, &heap);
       return heap.heap_usage;
    case RADEON_GPU_TEMPERATURE:
+      amdgpu_query_sensor_info(ws->dev, AMDGPU_INFO_SENSOR_GPU_TEMP, 4, &retval);
+      return retval;
    case RADEON_CURRENT_SCLK:
+      amdgpu_query_sensor_info(ws->dev, AMDGPU_INFO_SENSOR_GFX_SCLK, 4, &retval);
+      return retval;
    case RADEON_CURRENT_MCLK:
-      return 0;
+      amdgpu_query_sensor_info(ws->dev, AMDGPU_INFO_SENSOR_GFX_MCLK, 4, &retval);
+      return retval;
    case RADEON_GPU_RESET_COUNTER:
       assert(0);
       return 0;
+   case RADEON_CS_THREAD_TIME:
+      return util_queue_get_thread_time_nano(&ws->cs_queue, 0);
    }
    return 0;
 }
@@ -385,9 +201,9 @@ static int compare_dev(void *key1, void *key2)
    return key1 != key2;
 }
 
-static bool amdgpu_winsys_unref(struct radeon_winsys *ws)
+static bool amdgpu_winsys_unref(struct radeon_winsys *rws)
 {
-   struct amdgpu_winsys *rws = (struct amdgpu_winsys*)ws;
+   struct amdgpu_winsys *ws = (struct amdgpu_winsys*)rws;
    bool destroy;
 
    /* When the reference counter drops to zero, remove the device pointer
@@ -395,18 +211,26 @@ static bool amdgpu_winsys_unref(struct radeon_winsys *ws)
     * This must happen while the mutex is locked, so that
     * amdgpu_winsys_create in another thread doesn't get the winsys
     * from the table when the counter drops to 0. */
-   pipe_mutex_lock(dev_tab_mutex);
+   mtx_lock(&dev_tab_mutex);
 
-   destroy = pipe_reference(&rws->reference, NULL);
+   destroy = pipe_reference(&ws->reference, NULL);
    if (destroy && dev_tab)
-      util_hash_table_remove(dev_tab, rws->dev);
+      util_hash_table_remove(dev_tab, ws->dev);
 
-   pipe_mutex_unlock(dev_tab_mutex);
+   mtx_unlock(&dev_tab_mutex);
    return destroy;
 }
 
+static const char* amdgpu_get_chip_name(struct radeon_winsys *ws)
+{
+   amdgpu_device_handle dev = ((struct amdgpu_winsys *)ws)->dev;
+   return amdgpu_get_marketing_name(dev);
+}
+
+
 PUBLIC struct radeon_winsys *
-amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
+amdgpu_winsys_create(int fd, unsigned flags,
+		     radeon_screen_create_t screen_create)
 {
    struct amdgpu_winsys *ws;
    drmVersionPtr version = drmGetVersion(fd);
@@ -421,7 +245,7 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
    drmFreeVersion(version);
 
    /* Look up the winsys from the dev table. */
-   pipe_mutex_lock(dev_tab_mutex);
+   mtx_lock(&dev_tab_mutex);
    if (!dev_tab)
       dev_tab = util_hash_table_create(hash_dev, compare_dev);
 
@@ -429,7 +253,7 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
     * for the same fd. */
    r = amdgpu_device_initialize(fd, &drm_major, &drm_minor, &dev);
    if (r) {
-      pipe_mutex_unlock(dev_tab_mutex);
+      mtx_unlock(&dev_tab_mutex);
       fprintf(stderr, "amdgpu: amdgpu_device_initialize failed.\n");
       return NULL;
    }
@@ -438,32 +262,37 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
    ws = util_hash_table_get(dev_tab, dev);
    if (ws) {
       pipe_reference(NULL, &ws->reference);
-      pipe_mutex_unlock(dev_tab_mutex);
+      mtx_unlock(&dev_tab_mutex);
       return &ws->base;
    }
 
    /* Create a new winsys. */
    ws = CALLOC_STRUCT(amdgpu_winsys);
-   if (!ws) {
-      pipe_mutex_unlock(dev_tab_mutex);
-      return NULL;
-   }
+   if (!ws)
+      goto fail;
 
    ws->dev = dev;
    ws->info.drm_major = drm_major;
    ws->info.drm_minor = drm_minor;
 
-   if (!do_winsys_init(ws))
-      goto fail;
+   if (!do_winsys_init(ws, fd))
+      goto fail_alloc;
 
    /* Create managers. */
-   ws->kman = amdgpu_bomgr_create(ws);
-   if (!ws->kman)
-      goto fail;
-   ws->cman = pb_cache_manager_create(ws->kman, 500000, 2.0f, 0,
-			(ws->info.vram_size + ws->info.gart_size) / 8);
-   if (!ws->cman)
-      goto fail;
+   pb_cache_init(&ws->bo_cache, 500000, ws->check_vm ? 1.0f : 2.0f, 0,
+                 (ws->info.vram_size + ws->info.gart_size) / 8,
+                 amdgpu_bo_destroy, amdgpu_bo_can_reclaim);
+
+   if (!pb_slabs_init(&ws->bo_slabs,
+                      AMDGPU_SLAB_MIN_SIZE_LOG2, AMDGPU_SLAB_MAX_SIZE_LOG2,
+                      12, /* number of heaps (domain/flags combinations) */
+                      ws,
+                      amdgpu_bo_can_reclaim_slab,
+                      amdgpu_bo_slab_alloc,
+                      amdgpu_bo_slab_free))
+      goto fail_cache;
+
+   ws->info.min_alloc_size = 1 << AMDGPU_SLAB_MIN_SIZE_LOG2;
 
    /* init reference */
    pipe_reference_init(&ws->reference, 1);
@@ -475,22 +304,31 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
    ws->base.cs_request_feature = amdgpu_cs_request_feature;
    ws->base.query_value = amdgpu_query_value;
    ws->base.read_registers = amdgpu_read_registers;
+   ws->base.get_chip_name = amdgpu_get_chip_name;
 
-   amdgpu_bomgr_init_functions(ws);
+   amdgpu_bo_init_functions(ws);
    amdgpu_cs_init_functions(ws);
    amdgpu_surface_init_functions(ws);
 
-   pipe_mutex_init(ws->bo_fence_lock);
+   LIST_INITHEAD(&ws->global_bo_list);
+   (void) mtx_init(&ws->global_bo_list_lock, mtx_plain);
+   (void) mtx_init(&ws->bo_fence_lock, mtx_plain);
+
+   if (!util_queue_init(&ws->cs_queue, "amdgpu_cs", 8, 1, 0)) {
+      amdgpu_winsys_destroy(&ws->base);
+      mtx_unlock(&dev_tab_mutex);
+      return NULL;
+   }
 
    /* Create the screen at the end. The winsys must be initialized
     * completely.
     *
     * Alternatively, we could create the screen based on "ws->gen"
     * and link all drivers into one binary blob. */
-   ws->base.screen = screen_create(&ws->base);
+   ws->base.screen = screen_create(&ws->base, flags);
    if (!ws->base.screen) {
       amdgpu_winsys_destroy(&ws->base);
-      pipe_mutex_unlock(dev_tab_mutex);
+      mtx_unlock(&dev_tab_mutex);
       return NULL;
    }
 
@@ -499,16 +337,16 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
    /* We must unlock the mutex once the winsys is fully initialized, so that
     * other threads attempting to create the winsys from the same fd will
     * get a fully initialized winsys and not just half-way initialized. */
-   pipe_mutex_unlock(dev_tab_mutex);
+   mtx_unlock(&dev_tab_mutex);
 
    return &ws->base;
 
-fail:
-   pipe_mutex_unlock(dev_tab_mutex);
-   if (ws->cman)
-      ws->cman->destroy(ws->cman);
-   if (ws->kman)
-      ws->kman->destroy(ws->kman);
+fail_cache:
+   pb_cache_deinit(&ws->bo_cache);
+   do_winsys_deinit(ws);
+fail_alloc:
    FREE(ws);
+fail:
+   mtx_unlock(&dev_tab_mutex);
    return NULL;
 }

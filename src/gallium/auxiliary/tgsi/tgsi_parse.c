@@ -121,8 +121,8 @@ tgsi_parse_token(
          next_token( ctx, &decl->Semantic );
       }
 
-      if (decl->Declaration.File == TGSI_FILE_RESOURCE) {
-         next_token(ctx, &decl->Resource);
+      if (decl->Declaration.File == TGSI_FILE_IMAGE) {
+         next_token(ctx, &decl->Image);
       }
 
       if (decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
@@ -155,12 +155,14 @@ tgsi_parse_token(
          break;
 
       case TGSI_IMM_UINT32:
+      case TGSI_IMM_UINT64:
          for (i = 0; i < imm_count; i++) {
             next_token(ctx, &imm->u[i].Uint);
          }
          break;
 
       case TGSI_IMM_INT32:
+      case TGSI_IMM_INT64:
          for (i = 0; i < imm_count; i++) {
             next_token(ctx, &imm->u[i].Int);
          }
@@ -180,10 +182,6 @@ tgsi_parse_token(
       memset(inst, 0, sizeof *inst);
       copy_token(&inst->Instruction, &token);
 
-      if (inst->Instruction.Predicate) {
-         next_token(ctx, &inst->Predicate);
-      }
-
       if (inst->Instruction.Label) {
          next_token( ctx, &inst->Label);
       }
@@ -193,6 +191,10 @@ tgsi_parse_token(
          for (i = 0; i < inst->Texture.NumOffsets; i++) {
             next_token( ctx, &inst->TexOffsets[i] );
          }
+      }
+
+      if (inst->Instruction.Memory) {
+         next_token(ctx, &inst->Memory);
       }
 
       assert( inst->Instruction.NumDstRegs <= TGSI_FULL_MAX_DST_REGISTERS );
@@ -309,7 +311,7 @@ tgsi_dump_tokens(const struct tgsi_token *tokens)
    int nr = tgsi_num_tokens(tokens);
    int i;
    
-   assert(sizeof(*tokens) == sizeof(unsigned));
+   STATIC_ASSERT(sizeof(*tokens) == sizeof(unsigned));
 
    debug_printf("const unsigned tokens[%d] = {\n", nr);
    for (i = 0; i < nr; i++)

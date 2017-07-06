@@ -46,10 +46,10 @@ struct fd_rb_samp_ctrs {
  */
 
 static struct fd_hw_sample *
-occlusion_get_sample(struct fd_context *ctx, struct fd_ringbuffer *ring)
+occlusion_get_sample(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
 	struct fd_hw_sample *samp =
-			fd_hw_sample_init(ctx, sizeof(struct fd_rb_samp_ctrs));
+			fd_hw_sample_init(batch, sizeof(struct fd_rb_samp_ctrs));
 
 	/* Set RB_SAMPLE_COUNT_ADDR to samp->offset plus value of
 	 * HW_QUERY_BASE_REG register:
@@ -68,7 +68,7 @@ occlusion_get_sample(struct fd_context *ctx, struct fd_ringbuffer *ring)
 						INDEX_SIZE_IGN, USE_VISIBILITY, 0));
 	OUT_RING(ring, 0);             /* NumIndices */
 
-	fd_event_write(ctx, ring, ZPASS_DONE);
+	fd_event_write(batch, ring, ZPASS_DONE);
 
 	OUT_PKT0(ring, REG_A3XX_RBBM_PERFCTR_CTL, 1);
 	OUT_RING(ring, A3XX_RBBM_PERFCTR_CTL_ENABLE);
@@ -133,6 +133,13 @@ static const struct fd_hw_sample_provider occlusion_predicate = {
 
 void fd3_query_context_init(struct pipe_context *pctx)
 {
+	struct fd_context *ctx = fd_context(pctx);
+
+	ctx->create_query = fd_hw_create_query;
+	ctx->query_prepare = fd_hw_query_prepare;
+	ctx->query_prepare_tile = fd_hw_query_prepare_tile;
+	ctx->query_set_stage = fd_hw_query_set_stage;
+
 	fd_hw_query_register_provider(pctx, &occlusion_counter);
 	fd_hw_query_register_provider(pctx, &occlusion_predicate);
 }

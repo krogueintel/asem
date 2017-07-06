@@ -39,9 +39,11 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
+#include "util/u_inlines.h"
 #include "st_context.h"
 #include "st_cb_queryobj.h"
 #include "st_cb_bitmap.h"
+#include "st_cb_bufferobjects.h"
 
 
 static struct gl_query_object *
@@ -59,13 +61,9 @@ st_NewQueryObject(struct gl_context *ctx, GLuint id)
 }
 
 
-
 static void
-st_DeleteQuery(struct gl_context *ctx, struct gl_query_object *q)
+free_queries(struct pipe_context *pipe, struct st_query_object *stq)
 {
-   struct pipe_context *pipe = st_context(ctx)->pipe;
-   struct st_query_object *stq = st_query_object(q);
-
    if (stq->pq) {
       pipe->destroy_query(pipe, stq->pq);
       stq->pq = NULL;
@@ -75,6 +73,16 @@ st_DeleteQuery(struct gl_context *ctx, struct gl_query_object *q)
       pipe->destroy_query(pipe, stq->pq_begin);
       stq->pq_begin = NULL;
    }
+}
+
+
+static void
+st_DeleteQuery(struct gl_context *ctx, struct gl_query_object *q)
+{
+   struct pipe_context *pipe = st_context(ctx)->pipe;
+   struct st_query_object *stq = st_query_object(q);
+
+   free_queries(pipe, stq);
 
    free(stq);
 }
@@ -87,6 +95,7 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
    struct pipe_context *pipe = st->pipe;
    struct st_query_object *stq = st_query_object(q);
    unsigned type;
+   bool ret = false;
 
    st_flush_bitmap_cache(st_context(ctx));
 
@@ -94,7 +103,8 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
    switch (q->Target) {
    case GL_ANY_SAMPLES_PASSED:
    case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
-      /* fall-through */
+      type = PIPE_QUERY_OCCLUSION_PREDICATE;
+      break;
    case GL_SAMPLES_PASSED_ARB:
       type = PIPE_QUERY_OCCLUSION_COUNTER;
       break;
@@ -103,6 +113,12 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
       break;
    case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
       type = PIPE_QUERY_PRIMITIVES_EMITTED;
+      break;
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      type = PIPE_QUERY_SO_OVERFLOW_PREDICATE;
+      break;
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      type = PIPE_QUERY_SO_OVERFLOW_PREDICATE;
       break;
    case GL_TIME_ELAPSED:
       if (st->has_time_elapsed)
@@ -130,14 +146,7 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
 
    if (stq->type != type) {
       /* free old query of different type */
-      if (stq->pq) {
-         pipe->destroy_query(pipe, stq->pq);
-         stq->pq = NULL;
-      }
-      if (stq->pq_begin) {
-         pipe->destroy_query(pipe, stq->pq_begin);
-         stq->pq_begin = NULL;
-      }
+      free_queries(pipe, stq);
       stq->type = PIPE_QUERY_TYPES; /* an invalid value */
    }
 
@@ -148,20 +157,25 @@ st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
          stq->pq_begin = pipe->create_query(pipe, type, 0);
          stq->type = type;
       }
-      pipe->end_query(pipe, stq->pq_begin);
+      if (stq->pq_begin)
+         ret = pipe->end_query(pipe, stq->pq_begin);
    } else {
       if (!stq->pq) {
          stq->pq = pipe->create_query(pipe, type, q->Stream);
          stq->type = type;
       }
-      if (stq->pq) {
-         pipe->begin_query(pipe, stq->pq);
-      }
-      else {
-         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glBeginQuery");
-         return;
-      }
+      if (stq->pq)
+         ret = pipe->begin_query(pipe, stq->pq);
    }
+
+   if (!ret) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glBeginQuery");
+
+      free_queries(pipe, stq);
+      q->Active = GL_FALSE;
+      return;
+   }
+
    assert(stq->type == type);
 }
 
@@ -171,6 +185,7 @@ st_EndQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
+   bool ret = false;
 
    st_flush_bitmap_cache(st_context(ctx));
 
@@ -182,7 +197,12 @@ st_EndQuery(struct gl_context *ctx, struct gl_query_object *q)
    }
 
    if (stq->pq)
-      pipe->end_query(pipe, stq->pq);
+      ret = pipe->end_query(pipe, stq->pq);
+
+   if (!ret) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glEndQuery");
+      return;
+   }
 }
 
 
@@ -238,7 +258,14 @@ get_query_result(struct pipe_context *pipe,
       stq->base.Result = data.pipeline_statistics.c_primitives;
       break;
    default:
-      stq->base.Result = data.u64;
+      switch (stq->type) {
+      case PIPE_QUERY_OCCLUSION_PREDICATE:
+         stq->base.Result = !!data.b;
+         break;
+      default:
+         stq->base.Result = data.u64;
+         break;
+      }
       break;
    }
 
@@ -271,7 +298,7 @@ st_WaitQuery(struct gl_context *ctx, struct gl_query_object *q)
    {
       /* nothing */
    }
-			    
+
    q->Ready = GL_TRUE;
 }
 
@@ -303,6 +330,98 @@ st_GetTimestamp(struct gl_context *ctx)
    }
 }
 
+static void
+st_StoreQueryResult(struct gl_context *ctx, struct gl_query_object *q,
+                    struct gl_buffer_object *buf, intptr_t offset,
+                    GLenum pname, GLenum ptype)
+{
+   struct pipe_context *pipe = st_context(ctx)->pipe;
+   struct st_query_object *stq = st_query_object(q);
+   struct st_buffer_object *stObj = st_buffer_object(buf);
+   boolean wait = pname == GL_QUERY_RESULT;
+   enum pipe_query_value_type result_type;
+   int index;
+
+   /* GL_QUERY_TARGET is a bit of an extension since it has nothing to
+    * do with the GPU end of the query. Write it in "by hand".
+    */
+   if (pname == GL_QUERY_TARGET) {
+      /* Assume that the data must be LE. The endianness situation wrt CPU and
+       * GPU is incredibly confusing, but the vast majority of GPUs are
+       * LE. When a BE one comes along, this needs some form of resolution.
+       */
+      unsigned data[2] = { CPU_TO_LE32(q->Target), 0 };
+      pipe_buffer_write(pipe, stObj->buffer, offset,
+                        (ptype == GL_INT64_ARB ||
+                         ptype == GL_UNSIGNED_INT64_ARB) ? 8 : 4,
+                        data);
+      return;
+   }
+
+   switch (ptype) {
+   case GL_INT:
+      result_type = PIPE_QUERY_TYPE_I32;
+      break;
+   case GL_UNSIGNED_INT:
+      result_type = PIPE_QUERY_TYPE_U32;
+      break;
+   case GL_INT64_ARB:
+      result_type = PIPE_QUERY_TYPE_I64;
+      break;
+   case GL_UNSIGNED_INT64_ARB:
+      result_type = PIPE_QUERY_TYPE_U64;
+      break;
+   default:
+      unreachable("Unexpected result type");
+   }
+
+   if (pname == GL_QUERY_RESULT_AVAILABLE) {
+      index = -1;
+   } else if (stq->type == PIPE_QUERY_PIPELINE_STATISTICS) {
+      switch (q->Target) {
+      case GL_VERTICES_SUBMITTED_ARB:
+         index = 0;
+         break;
+      case GL_PRIMITIVES_SUBMITTED_ARB:
+         index = 1;
+         break;
+      case GL_VERTEX_SHADER_INVOCATIONS_ARB:
+         index = 2;
+         break;
+      case GL_GEOMETRY_SHADER_INVOCATIONS:
+         index = 3;
+         break;
+      case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED_ARB:
+         index = 4;
+         break;
+      case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
+         index = 5;
+         break;
+      case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
+         index = 6;
+         break;
+      case GL_FRAGMENT_SHADER_INVOCATIONS_ARB:
+         index = 7;
+         break;
+      case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
+         index = 8;
+         break;
+      case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
+         index = 9;
+         break;
+      case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
+         index = 10;
+         break;
+      default:
+         unreachable("Unexpected target");
+      }
+   } else {
+      index = 0;
+   }
+
+   pipe->get_query_result_resource(pipe, stq->pq, wait, result_type, index,
+                                   stObj->buffer, offset);
+}
 
 void st_init_query_functions(struct dd_function_table *functions)
 {
@@ -313,4 +432,5 @@ void st_init_query_functions(struct dd_function_table *functions)
    functions->WaitQuery = st_WaitQuery;
    functions->CheckQuery = st_CheckQuery;
    functions->GetTimestamp = st_GetTimestamp;
+   functions->StoreQueryResult = st_StoreQueryResult;
 }

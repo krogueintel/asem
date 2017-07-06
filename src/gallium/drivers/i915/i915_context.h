@@ -37,7 +37,7 @@
 
 #include "tgsi/tgsi_scan.h"
 
-#include "util/u_slab.h"
+#include "util/slab.h"
 #include "util/u_blitter.h"
 
 
@@ -195,7 +195,6 @@ struct i915_rasterizer_state {
 
    unsigned light_twoside : 1;
    unsigned st;
-   enum interp_mode color_interp;
 
    unsigned LIS4;
    unsigned LIS7;
@@ -250,7 +249,6 @@ struct i915_context {
    struct pipe_sampler_view *fragment_sampler_views[PIPE_MAX_SAMPLERS];
    struct pipe_sampler_view *vertex_sampler_views[PIPE_MAX_SAMPLERS];
    struct pipe_viewport_state viewport;
-   struct pipe_index_buffer index_buffer;
 
    unsigned dirty;
 
@@ -279,8 +277,8 @@ struct i915_context {
    struct i915_winsys_buffer *validation_buffers[2 + 1 + I915_TEX_UNITS];
    int num_validation_buffers;
 
-   struct util_slab_mempool transfer_pool;
-   struct util_slab_mempool texture_transfer_pool;
+   struct slab_mempool transfer_pool;
+   struct slab_mempool texture_transfer_pool;
 
    /* state for tracking flushes */
    int last_fired_vertices;

@@ -24,8 +24,6 @@
 # libmesa_st_mesa.a
 # ----------------------------------------------------------------------
 
-ifeq ($(strip $(MESA_BUILD_GALLIUM)),true)
-
 LOCAL_PATH := $(call my-dir)
 
 # Import variables:
@@ -40,6 +38,10 @@ LOCAL_MODULE := libmesa_st_mesa
 LOCAL_SRC_FILES := \
 	$(MESA_GALLIUM_FILES)
 
+LOCAL_GENERATED_SOURCES := \
+	$(MESA_GEN_GLSL_H) \
+	$(MESA_GEN_NIR_H)
+
 ifeq ($(strip $(MESA_ENABLE_ASM)),true)
 ifeq ($(TARGET_ARCH),x86)
 	LOCAL_SRC_FILES += $(X86_FILES)
@@ -47,6 +49,8 @@ endif # x86
 endif # MESA_ENABLE_ASM
 
 ifeq ($(ARCH_X86_HAVE_SSE4_1),true)
+LOCAL_WHOLE_STATIC_LIBRARIES := \
+	libmesa_sse41
 LOCAL_CFLAGS := \
        -DUSE_SSE41
 endif
@@ -54,15 +58,16 @@ endif
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mapi \
 	$(MESA_TOP)/src/mesa/main \
-	$(MESA_TOP)/src/glsl \
+	$(MESA_TOP)/src/compiler/nir \
 	$(MESA_TOP)/src/gallium/auxiliary \
 	$(MESA_TOP)/src/gallium/include
 
-LOCAL_WHOLE_STATIC_LIBRARIES := \
-	libmesa_program
+LOCAL_WHOLE_STATIC_LIBRARIES += \
+	libmesa_program \
+	libmesa_git_sha1
+
+LOCAL_STATIC_LIBRARIES += libmesa_nir libmesa_glsl
 
 include $(LOCAL_PATH)/Android.gen.mk
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
-
-endif # MESA_BUILD_GALLIUM

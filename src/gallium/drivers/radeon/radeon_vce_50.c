@@ -95,7 +95,7 @@ static void encode(struct rvce_encoder *enc)
 	enc->task_info(enc, 0x00000003, dep, 0, bs_idx);
 
 	RVCE_BEGIN(0x05000001); // context buffer
-	RVCE_READWRITE(enc->cpb.res->cs_buf, enc->cpb.res->domains, 0); // encodeContextAddressHi/Lo
+	RVCE_READWRITE(enc->cpb.res->buf, enc->cpb.res->domains, 0); // encodeContextAddressHi/Lo
 	RVCE_END();
 
 	bs_offset = -(signed)(bs_idx * enc->bs_size);
@@ -127,12 +127,12 @@ static void encode(struct rvce_encoder *enc)
 	RVCE_CS(0x00000000); // endOfSequence
 	RVCE_CS(0x00000000); // endOfStream
 	RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,
-		enc->luma->level[0].offset); // inputPictureLumaAddressHi/Lo
+		enc->luma->u.legacy.level[0].offset); // inputPictureLumaAddressHi/Lo
 	RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,
-		enc->chroma->level[0].offset); // inputPictureChromaAddressHi/Lo
-	RVCE_CS(align(enc->luma->npix_y, 16)); // encInputFrameYPitch
-	RVCE_CS(enc->luma->level[0].pitch_bytes); // encInputPicLumaPitch
-	RVCE_CS(enc->chroma->level[0].pitch_bytes); // encInputPicChromaPitch
+		enc->chroma->u.legacy.level[0].offset); // inputPictureChromaAddressHi/Lo
+	RVCE_CS(align(enc->luma->u.legacy.level[0].nblk_y, 16)); // encInputFrameYPitch
+	RVCE_CS(enc->luma->u.legacy.level[0].nblk_x * enc->luma->bpe); // encInputPicLumaPitch
+	RVCE_CS(enc->chroma->u.legacy.level[0].nblk_x * enc->chroma->bpe); // encInputPicChromaPitch
 	if (enc->dual_pipe)
 		RVCE_CS(0x00000000); // encInputPic(Addr|Array)Mode,encDisable(TwoPipeMode|MBOffloading)
 	else
@@ -231,6 +231,10 @@ static void encode(struct rvce_encoder *enc)
 	RVCE_CS(0x00000000); // numIRPicRemainInRCGOP
 	RVCE_CS(0x00000000); // enableIntraRefresh
 	RVCE_END();
+}
+
+void radeon_vce_50_get_param(struct rvce_encoder *enc, struct pipe_h264_enc_picture_desc *pic)
+{
 }
 
 void radeon_vce_50_init(struct rvce_encoder *enc)

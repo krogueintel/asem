@@ -30,7 +30,6 @@
 
 
 #include "pipe/p_compiler.h"
-#include "os/os_thread.h"
 #include "util/u_handle_table.h"
 #include "stw_icd.h"
 #include "stw_pixelformat.h"
@@ -65,15 +64,25 @@ struct stw_device
 
    GLCALLBACKTABLE callbacks;
 
-   pipe_mutex ctx_mutex;
+   CRITICAL_SECTION ctx_mutex;
    struct handle_table *ctx_table;
    
-   pipe_mutex fb_mutex;
+   /* TODO: use an atomic counter to track the number of locked
+    * stw_framebuffer objects.  Assert that the counter is zero when
+    * trying to lock this mutex.
+    */
+   CRITICAL_SECTION fb_mutex;
    struct stw_framebuffer *fb_head;
    
 #ifdef DEBUG
    unsigned long memdbg_no;
 #endif
+
+   /** WGL_EXT_swap_control */
+   int refresh_rate;
+   int swap_interval;
+
+   bool initialized;
 };
 
 
@@ -86,6 +95,34 @@ stw_lookup_context_locked( DHGLRC dhglrc )
    if (dhglrc == 0 || stw_dev == NULL)
       return NULL;
    return (struct stw_context *) handle_table_get(stw_dev->ctx_table, dhglrc);
+}
+
+
+static inline void
+stw_lock_contexts(struct stw_device *stw_dev)
+{
+   EnterCriticalSection(&stw_dev->ctx_mutex);
+}
+
+
+static inline void
+stw_unlock_contexts(struct stw_device *stw_dev)
+{
+   LeaveCriticalSection(&stw_dev->ctx_mutex);
+}
+
+
+static inline void
+stw_lock_framebuffers(struct stw_device *stw_dev)
+{
+   EnterCriticalSection(&stw_dev->fb_mutex);
+}
+
+
+static inline void
+stw_unlock_framebuffers(struct stw_device *stw_dev)
+{
+   LeaveCriticalSection(&stw_dev->fb_mutex);
 }
 
 

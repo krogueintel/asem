@@ -34,14 +34,14 @@
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "intel_batchbuffer.h"
 
 static void
 brw_upload_gs_unit(struct brw_context *brw)
 {
    struct brw_gs_unit_state *gs;
 
-   gs = brw_state_batch(brw, AUB_TRACE_GS_STATE,
-			sizeof(*gs), 32, &brw->ff_gs.state_offset);
+   gs = brw_state_batch(brw, sizeof(*gs), 32, &brw->ff_gs.state_offset);
 
    memset(gs, 0, sizeof(*gs));
 
@@ -80,10 +80,8 @@ brw_upload_gs_unit(struct brw_context *brw)
    if (brw->gen == 5)
       gs->thread4.rendering_enable = 1;
 
-   if (unlikely(INTEL_DEBUG & DEBUG_STATS))
-      gs->thread4.stats_enable = 1;
-
-   gs->gs6.max_vp_index = brw->ctx.Const.MaxViewports - 1;
+   /* BRW_NEW_VIEWPORT_COUNT */
+   gs->gs6.max_vp_index = brw->clip.viewport_count - 1;
 
    brw->ctx.NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
 }
@@ -92,10 +90,12 @@ const struct brw_tracked_state brw_gs_unit = {
    .dirty = {
       .mesa  = 0,
       .brw   = BRW_NEW_BATCH |
-               BRW_NEW_CURBE_OFFSETS |
+               BRW_NEW_BLORP |
+               BRW_NEW_PUSH_CONSTANT_ALLOCATION |
                BRW_NEW_FF_GS_PROG_DATA |
                BRW_NEW_PROGRAM_CACHE |
-               BRW_NEW_URB_FENCE,
+               BRW_NEW_URB_FENCE |
+               BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = brw_upload_gs_unit,
 };

@@ -73,8 +73,8 @@
 #include "enums.h"
 #include "glformats.h"
 #include "pixeltransfer.h"
-#include "../../gallium/auxiliary/util/u_format_rgb9e5.h"
-#include "../../gallium/auxiliary/util/u_format_r11g11b10f.h"
+#include "util/format_rgb9e5.h"
+#include "util/format_r11g11b10f.h"
 
 
 enum {
@@ -87,9 +87,6 @@ enum {
  * Texture image storage function.
  */
 typedef GLboolean (*StoreTexImageFunc)(TEXSTORE_PARAMS);
-static const GLubyte map_identity[6] = { 0, 1, 2, 3, ZERO, ONE };
-static const GLubyte map_3210[6] = { 3, 2, 1, 0, ZERO, ONE };
-static const GLubyte map_1032[6] = { 1, 0, 3, 2, ZERO, ONE };
 
 
 /**
@@ -97,16 +94,16 @@ static const GLubyte map_1032[6] = { 1, 0, 3, 2, ZERO, ONE };
  * No pixel transfer operations or special texel encodings allowed.
  * 1D, 2D and 3D images supported.
  */
-static void
-memcpy_texture(struct gl_context *ctx,
-	       GLuint dimensions,
-               mesa_format dstFormat,
-               GLint dstRowStride,
-               GLubyte **dstSlices,
-               GLint srcWidth, GLint srcHeight, GLint srcDepth,
-               GLenum srcFormat, GLenum srcType,
-               const GLvoid *srcAddr,
-               const struct gl_pixelstore_attrib *srcPacking)
+void
+_mesa_memcpy_texture(struct gl_context *ctx,
+                     GLuint dimensions,
+                     mesa_format dstFormat,
+                     GLint dstRowStride,
+                     GLubyte **dstSlices,
+                     GLint srcWidth, GLint srcHeight, GLint srcDepth,
+                     GLenum srcFormat, GLenum srcType,
+                     const GLvoid *srcAddr,
+                     const struct gl_pixelstore_attrib *srcPacking)
 {
    const GLint srcRowStride = _mesa_image_row_stride(srcPacking, srcWidth,
                                                      srcFormat, srcType);
@@ -296,11 +293,11 @@ _mesa_texstore_ycbcr(TEXSTORE_PARAMS)
    assert(baseInternalFormat == GL_YCBCR_MESA);
 
    /* always just memcpy since no pixel transfer ops apply */
-   memcpy_texture(ctx, dims,
-                  dstFormat,
-                  dstRowStride, dstSlices,
-                  srcWidth, srcHeight, srcDepth, srcFormat, srcType,
-                  srcAddr, srcPacking);
+   _mesa_memcpy_texture(ctx, dims,
+                        dstFormat,
+                        dstRowStride, dstSlices,
+                        srcWidth, srcHeight, srcDepth, srcFormat, srcType,
+                        srcAddr, srcPacking);
 
    /* Check if we need byte swapping */
    /* XXX the logic here _might_ be wrong */
@@ -899,13 +896,15 @@ _mesa_texstore_memcpy(TEXSTORE_PARAMS)
       return GL_FALSE;
    }
 
-   memcpy_texture(ctx, dims,
-                  dstFormat,
-                  dstRowStride, dstSlices,
-                  srcWidth, srcHeight, srcDepth, srcFormat, srcType,
-                  srcAddr, srcPacking);
+   _mesa_memcpy_texture(ctx, dims,
+                        dstFormat,
+                        dstRowStride, dstSlices,
+                        srcWidth, srcHeight, srcDepth, srcFormat, srcType,
+                        srcAddr, srcPacking);
    return GL_TRUE;
 }
+
+
 /**
  * Store user data into texture memory.
  * Called via glTex[Sub]Image1/2/3D()
@@ -1244,11 +1243,11 @@ _mesa_store_compressed_teximage(struct gl_context *ctx, GLuint dims,
       return;
    }
 
-   _mesa_store_compressed_texsubimage(ctx, dims, texImage,
-                                      0, 0, 0,
-                                      texImage->Width, texImage->Height, texImage->Depth,
-                                      texImage->TexFormat,
-                                      imageSize, data);
+   ctx->Driver.CompressedTexSubImage(ctx, dims, texImage,
+                                     0, 0, 0,
+                                     texImage->Width, texImage->Height, texImage->Depth,
+                                     texImage->TexFormat,
+                                     imageSize, data);
 }
 
 
@@ -1268,16 +1267,16 @@ _mesa_compute_compressed_pixelstore(GLuint dims, mesa_format texFormat,
                                     const struct gl_pixelstore_attrib *packing,
                                     struct compressed_pixelstore *store)
 {
-   GLuint bw, bh;
+   GLuint bw, bh, bd;
 
-   _mesa_get_format_block_size(texFormat, &bw, &bh);
+   _mesa_get_format_block_size_3d(texFormat, &bw, &bh, &bd);
 
    store->SkipBytes = 0;
    store->TotalBytesPerRow = store->CopyBytesPerRow =
          _mesa_format_row_stride(texFormat, width);
    store->TotalRowsPerSlice = store->CopyRowsPerSlice =
          (height + bh - 1) / bh;
-   store->CopySlices = depth;
+   store->CopySlices = (depth + bd - 1) / bd;
 
    if (packing->CompressedBlockWidth &&
        packing->CompressedBlockSize) {
@@ -1361,10 +1360,17 @@ _mesa_store_compressed_texsubimage(struct gl_context *ctx, GLuint dims,
       if (dstMap) {
 
          /* copy rows of blocks */
-         for (i = 0; i < store.CopyRowsPerSlice; i++) {
-            memcpy(dstMap, src, store.CopyBytesPerRow);
-            dstMap += dstRowStride;
-            src += store.TotalBytesPerRow;
+         if (dstRowStride == store.TotalBytesPerRow &&
+             dstRowStride == store.CopyBytesPerRow) {
+            memcpy(dstMap, src, store.CopyBytesPerRow * store.CopyRowsPerSlice);
+            src += store.CopyBytesPerRow * store.CopyRowsPerSlice;
+         }
+         else {
+            for (i = 0; i < store.CopyRowsPerSlice; i++) {
+               memcpy(dstMap, src, store.CopyBytesPerRow);
+               dstMap += dstRowStride;
+               src += store.TotalBytesPerRow;
+            }
          }
 
          ctx->Driver.UnmapTextureImage(ctx, texImage, slice + zoffset);

@@ -29,27 +29,65 @@
 
 #include "brw_gs.h"
 #include "brw_context.h"
-#include "brw_vec4_gs_visitor.h"
 #include "brw_state.h"
 #include "brw_ff_gs.h"
+#include "compiler/brw_nir.h"
+#include "brw_program.h"
+#include "compiler/glsl/ir_uniform.h"
 
+static void
+brw_gs_debug_recompile(struct brw_context *brw, struct gl_program *prog,
+                       const struct brw_gs_prog_key *key)
+{
+   perf_debug("Recompiling geometry shader for program %d\n", prog->Id);
 
-bool
+   bool found = false;
+   const struct brw_gs_prog_key *old_key =
+      brw_find_previous_compile(&brw->cache, BRW_CACHE_GS_PROG,
+                                key->program_string_id);
+
+   if (!old_key) {
+      perf_debug("  Didn't find previous compile in the shader cache for "
+                 "debug\n");
+      return;
+   }
+
+   found |= brw_debug_recompile_sampler_key(brw, &old_key->tex, &key->tex);
+
+   if (!found) {
+      perf_debug("  Something else\n");
+   }
+}
+
+static void
+assign_gs_binding_table_offsets(const struct gen_device_info *devinfo,
+                                const struct gl_program *prog,
+                                struct brw_gs_prog_data *prog_data)
+{
+   /* In gen6 we reserve the first BRW_MAX_SOL_BINDINGS entries for transform
+    * feedback surfaces.
+    */
+   uint32_t reserved = devinfo->gen == 6 ? BRW_MAX_SOL_BINDINGS : 0;
+
+   brw_assign_common_binding_table_offsets(devinfo, prog,
+                                           &prog_data->base.base, reserved);
+}
+
+static bool
 brw_codegen_gs_prog(struct brw_context *brw,
-                    struct gl_shader_program *prog,
-                    struct brw_geometry_program *gp,
+                    struct brw_program *gp,
                     struct brw_gs_prog_key *key)
 {
+   struct brw_compiler *compiler = brw->screen->compiler;
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct brw_stage_state *stage_state = &brw->gs.base;
-   struct brw_gs_compile c;
-   memset(&c, 0, sizeof(c));
-   c.key = *key;
-   c.gp = gp;
+   struct brw_gs_prog_data prog_data;
+   bool start_busy = false;
+   double start_time = 0;
 
-   c.prog_data.include_primitive_id =
-      (gp->program.Base.InputsRead & VARYING_BIT_PRIMITIVE_ID) != 0;
+   memset(&prog_data, 0, sizeof(prog_data));
 
-   c.prog_data.invocations = gp->program.Invocations;
+   assign_gs_binding_table_offsets(devinfo, &gp->program, &prog_data);
 
    /* Allocate the references to the uniforms that will end up in the
     * prog_data associated with the compiled program, and which will be freed
@@ -59,245 +97,80 @@ brw_codegen_gs_prog(struct brw_context *brw,
     * padding around uniform values below vec4 size, so the worst case is that
     * every uniform is a float which gets padded to the size of a vec4.
     */
-   struct gl_shader *gs = prog->_LinkedShaders[MESA_SHADER_GEOMETRY];
-   int param_count = gs->num_uniform_components * 4;
+   int param_count = gp->program.nir->num_uniforms / 4;
 
-   param_count += gs->NumImages * BRW_IMAGE_PARAM_SIZE;
-
-   c.prog_data.base.base.param =
+   prog_data.base.base.param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
-   c.prog_data.base.base.pull_param =
+   prog_data.base.base.pull_param =
       rzalloc_array(NULL, const gl_constant_value *, param_count);
-   c.prog_data.base.base.image_param =
-      rzalloc_array(NULL, struct brw_image_param, gs->NumImages);
-   c.prog_data.base.base.nr_params = param_count;
-   c.prog_data.base.base.nr_image_params = gs->NumImages;
+   prog_data.base.base.image_param =
+      rzalloc_array(NULL, struct brw_image_param,
+                    gp->program.info.num_images);
+   prog_data.base.base.nr_params = param_count;
+   prog_data.base.base.nr_image_params = gp->program.info.num_images;
 
-   if (brw->gen >= 8) {
-      c.prog_data.static_vertex_count = !gp->program.Base.nir ? -1 :
-         nir_gs_count_vertices(gp->program.Base.nir);
+   brw_nir_setup_glsl_uniforms(gp->program.nir, &gp->program,
+                               &prog_data.base.base,
+                               compiler->scalar_stage[MESA_SHADER_GEOMETRY]);
+
+   uint64_t outputs_written = gp->program.info.outputs_written;
+
+   brw_compute_vue_map(devinfo,
+                       &prog_data.base.vue_map, outputs_written,
+                       gp->program.info.separate_shader);
+
+   int st_index = -1;
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      st_index = brw_get_shader_time_index(brw, &gp->program, ST_GS, true);
+
+   if (unlikely(brw->perf_debug)) {
+      start_busy = brw->batch.last_bo && brw_bo_busy(brw->batch.last_bo);
+      start_time = get_time();
    }
-
-   if (brw->gen >= 7) {
-      if (gp->program.OutputType == GL_POINTS) {
-         /* When the output type is points, the geometry shader may output data
-          * to multiple streams, and EndPrimitive() has no effect.  So we
-          * configure the hardware to interpret the control data as stream ID.
-          */
-         c.prog_data.control_data_format = GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_SID;
-
-         /* We only have to emit control bits if we are using streams */
-         if (prog->Geom.UsesStreams)
-            c.control_data_bits_per_vertex = 2;
-         else
-            c.control_data_bits_per_vertex = 0;
-      } else {
-         /* When the output type is triangle_strip or line_strip, EndPrimitive()
-          * may be used to terminate the current strip and start a new one
-          * (similar to primitive restart), and outputting data to multiple
-          * streams is not supported.  So we configure the hardware to interpret
-          * the control data as EndPrimitive information (a.k.a. "cut bits").
-          */
-         c.prog_data.control_data_format = GEN7_GS_CONTROL_DATA_FORMAT_GSCTL_CUT;
-
-         /* We only need to output control data if the shader actually calls
-          * EndPrimitive().
-          */
-         c.control_data_bits_per_vertex = gp->program.UsesEndPrimitive ? 1 : 0;
-      }
-   } else {
-      /* There are no control data bits in gen6. */
-      c.control_data_bits_per_vertex = 0;
-
-      /* If it is using transform feedback, enable it */
-      if (prog->TransformFeedback.NumVarying)
-         c.prog_data.gen6_xfb_enabled = true;
-      else
-         c.prog_data.gen6_xfb_enabled = false;
-   }
-   c.control_data_header_size_bits =
-      gp->program.VerticesOut * c.control_data_bits_per_vertex;
-
-   /* 1 HWORD = 32 bytes = 256 bits */
-   c.prog_data.control_data_header_size_hwords =
-      ALIGN(c.control_data_header_size_bits, 256) / 256;
-
-   GLbitfield64 outputs_written = gp->program.Base.OutputsWritten;
-
-   brw_compute_vue_map(brw->intelScreen->devinfo,
-                       &c.prog_data.base.vue_map, outputs_written,
-                       prog ? prog->SeparateShader : false);
-
-   /* Compute the output vertex size.
-    *
-    * From the Ivy Bridge PRM, Vol2 Part1 7.2.1.1 STATE_GS - Output Vertex
-    * Size (p168):
-    *
-    *     [0,62] indicating [1,63] 16B units
-    *
-    *     Specifies the size of each vertex stored in the GS output entry
-    *     (following any Control Header data) as a number of 128-bit units
-    *     (minus one).
-    *
-    *     Programming Restrictions: The vertex size must be programmed as a
-    *     multiple of 32B units with the following exception: Rendering is
-    *     disabled (as per SOL stage state) and the vertex size output by the
-    *     GS thread is 16B.
-    *
-    *     If rendering is enabled (as per SOL state) the vertex size must be
-    *     programmed as a multiple of 32B units. In other words, the only time
-    *     software can program a vertex size with an odd number of 16B units
-    *     is when rendering is disabled.
-    *
-    * Note: B=bytes in the above text.
-    *
-    * It doesn't seem worth the extra trouble to optimize the case where the
-    * vertex size is 16B (especially since this would require special-casing
-    * the GEN assembly that writes to the URB).  So we just set the vertex
-    * size to a multiple of 32B (2 vec4's) in all cases.
-    *
-    * The maximum output vertex size is 62*16 = 992 bytes (31 hwords).  We
-    * budget that as follows:
-    *
-    *   512 bytes for varyings (a varying component is 4 bytes and
-    *             gl_MaxGeometryOutputComponents = 128)
-    *    16 bytes overhead for VARYING_SLOT_PSIZ (each varying slot is 16
-    *             bytes)
-    *    16 bytes overhead for gl_Position (we allocate it a slot in the VUE
-    *             even if it's not used)
-    *    32 bytes overhead for gl_ClipDistance (we allocate it 2 VUE slots
-    *             whenever clip planes are enabled, even if the shader doesn't
-    *             write to gl_ClipDistance)
-    *    16 bytes overhead since the VUE size must be a multiple of 32 bytes
-    *             (see below)--this causes up to 1 VUE slot to be wasted
-    *   400 bytes available for varying packing overhead
-    *
-    * Worst-case varying packing overhead is 3/4 of a varying slot (12 bytes)
-    * per interpolation type, so this is plenty.
-    *
-    */
-   unsigned output_vertex_size_bytes = c.prog_data.base.vue_map.num_slots * 16;
-   assert(brw->gen == 6 ||
-          output_vertex_size_bytes <= GEN7_MAX_GS_OUTPUT_VERTEX_SIZE_BYTES);
-   c.prog_data.output_vertex_size_hwords =
-      ALIGN(output_vertex_size_bytes, 32) / 32;
-
-   /* Compute URB entry size.  The maximum allowed URB entry size is 32k.
-    * That divides up as follows:
-    *
-    *     64 bytes for the control data header (cut indices or StreamID bits)
-    *   4096 bytes for varyings (a varying component is 4 bytes and
-    *              gl_MaxGeometryTotalOutputComponents = 1024)
-    *   4096 bytes overhead for VARYING_SLOT_PSIZ (each varying slot is 16
-    *              bytes/vertex and gl_MaxGeometryOutputVertices is 256)
-    *   4096 bytes overhead for gl_Position (we allocate it a slot in the VUE
-    *              even if it's not used)
-    *   8192 bytes overhead for gl_ClipDistance (we allocate it 2 VUE slots
-    *              whenever clip planes are enabled, even if the shader doesn't
-    *              write to gl_ClipDistance)
-    *   4096 bytes overhead since the VUE size must be a multiple of 32
-    *              bytes (see above)--this causes up to 1 VUE slot to be wasted
-    *   8128 bytes available for varying packing overhead
-    *
-    * Worst-case varying packing overhead is 3/4 of a varying slot per
-    * interpolation type, which works out to 3072 bytes, so this would allow
-    * us to accommodate 2 interpolation types without any danger of running
-    * out of URB space.
-    *
-    * In practice, the risk of running out of URB space is very small, since
-    * the above figures are all worst-case, and most of them scale with the
-    * number of output vertices.  So we'll just calculate the amount of space
-    * we need, and if it's too large, fail to compile.
-    *
-    * The above is for gen7+ where we have a single URB entry that will hold
-    * all the output. In gen6, we will have to allocate URB entries for every
-    * vertex we emit, so our URB entries only need to be large enough to hold
-    * a single vertex. Also, gen6 does not have a control data header.
-    */
-   unsigned output_size_bytes;
-   if (brw->gen >= 7) {
-      output_size_bytes =
-         c.prog_data.output_vertex_size_hwords * 32 * gp->program.VerticesOut;
-      output_size_bytes += 32 * c.prog_data.control_data_header_size_hwords;
-   } else {
-      output_size_bytes = c.prog_data.output_vertex_size_hwords * 32;
-   }
-
-   /* Broadwell stores "Vertex Count" as a full 8 DWord (32 byte) URB output,
-    * which comes before the control header.
-    */
-   if (brw->gen >= 8)
-      output_size_bytes += 32;
-
-   assert(output_size_bytes >= 1);
-   int max_output_size_bytes = GEN7_MAX_GS_URB_ENTRY_SIZE_BYTES;
-   if (brw->gen == 6)
-      max_output_size_bytes = GEN6_MAX_GS_URB_ENTRY_SIZE_BYTES;
-   if (output_size_bytes > max_output_size_bytes)
-      return false;
-
-
-   /* URB entry sizes are stored as a multiple of 64 bytes in gen7+ and
-    * a multiple of 128 bytes in gen6.
-    */
-   if (brw->gen >= 7)
-      c.prog_data.base.urb_entry_size = ALIGN(output_size_bytes, 64) / 64;
-   else
-      c.prog_data.base.urb_entry_size = ALIGN(output_size_bytes, 128) / 128;
-
-   c.prog_data.output_topology =
-      get_hw_prim_for_gl_prim(gp->program.OutputType);
-
-   /* The GLSL linker will have already matched up GS inputs and the outputs
-    * of prior stages.  The driver does extend VS outputs in some cases, but
-    * only for legacy OpenGL or Gen4-5 hardware, neither of which offer
-    * geometry shader support.  So we can safely ignore that.
-    *
-    * For SSO pipelines, we use a fixed VUE map layout based on variable
-    * locations, so we can rely on rendezvous-by-location making this work.
-    *
-    * However, we need to ignore VARYING_SLOT_PRIMITIVE_ID, as it's not
-    * written by previous stages and shows up via payload magic.
-    */
-   GLbitfield64 inputs_read =
-      gp->program.Base.InputsRead & ~VARYING_BIT_PRIMITIVE_ID;
-   brw_compute_vue_map(brw->intelScreen->devinfo,
-                       &c.input_vue_map, inputs_read,
-                       prog->SeparateShader);
-
-   /* GS inputs are read from the VUE 256 bits (2 vec4's) at a time, so we
-    * need to program a URB read length of ceiling(num_slots / 2).
-    */
-   c.prog_data.base.urb_read_length = (c.input_vue_map.num_slots + 1) / 2;
 
    void *mem_ctx = ralloc_context(NULL);
    unsigned program_size;
+   char *error_str;
    const unsigned *program =
-      brw_gs_emit(brw, prog, &c, mem_ctx, &program_size);
+      brw_compile_gs(brw->screen->compiler, brw, mem_ctx, key,
+                     &prog_data, gp->program.nir, &gp->program,
+                     st_index, &program_size, &error_str);
    if (program == NULL) {
+      ralloc_strcat(&gp->program.sh.data->InfoLog, error_str);
+      _mesa_problem(NULL, "Failed to compile geometry shader: %s\n", error_str);
+
       ralloc_free(mem_ctx);
       return false;
    }
 
-   /* Scratch space is used for register spilling */
-   if (c.prog_data.base.base.total_scratch) {
-      brw_get_scratch_bo(brw, &stage_state->scratch_bo,
-			 c.prog_data.base.base.total_scratch *
-                         brw->max_gs_threads);
+   if (unlikely(brw->perf_debug)) {
+      if (gp->compiled_once) {
+         brw_gs_debug_recompile(brw, &gp->program, key);
+      }
+      if (start_busy && !brw_bo_busy(brw->batch.last_bo)) {
+         perf_debug("GS compile took %.03f ms and stalled the GPU\n",
+                    (get_time() - start_time) * 1000);
+      }
+      gp->compiled_once = true;
    }
 
+   /* Scratch space is used for register spilling */
+   brw_alloc_stage_scratch(brw, stage_state,
+                           prog_data.base.base.total_scratch,
+                           devinfo->max_gs_threads);
+
    brw_upload_cache(&brw->cache, BRW_CACHE_GS_PROG,
-                    &c.key, sizeof(c.key),
+                    key, sizeof(*key),
                     program, program_size,
-                    &c.prog_data, sizeof(c.prog_data),
-                    &stage_state->prog_offset, &brw->gs.prog_data);
+                    &prog_data, sizeof(prog_data),
+                    &stage_state->prog_offset, &brw->gs.base.prog_data);
    ralloc_free(mem_ctx);
 
    return true;
 }
 
 static bool
-brw_gs_state_dirty(struct brw_context *brw)
+brw_gs_state_dirty(const struct brw_context *brw)
 {
    return brw_state_dirty(brw,
                           _NEW_TEXTURE,
@@ -305,35 +178,28 @@ brw_gs_state_dirty(struct brw_context *brw)
                           BRW_NEW_TRANSFORM_FEEDBACK);
 }
 
-static void
+void
 brw_gs_populate_key(struct brw_context *brw,
                     struct brw_gs_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
-   struct brw_stage_state *stage_state = &brw->gs.base;
-   struct brw_geometry_program *gp =
-      (struct brw_geometry_program *) brw->geometry_program;
-   struct gl_program *prog = &gp->program.Base;
+   struct brw_program *gp = (struct brw_program *) brw->geometry_program;
 
    memset(key, 0, sizeof(*key));
 
    key->program_string_id = gp->id;
 
    /* _NEW_TEXTURE */
-   brw_populate_sampler_prog_key_data(ctx, prog, stage_state->sampler_count,
-                                      &key->tex);
+   brw_populate_sampler_prog_key_data(ctx, &gp->program, &key->tex);
 }
 
 void
 brw_upload_gs_prog(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->ctx;
-   struct gl_shader_program **current = ctx->_Shader->CurrentProgram;
    struct brw_stage_state *stage_state = &brw->gs.base;
    struct brw_gs_prog_key key;
    /* BRW_NEW_GEOMETRY_PROGRAM */
-   struct brw_geometry_program *gp =
-      (struct brw_geometry_program *) brw->geometry_program;
+   struct brw_program *gp = (struct brw_program *) brw->geometry_program;
 
    if (!brw_gs_state_dirty(brw))
       return;
@@ -349,7 +215,6 @@ brw_upload_gs_prog(struct brw_context *brw)
       /* Other state atoms had better not try to access prog_data, since
        * there's no GS program.
        */
-      brw->gs.prog_data = NULL;
       brw->gs.base.prog_data = NULL;
 
       return;
@@ -359,38 +224,34 @@ brw_upload_gs_prog(struct brw_context *brw)
 
    if (!brw_search_cache(&brw->cache, BRW_CACHE_GS_PROG,
                          &key, sizeof(key),
-                         &stage_state->prog_offset, &brw->gs.prog_data)) {
-      bool success = brw_codegen_gs_prog(brw, current[MESA_SHADER_GEOMETRY],
-                                         gp, &key);
+                         &stage_state->prog_offset,
+                         &brw->gs.base.prog_data)) {
+      bool success = brw_codegen_gs_prog(brw, gp, &key);
       assert(success);
       (void)success;
    }
-   brw->gs.base.prog_data = &brw->gs.prog_data->base.base;
 }
 
 bool
-brw_gs_precompile(struct gl_context *ctx,
-                  struct gl_shader_program *shader_prog,
-                  struct gl_program *prog)
+brw_gs_precompile(struct gl_context *ctx, struct gl_program *prog)
 {
    struct brw_context *brw = brw_context(ctx);
    struct brw_gs_prog_key key;
    uint32_t old_prog_offset = brw->gs.base.prog_offset;
-   struct brw_gs_prog_data *old_prog_data = brw->gs.prog_data;
+   struct brw_stage_prog_data *old_prog_data = brw->gs.base.prog_data;
    bool success;
 
-   struct gl_geometry_program *gp = (struct gl_geometry_program *) prog;
-   struct brw_geometry_program *bgp = brw_geometry_program(gp);
+   struct brw_program *bgp = brw_program(prog);
 
    memset(&key, 0, sizeof(key));
 
    brw_setup_tex_for_precompile(brw, &key.tex, prog);
    key.program_string_id = bgp->id;
 
-   success = brw_codegen_gs_prog(brw, shader_prog, bgp, &key);
+   success = brw_codegen_gs_prog(brw, bgp, &key);
 
    brw->gs.base.prog_offset = old_prog_offset;
-   brw->gs.prog_data = old_prog_data;
+   brw->gs.base.prog_data = old_prog_data;
 
    return success;
 }

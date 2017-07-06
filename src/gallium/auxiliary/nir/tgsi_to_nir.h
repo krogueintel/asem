@@ -21,9 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "glsl/nir/nir.h"
-
-struct nir_shader_compiler_options *options;
+#include "compiler/nir/nir.h"
 
 struct nir_shader *
 tgsi_to_nir(const void *tgsi_tokens,

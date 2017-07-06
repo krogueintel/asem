@@ -32,6 +32,7 @@
 
 #include <stdbool.h>
 #include <inttypes.h>  /* for PRId64 macro */
+#include "util/debug.h"
 #include "glheader.h"
 #include "enums.h"
 #include "hash.h"
@@ -43,11 +44,46 @@
 #include "glformats.h"
 #include "texstore.h"
 #include "transformfeedback.h"
+#include "varray.h"
 
 
 /* Debug flags */
 /*#define VBO_DEBUG*/
 /*#define BOUNDS_CHECK*/
+
+
+/**
+ * We count the number of buffer modification calls to check for
+ * inefficient buffer use.  This is the number of such calls before we
+ * issue a warning.
+ */
+#define BUFFER_WARNING_CALL_COUNT 4
+
+
+/**
+ * Helper to warn of possible performance issues, such as frequently
+ * updating a buffer created with GL_STATIC_DRAW.  Called via the macro
+ * below.
+ */
+static void
+buffer_usage_warning(struct gl_context *ctx, GLuint *id, const char *fmt, ...)
+{
+   va_list args;
+
+   va_start(args, fmt);
+   _mesa_gl_vdebug(ctx, id,
+                   MESA_DEBUG_SOURCE_API,
+                   MESA_DEBUG_TYPE_PERFORMANCE,
+                   MESA_DEBUG_SEVERITY_MEDIUM,
+                   fmt, args);
+   va_end(args);
+}
+
+#define BUFFER_USAGE_WARNING(CTX, FMT, ...) \
+   do { \
+      static GLuint id = 0; \
+      buffer_usage_warning(CTX, &id, FMT, ##__VA_ARGS__); \
+   } while (0)
 
 
 /**
@@ -86,11 +122,20 @@ get_buffer_target(struct gl_context *ctx, GLenum target)
       return &ctx->CopyReadBuffer;
    case GL_COPY_WRITE_BUFFER:
       return &ctx->CopyWriteBuffer;
+   case GL_QUERY_BUFFER:
+      if (_mesa_has_ARB_query_buffer_object(ctx))
+         return &ctx->QueryBuffer;
+      break;
    case GL_DRAW_INDIRECT_BUFFER:
       if ((ctx->API == API_OPENGL_CORE &&
            ctx->Extensions.ARB_draw_indirect) ||
            _mesa_is_gles31(ctx)) {
          return &ctx->DrawIndirectBuffer;
+      }
+      break;
+   case GL_PARAMETER_BUFFER_ARB:
+      if (_mesa_has_ARB_indirect_parameters(ctx)) {
+         return &ctx->ParameterBuffer;
       }
       break;
    case GL_DISPATCH_INDIRECT_BUFFER:
@@ -104,8 +149,8 @@ get_buffer_target(struct gl_context *ctx, GLenum target)
       }
       break;
    case GL_TEXTURE_BUFFER:
-      if (ctx->API == API_OPENGL_CORE &&
-          ctx->Extensions.ARB_texture_buffer_object) {
+      if (_mesa_has_ARB_texture_buffer_object(ctx) ||
+          _mesa_has_OES_texture_buffer(ctx)) {
          return &ctx->Texture.BufferObject;
       }
       break;
@@ -413,12 +458,13 @@ _mesa_new_buffer_object(struct gl_context *ctx, GLuint name)
  *
  * Default callback for the \c dd_function_table::DeleteBuffer() hook.
  */
-static void
+void
 _mesa_delete_buffer_object(struct gl_context *ctx,
                            struct gl_buffer_object *bufObj)
 {
    (void) ctx;
 
+   vbo_delete_minmax_cache(bufObj);
    _mesa_align_free(bufObj->Data);
 
    /* assign strange values here to help w/ debugging */
@@ -465,18 +511,30 @@ _mesa_reference_buffer_object_(struct gl_context *ctx,
    if (bufObj) {
       /* reference new buffer */
       mtx_lock(&bufObj->Mutex);
-      if (bufObj->RefCount == 0) {
-         /* this buffer's being deleted (look just above) */
-         /* Not sure this can every really happen.  Warn if it does. */
-         _mesa_problem(NULL, "referencing deleted buffer object");
-         *ptr = NULL;
-      }
-      else {
-         bufObj->RefCount++;
-         *ptr = bufObj;
-      }
+      assert(bufObj->RefCount > 0);
+
+      bufObj->RefCount++;
+      *ptr = bufObj;
       mtx_unlock(&bufObj->Mutex);
    }
+}
+
+
+/**
+ * Get the value of MESA_NO_MINMAX_CACHE.
+ */
+static bool
+get_no_minmax_cache()
+{
+   static bool read = false;
+   static bool disable = false;
+
+   if (!read) {
+      disable = env_var_as_boolean("MESA_NO_MINMAX_CACHE", false);
+      read = true;
+   }
+
+   return disable;
 }
 
 
@@ -493,6 +551,9 @@ _mesa_initialize_buffer_object(struct gl_context *ctx,
    obj->RefCount = 1;
    obj->Name = name;
    obj->Usage = GL_STATIC_DRAW_ARB;
+
+   if (get_no_minmax_cache())
+      obj->UsageHistory |= USAGE_DISABLE_MINMAX_CACHE;
 }
 
 
@@ -626,9 +687,9 @@ buffer_sub_data_fallback(struct gl_context *ctx, GLintptr offset,
  * \sa glBufferGetSubDataARB, dd_function_table::GetBufferSubData.
  */
 static void
-_mesa_buffer_get_subdata( struct gl_context *ctx, GLintptrARB offset,
-			  GLsizeiptrARB size, GLvoid * data,
-			  struct gl_buffer_object * bufObj )
+buffer_get_subdata(struct gl_context *ctx, GLintptrARB offset,
+                   GLsizeiptrARB size, GLvoid *data,
+                   struct gl_buffer_object *bufObj )
 {
    (void) ctx;
 
@@ -832,8 +893,14 @@ _mesa_init_buffer_objects( struct gl_context *ctx )
    _mesa_reference_buffer_object(ctx, &ctx->DrawIndirectBuffer,
 				 ctx->Shared->NullBufferObj);
 
+   _mesa_reference_buffer_object(ctx, &ctx->ParameterBuffer,
+				 ctx->Shared->NullBufferObj);
+
    _mesa_reference_buffer_object(ctx, &ctx->DispatchIndirectBuffer,
 				 ctx->Shared->NullBufferObj);
+
+   _mesa_reference_buffer_object(ctx, &ctx->QueryBuffer,
+                                 ctx->Shared->NullBufferObj);
 
    for (i = 0; i < MAX_COMBINED_UNIFORM_BUFFERS; i++) {
       _mesa_reference_buffer_object(ctx,
@@ -879,7 +946,11 @@ _mesa_free_buffer_objects( struct gl_context *ctx )
 
    _mesa_reference_buffer_object(ctx, &ctx->DrawIndirectBuffer, NULL);
 
+   _mesa_reference_buffer_object(ctx, &ctx->ParameterBuffer, NULL);
+
    _mesa_reference_buffer_object(ctx, &ctx->DispatchIndirectBuffer, NULL);
+
+   _mesa_reference_buffer_object(ctx, &ctx->QueryBuffer, NULL);
 
    for (i = 0; i < MAX_COMBINED_UNIFORM_BUFFERS; i++) {
       _mesa_reference_buffer_object(ctx,
@@ -909,7 +980,7 @@ _mesa_handle_bind_buffer_gen(struct gl_context *ctx,
 {
    struct gl_buffer_object *buf = *buf_handle;
 
-   if (!buf && (ctx->API == API_OPENGL_CORE || _mesa_is_gles31(ctx))) {
+   if (!buf && (ctx->API == API_OPENGL_CORE)) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(non-gen name)", caller);
       return false;
    }
@@ -936,17 +1007,13 @@ _mesa_handle_bind_buffer_gen(struct gl_context *ctx,
  * Called by glBindBuffer() and other functions.
  */
 static void
-bind_buffer_object(struct gl_context *ctx, GLenum target, GLuint buffer)
+bind_buffer_object(struct gl_context *ctx,
+                   struct gl_buffer_object **bindTarget, GLuint buffer)
 {
    struct gl_buffer_object *oldBufObj;
    struct gl_buffer_object *newBufObj = NULL;
-   struct gl_buffer_object **bindTarget = NULL;
 
-   bindTarget = get_buffer_target(ctx, target);
-   if (!bindTarget) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glBindBufferARB(target 0x%x)", target);
-      return;
-   }
+   assert(bindTarget);
 
    /* Get pointer to old buffer object (to be unbound) */
    oldBufObj = *bindTarget;
@@ -970,6 +1037,11 @@ bind_buffer_object(struct gl_context *ctx, GLenum target, GLuint buffer)
          return;
    }
 
+   /* record usage history */
+   if (bindTarget == &ctx->Pack.BufferObj) {
+      newBufObj->UsageHistory |= USAGE_PIXEL_PACK_BUFFER;
+   }
+
    /* bind new buffer */
    _mesa_reference_buffer_object(ctx, bindTarget, newBufObj);
 }
@@ -986,10 +1058,10 @@ _mesa_update_default_objects_buffer_objects(struct gl_context *ctx)
    /* Bind the NullBufferObj to remove references to those
     * in the shared context hash table.
     */
-   bind_buffer_object( ctx, GL_ARRAY_BUFFER_ARB, 0);
-   bind_buffer_object( ctx, GL_ELEMENT_ARRAY_BUFFER_ARB, 0);
-   bind_buffer_object( ctx, GL_PIXEL_PACK_BUFFER_ARB, 0);
-   bind_buffer_object( ctx, GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+   bind_buffer_object(ctx, &ctx->Array.ArrayBufferObj, 0);
+   bind_buffer_object(ctx, &ctx->Array.VAO->IndexBufferObj, 0);
+   bind_buffer_object(ctx, &ctx->Pack.BufferObj, 0);
+   bind_buffer_object(ctx, &ctx->Unpack.BufferObj, 0);
 }
 
 
@@ -1012,8 +1084,11 @@ _mesa_lookup_bufferobj(struct gl_context *ctx, GLuint buffer)
 struct gl_buffer_object *
 _mesa_lookup_bufferobj_locked(struct gl_context *ctx, GLuint buffer)
 {
-   return (struct gl_buffer_object *)
-      _mesa_HashLookupLocked(ctx->Shared->BufferObjects, buffer);
+   if (buffer == 0)
+      return NULL;
+   else
+      return (struct gl_buffer_object *)
+         _mesa_HashLookupLocked(ctx->Shared->BufferObjects, buffer);
 }
 
 /**
@@ -1038,20 +1113,6 @@ _mesa_lookup_bufferobj_err(struct gl_context *ctx, GLuint buffer,
 }
 
 
-void
-_mesa_begin_bufferobj_lookups(struct gl_context *ctx)
-{
-   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
-}
-
-
-void
-_mesa_end_bufferobj_lookups(struct gl_context *ctx)
-{
-   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
-}
-
-
 /**
  * Look up a buffer object for a multi-bind function.
  *
@@ -1066,7 +1127,8 @@ _mesa_end_bufferobj_lookups(struct gl_context *ctx)
  * returns NULL.
  *
  * This function assumes that the caller has already locked the
- * hash table mutex by calling _mesa_begin_bufferobj_lookups().
+ * hash table mutex by calling
+ * _mesa_HashLockMutex(ctx->Shared->BufferObjects).
  */
 struct gl_buffer_object *
 _mesa_multi_bind_lookup_bufferobj(struct gl_context *ctx,
@@ -1110,11 +1172,13 @@ _mesa_multi_bind_lookup_bufferobj(struct gl_context *ctx,
  */
 static void
 unbind(struct gl_context *ctx,
-       struct gl_buffer_object **ptr,
+       struct gl_vertex_array_object *vao, unsigned index,
        struct gl_buffer_object *obj)
 {
-   if (*ptr == obj) {
-      _mesa_reference_buffer_object(ctx, ptr, ctx->Shared->NullBufferObj);
+   if (vao->BufferBinding[index].BufferObj == obj) {
+      _mesa_bind_vertex_buffer(ctx, vao, index, ctx->Shared->NullBufferObj,
+                               vao->BufferBinding[index].Offset,
+                               vao->BufferBinding[index].Stride);
    }
 }
 
@@ -1131,7 +1195,7 @@ _mesa_init_buffer_object_functions(struct dd_function_table *driver)
    driver->DeleteBuffer = _mesa_delete_buffer_object;
    driver->BufferData = buffer_data_fallback;
    driver->BufferSubData = buffer_sub_data_fallback;
-   driver->GetBufferSubData = _mesa_buffer_get_subdata;
+   driver->GetBufferSubData = buffer_get_subdata;
    driver->UnmapBuffer = unmap_buffer_fallback;
 
    /* GL_ARB_clear_buffer_object */
@@ -1150,9 +1214,7 @@ void
 _mesa_buffer_unmap_all_mappings(struct gl_context *ctx,
                                 struct gl_buffer_object *bufObj)
 {
-   int i;
-
-   for (i = 0; i < MAP_COUNT; i++) {
+   for (int i = 0; i < MAP_COUNT; i++) {
       if (_mesa_bufferobj_mapped(bufObj, i)) {
          ctx->Driver.UnmapBuffer(ctx, bufObj, i);
          assert(bufObj->Mappings[i].Pointer == NULL);
@@ -1167,15 +1229,33 @@ _mesa_buffer_unmap_all_mappings(struct gl_context *ctx,
 /**********************************************************************/
 
 void GLAPIENTRY
+_mesa_BindBuffer_no_error(GLenum target, GLuint buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object **bindTarget = get_buffer_target(ctx, target);
+   bind_buffer_object(ctx, bindTarget, buffer);
+}
+
+
+void GLAPIENTRY
 _mesa_BindBuffer(GLenum target, GLuint buffer)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (MESA_VERBOSE & VERBOSE_API)
+   if (MESA_VERBOSE & VERBOSE_API) {
       _mesa_debug(ctx, "glBindBuffer(%s, %u)\n",
                   _mesa_enum_to_string(target), buffer);
+   }
 
-   bind_buffer_object(ctx, target, buffer);
+   struct gl_buffer_object **bindTarget = get_buffer_target(ctx, target);
+   if (!bindTarget) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glBindBufferARB(target %s)",
+                  _mesa_enum_to_string(target));
+      return;
+   }
+
+   bind_buffer_object(ctx, bindTarget, buffer);
 }
 
 
@@ -1197,10 +1277,11 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
       return;
    }
 
-   mtx_lock(&ctx->Shared->Mutex);
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
 
    for (i = 0; i < n; i++) {
-      struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, ids[i]);
+      struct gl_buffer_object *bufObj =
+         _mesa_lookup_bufferobj_locked(ctx, ids[i]);
       if (bufObj) {
          struct gl_vertex_array_object *vao = ctx->Array.VAO;
          GLuint j;
@@ -1210,38 +1291,43 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
          _mesa_buffer_unmap_all_mappings(ctx, bufObj);
 
          /* unbind any vertex pointers bound to this buffer */
-         for (j = 0; j < ARRAY_SIZE(vao->VertexBinding); j++) {
-            unbind(ctx, &vao->VertexBinding[j].BufferObj, bufObj);
+         for (j = 0; j < ARRAY_SIZE(vao->BufferBinding); j++) {
+            unbind(ctx, vao, j, bufObj);
          }
 
          if (ctx->Array.ArrayBufferObj == bufObj) {
-            _mesa_BindBuffer( GL_ARRAY_BUFFER_ARB, 0 );
+            bind_buffer_object(ctx, &ctx->Array.ArrayBufferObj, 0);
          }
          if (vao->IndexBufferObj == bufObj) {
-            _mesa_BindBuffer( GL_ELEMENT_ARRAY_BUFFER_ARB, 0 );
+            bind_buffer_object(ctx, &vao->IndexBufferObj, 0);
          }
 
          /* unbind ARB_draw_indirect binding point */
          if (ctx->DrawIndirectBuffer == bufObj) {
-            _mesa_BindBuffer( GL_DRAW_INDIRECT_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->DrawIndirectBuffer, 0);
+         }
+
+         /* unbind ARB_indirect_parameters binding point */
+         if (ctx->ParameterBuffer == bufObj) {
+            bind_buffer_object(ctx, &ctx->ParameterBuffer, 0);
          }
 
          /* unbind ARB_compute_shader binding point */
          if (ctx->DispatchIndirectBuffer == bufObj) {
-            _mesa_BindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+            bind_buffer_object(ctx, &ctx->DispatchIndirectBuffer, 0);
          }
 
          /* unbind ARB_copy_buffer binding points */
          if (ctx->CopyReadBuffer == bufObj) {
-            _mesa_BindBuffer( GL_COPY_READ_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->CopyReadBuffer, 0);
          }
          if (ctx->CopyWriteBuffer == bufObj) {
-            _mesa_BindBuffer( GL_COPY_WRITE_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->CopyWriteBuffer, 0);
          }
 
          /* unbind transform feedback binding points */
          if (ctx->TransformFeedback.CurrentBuffer == bufObj) {
-            _mesa_BindBuffer( GL_TRANSFORM_FEEDBACK_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->TransformFeedback.CurrentBuffer, 0);
          }
          for (j = 0; j < MAX_FEEDBACK_BUFFERS; j++) {
             if (ctx->TransformFeedback.CurrentObject->Buffers[j] == bufObj) {
@@ -1257,7 +1343,7 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
          }
 
          if (ctx->UniformBuffer == bufObj) {
-            _mesa_BindBuffer( GL_UNIFORM_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->UniformBuffer, 0);
          }
 
          /* unbind SSBO binding points */
@@ -1268,7 +1354,7 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
          }
 
          if (ctx->ShaderStorageBuffer == bufObj) {
-            _mesa_BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            bind_buffer_object(ctx, &ctx->ShaderStorageBuffer, 0);
          }
 
          /* unbind Atomci Buffer binding points */
@@ -1279,27 +1365,32 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
          }
 
          if (ctx->AtomicBuffer == bufObj) {
-            _mesa_BindBuffer( GL_ATOMIC_COUNTER_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->AtomicBuffer, 0);
          }
 
          /* unbind any pixel pack/unpack pointers bound to this buffer */
          if (ctx->Pack.BufferObj == bufObj) {
-            _mesa_BindBuffer( GL_PIXEL_PACK_BUFFER_EXT, 0 );
+            bind_buffer_object(ctx, &ctx->Pack.BufferObj, 0);
          }
          if (ctx->Unpack.BufferObj == bufObj) {
-            _mesa_BindBuffer( GL_PIXEL_UNPACK_BUFFER_EXT, 0 );
+            bind_buffer_object(ctx, &ctx->Unpack.BufferObj, 0);
          }
 
          if (ctx->Texture.BufferObject == bufObj) {
-            _mesa_BindBuffer( GL_TEXTURE_BUFFER, 0 );
+            bind_buffer_object(ctx, &ctx->Texture.BufferObject, 0);
          }
 
          if (ctx->ExternalVirtualMemoryBuffer == bufObj) {
-            _mesa_BindBuffer(GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD, 0);
+            bind_buffer_object(ctx, &ctx->ExternalVirtualMemoryBuffer, 0);
+         }
+
+         /* unbind query buffer binding point */
+         if (ctx->QueryBuffer == bufObj) {
+            bind_buffer_object(ctx, &ctx->QueryBuffer, 0);
          }
 
          /* The ID is immediately freed for re-use */
-         _mesa_HashRemove(ctx->Shared->BufferObjects, ids[i]);
+         _mesa_HashRemoveLocked(ctx->Shared->BufferObjects, ids[i]);
          /* Make sure we do not run into the classic ABA problem on bind.
           * We don't want to allow re-binding a buffer object that's been
           * "deleted" by glDeleteBuffers().
@@ -1315,7 +1406,7 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
       }
    }
 
-   mtx_unlock(&ctx->Shared->Mutex);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
 
@@ -1325,13 +1416,49 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
  * driver internals.
  */
 static void
-create_buffers(GLsizei n, GLuint *buffers, bool dsa)
+create_buffers(struct gl_context *ctx, GLsizei n, GLuint *buffers, bool dsa)
 {
-   GET_CURRENT_CONTEXT(ctx);
    GLuint first;
-   GLint i;
    struct gl_buffer_object *buf;
 
+   if (!buffers)
+      return;
+
+   /*
+    * This must be atomic (generation and allocation of buffer object IDs)
+    */
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+
+   first = _mesa_HashFindFreeKeyBlock(ctx->Shared->BufferObjects, n);
+
+   /* Insert the ID and pointer into the hash table. If non-DSA, insert a
+    * DummyBufferObject.  Otherwise, create a new buffer object and insert
+    * it.
+    */
+   for (int i = 0; i < n; i++) {
+      buffers[i] = first + i;
+      if (dsa) {
+         assert(ctx->Driver.NewBufferObject);
+         buf = ctx->Driver.NewBufferObject(ctx, buffers[i]);
+         if (!buf) {
+            _mesa_error(ctx, GL_OUT_OF_MEMORY, "glCreateBuffers");
+            _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+            return;
+         }
+      }
+      else
+         buf = &DummyBufferObject;
+
+      _mesa_HashInsertLocked(ctx->Shared->BufferObjects, buffers[i], buf);
+   }
+
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+}
+
+
+static void
+create_buffers_err(struct gl_context *ctx, GLsizei n, GLuint *buffers, bool dsa)
+{
    const char *func = dsa ? "glCreateBuffers" : "glGenBuffers";
 
    if (MESA_VERBOSE & VERBOSE_API)
@@ -1342,39 +1469,7 @@ create_buffers(GLsizei n, GLuint *buffers, bool dsa)
       return;
    }
 
-   if (!buffers) {
-      return;
-   }
-
-   /*
-    * This must be atomic (generation and allocation of buffer object IDs)
-    */
-   mtx_lock(&ctx->Shared->Mutex);
-
-   first = _mesa_HashFindFreeKeyBlock(ctx->Shared->BufferObjects, n);
-
-   /* Insert the ID and pointer into the hash table. If non-DSA, insert a
-    * DummyBufferObject.  Otherwise, create a new buffer object and insert
-    * it.
-    */
-   for (i = 0; i < n; i++) {
-      buffers[i] = first + i;
-      if (dsa) {
-         assert(ctx->Driver.NewBufferObject);
-         buf = ctx->Driver.NewBufferObject(ctx, buffers[i]);
-         if (!buf) {
-            _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", func);
-            mtx_unlock(&ctx->Shared->Mutex);
-            return;
-         }
-      }
-      else
-         buf = &DummyBufferObject;
-
-      _mesa_HashInsert(ctx->Shared->BufferObjects, buffers[i], buf);
-   }
-
-   mtx_unlock(&ctx->Shared->Mutex);
+   create_buffers(ctx, n, buffers, dsa);
 }
 
 /**
@@ -1384,9 +1479,18 @@ create_buffers(GLsizei n, GLuint *buffers, bool dsa)
  * \param buffers  Array of \c n locations to store the IDs.
  */
 void GLAPIENTRY
+_mesa_GenBuffers_no_error(GLsizei n, GLuint *buffers)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   create_buffers(ctx, n, buffers, false);
+}
+
+
+void GLAPIENTRY
 _mesa_GenBuffers(GLsizei n, GLuint *buffers)
 {
-   create_buffers(n, buffers, false);
+   GET_CURRENT_CONTEXT(ctx);
+   create_buffers_err(ctx, n, buffers, false);
 }
 
 /**
@@ -1396,9 +1500,18 @@ _mesa_GenBuffers(GLsizei n, GLuint *buffers)
  * \param buffers  Array of \c n locations to store the IDs.
  */
 void GLAPIENTRY
+_mesa_CreateBuffers_no_error(GLsizei n, GLuint *buffers)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   create_buffers(ctx, n, buffers, true);
+}
+
+
+void GLAPIENTRY
 _mesa_CreateBuffers(GLsizei n, GLuint *buffers)
 {
-   create_buffers(n, buffers, true);
+   GET_CURRENT_CONTEXT(ctx);
+   create_buffers_err(ctx, n, buffers, true);
 }
 
 
@@ -1416,59 +1529,84 @@ _mesa_IsBuffer(GLuint id)
    GET_CURRENT_CONTEXT(ctx);
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, GL_FALSE);
 
-   mtx_lock(&ctx->Shared->Mutex);
    bufObj = _mesa_lookup_bufferobj(ctx, id);
-   mtx_unlock(&ctx->Shared->Mutex);
 
    return bufObj && bufObj != &DummyBufferObject;
 }
 
 
-void
-_mesa_buffer_storage(struct gl_context *ctx, struct gl_buffer_object *bufObj,
-                     GLenum target, GLsizeiptr size, const GLvoid *data,
-                     GLbitfield flags, const char *func)
+static bool
+validate_buffer_storage(struct gl_context *ctx,
+                        struct gl_buffer_object *bufObj, GLsizeiptr size,
+                        GLbitfield flags, const char *func)
 {
    if (size <= 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "%s(size <= 0)", func);
-      return;
+      return false;
    }
 
-   if (flags & ~(GL_MAP_READ_BIT |
-                 GL_MAP_WRITE_BIT |
-                 GL_MAP_PERSISTENT_BIT |
-                 GL_MAP_COHERENT_BIT |
-                 GL_DYNAMIC_STORAGE_BIT |
-                 GL_CLIENT_STORAGE_BIT)) {
+   GLbitfield valid_flags = GL_MAP_READ_BIT |
+                            GL_MAP_WRITE_BIT |
+                            GL_MAP_PERSISTENT_BIT |
+                            GL_MAP_COHERENT_BIT |
+                            GL_DYNAMIC_STORAGE_BIT |
+                            GL_CLIENT_STORAGE_BIT;
+
+   if (ctx->Extensions.ARB_sparse_buffer)
+      valid_flags |= GL_SPARSE_STORAGE_BIT_ARB;
+
+   if (flags & ~valid_flags) {
       _mesa_error(ctx, GL_INVALID_VALUE, "%s(invalid flag bits set)", func);
-      return;
+      return false;
+   }
+
+   /* The Errors section of the GL_ARB_sparse_buffer spec says:
+    *
+    *    "INVALID_VALUE is generated by BufferStorage if <flags> contains
+    *     SPARSE_STORAGE_BIT_ARB and <flags> also contains any combination of
+    *     MAP_READ_BIT or MAP_WRITE_BIT."
+    */
+   if (flags & GL_SPARSE_STORAGE_BIT_ARB &&
+       flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(SPARSE_STORAGE and READ/WRITE)", func);
+      return false;
    }
 
    if (flags & GL_MAP_PERSISTENT_BIT &&
        !(flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(PERSISTENT and flags!=READ/WRITE)", func);
-      return;
+      return false;
    }
 
    if (flags & GL_MAP_COHERENT_BIT && !(flags & GL_MAP_PERSISTENT_BIT)) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(COHERENT and flags!=PERSISTENT)", func);
-      return;
+      return false;
    }
 
-   if (bufObj->Immutable) {
+   if (bufObj->Immutable || bufObj->HandleAllocated) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(immutable)", func);
-      return;
+      return false;
    }
 
+   return true;
+}
+
+
+static void
+buffer_storage(struct gl_context *ctx, struct gl_buffer_object *bufObj,
+               GLenum target, GLsizeiptr size, const GLvoid *data,
+               GLbitfield flags, const char *func)
+{
    /* Unmap the existing buffer.  We'll replace it now.  Not an error. */
    _mesa_buffer_unmap_all_mappings(ctx, bufObj);
 
-   FLUSH_VERTICES(ctx, _NEW_BUFFER_OBJECT);
+   FLUSH_VERTICES(ctx, 0);
 
    bufObj->Written = GL_TRUE;
    bufObj->Immutable = GL_TRUE;
+   bufObj->MinMaxCacheDirty = true;
 
    assert(ctx->Driver.BufferData);
    if (!ctx->Driver.BufferData(ctx, target, size, data, GL_DYNAMIC_DRAW,
@@ -1486,38 +1624,78 @@ _mesa_buffer_storage(struct gl_context *ctx, struct gl_buffer_object *bufObj,
    }
 }
 
-void GLAPIENTRY
-_mesa_BufferStorage(GLenum target, GLsizeiptr size, const GLvoid *data,
-                    GLbitfield flags)
+
+static ALWAYS_INLINE void
+inlined_buffer_storage(GLenum target, GLuint buffer, GLsizeiptr size,
+                       const GLvoid *data, GLbitfield flags, bool dsa,
+                       bool no_error, const char *func)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_buffer_object *bufObj;
 
-   bufObj = get_buffer(ctx, "glBufferStorage", target, GL_INVALID_OPERATION);
-   if (!bufObj)
-      return;
+   if (dsa) {
+      if (no_error) {
+         bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+      } else {
+         bufObj = _mesa_lookup_bufferobj_err(ctx, buffer, func);
+         if (!bufObj)
+            return;
+      }
+   } else {
+      if (no_error) {
+         struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+         bufObj = *bufObjPtr;
+      } else {
+         bufObj = get_buffer(ctx, func, target, GL_INVALID_OPERATION);
+         if (!bufObj)
+            return;
+      }
+   }
 
-   _mesa_buffer_storage(ctx, bufObj, target, size, data, flags,
-                        "glBufferStorage");
+   if (no_error || validate_buffer_storage(ctx, bufObj, size, flags, func))
+      buffer_storage(ctx, bufObj, target, size, data, flags, func);
 }
+
+
+void GLAPIENTRY
+_mesa_BufferStorage_no_error(GLenum target, GLsizeiptr size,
+                             const GLvoid *data, GLbitfield flags)
+{
+   inlined_buffer_storage(target, 0, size, data, flags, false, true,
+                          "glBufferStorage");
+}
+
+
+void GLAPIENTRY
+_mesa_BufferStorage(GLenum target, GLsizeiptr size, const GLvoid *data,
+                    GLbitfield flags)
+{
+   inlined_buffer_storage(target, 0, size, data, flags, false, false,
+                          "glBufferStorage");
+}
+
+
+void GLAPIENTRY
+_mesa_NamedBufferStorage_no_error(GLuint buffer, GLsizeiptr size,
+                                  const GLvoid *data, GLbitfield flags)
+{
+   /* In direct state access, buffer objects have an unspecified target
+    * since they are not required to be bound.
+    */
+   inlined_buffer_storage(GL_NONE, buffer, size, data, flags, true, true,
+                          "glNamedBufferStorage");
+}
+
 
 void GLAPIENTRY
 _mesa_NamedBufferStorage(GLuint buffer, GLsizeiptr size, const GLvoid *data,
                          GLbitfield flags)
 {
-   GET_CURRENT_CONTEXT(ctx);
-   struct gl_buffer_object *bufObj;
-
-   bufObj = _mesa_lookup_bufferobj_err(ctx, buffer, "glNamedBufferStorage");
-   if (!bufObj)
-      return;
-
-   /*
-    * In direct state access, buffer objects have an unspecified target since
-    * they are not required to be bound.
+   /* In direct state access, buffer objects have an unspecified target
+    * since they are not required to be bound.
     */
-   _mesa_buffer_storage(ctx, bufObj, GL_NONE, size, data, flags,
-                        "glNamedBufferStorage");
+   inlined_buffer_storage(GL_NONE, buffer, size, data, flags, true, false,
+                          "glNamedBufferStorage");
 }
 
 
@@ -1528,12 +1706,13 @@ _mesa_buffer_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
 {
    bool valid_usage;
 
-   if (MESA_VERBOSE & VERBOSE_API)
+   if (MESA_VERBOSE & VERBOSE_API) {
       _mesa_debug(ctx, "%s(%s, %ld, %p, %s)\n",
                   func,
                   _mesa_enum_to_string(target),
                   (long int) size, data,
                   _mesa_enum_to_string(usage));
+   }
 
    if (size < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "%s(size < 0)", func);
@@ -1570,7 +1749,7 @@ _mesa_buffer_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
       return;
    }
 
-   if (bufObj->Immutable) {
+   if (bufObj->Immutable || bufObj->HandleAllocated) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(immutable)", func);
       return;
    }
@@ -1578,9 +1757,10 @@ _mesa_buffer_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
    /* Unmap the existing buffer.  We'll replace it now.  Not an error. */
    _mesa_buffer_unmap_all_mappings(ctx, bufObj);
 
-   FLUSH_VERTICES(ctx, _NEW_BUFFER_OBJECT);
+   FLUSH_VERTICES(ctx, 0);
 
    bufObj->Written = GL_TRUE;
+   bufObj->MinMaxCacheDirty = true;
 
 #ifdef VBO_DEBUG
    printf("glBufferDataARB(%u, sz %ld, from %p, usage 0x%x)\n",
@@ -1646,6 +1826,41 @@ _mesa_NamedBufferData(GLuint buffer, GLsizeiptr size, const GLvoid *data,
 }
 
 
+static bool
+validate_buffer_sub_data(struct gl_context *ctx,
+                         struct gl_buffer_object *bufObj,
+                         GLintptr offset, GLsizeiptr size,
+                         const char *func)
+{
+   if (!buffer_object_subdata_range_good(ctx, bufObj, offset, size,
+                                         true, func)) {
+      /* error already recorded */
+      return false;
+   }
+
+   if (bufObj->Immutable &&
+       !(bufObj->StorageFlags & GL_DYNAMIC_STORAGE_BIT)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", func);
+      return false;
+   }
+
+   if ((bufObj->Usage == GL_STATIC_DRAW ||
+        bufObj->Usage == GL_STATIC_COPY) &&
+       bufObj->NumSubDataCalls >= BUFFER_WARNING_CALL_COUNT - 1) {
+      /* If the application declared the buffer as static draw/copy or stream
+       * draw, it should not be frequently modified with glBufferSubData.
+       */
+      BUFFER_USAGE_WARNING(ctx,
+                           "using %s(buffer %u, offset %u, size %u) to "
+                           "update a %s buffer",
+                           func, bufObj->Name, offset, size,
+                           _mesa_enum_to_string(bufObj->Usage));
+   }
+
+   return true;
+}
+
+
 /**
  * Implementation for glBufferSubData and glNamedBufferSubData.
  *
@@ -1659,57 +1874,83 @@ _mesa_NamedBufferData(GLuint buffer, GLsizeiptr size, const GLvoid *data,
  */
 void
 _mesa_buffer_sub_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
-                      GLintptr offset, GLsizeiptr size, const GLvoid *data,
-                      const char *func)
+                      GLintptr offset, GLsizeiptr size, const GLvoid *data)
 {
-   if (!buffer_object_subdata_range_good(ctx, bufObj, offset, size,
-                                         false, func)) {
-      /* error already recorded */
-      return;
-   }
-
-   if (bufObj->Immutable &&
-       !(bufObj->StorageFlags & GL_DYNAMIC_STORAGE_BIT)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", func);
-      return;
-   }
-
    if (size == 0)
       return;
 
+   bufObj->NumSubDataCalls++;
    bufObj->Written = GL_TRUE;
+   bufObj->MinMaxCacheDirty = true;
 
    assert(ctx->Driver.BufferSubData);
    ctx->Driver.BufferSubData(ctx, offset, size, data, bufObj);
 }
 
-void GLAPIENTRY
-_mesa_BufferSubData(GLenum target, GLintptr offset,
-                    GLsizeiptr size, const GLvoid *data)
+
+static ALWAYS_INLINE void
+buffer_sub_data(GLenum target, GLuint buffer, GLintptr offset,
+                GLsizeiptr size, const GLvoid *data,
+                bool dsa, bool no_error, const char *func)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_buffer_object *bufObj;
 
-   bufObj = get_buffer(ctx, "glBufferSubData", target, GL_INVALID_OPERATION);
-   if (!bufObj)
-      return;
+   if (dsa) {
+      if (no_error) {
+         bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+      } else {
+         bufObj = _mesa_lookup_bufferobj_err(ctx, buffer, func);
+         if (!bufObj)
+            return;
+      }
+   } else {
+      if (no_error) {
+         struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+         bufObj = *bufObjPtr;
+      } else {
+         bufObj = get_buffer(ctx, func, target, GL_INVALID_OPERATION);
+         if (!bufObj)
+            return;
+      }
+   }
 
-   _mesa_buffer_sub_data(ctx, bufObj, offset, size, data, "glBufferSubData");
+   if (no_error || validate_buffer_sub_data(ctx, bufObj, offset, size, func))
+      _mesa_buffer_sub_data(ctx, bufObj, offset, size, data);
+}
+
+
+void GLAPIENTRY
+_mesa_BufferSubData_no_error(GLenum target, GLintptr offset,
+                             GLsizeiptr size, const GLvoid *data)
+{
+   buffer_sub_data(target, 0, offset, size, data, false, true,
+                   "glBufferSubData");
+}
+
+
+void GLAPIENTRY
+_mesa_BufferSubData(GLenum target, GLintptr offset,
+                    GLsizeiptr size, const GLvoid *data)
+{
+   buffer_sub_data(target, 0, offset, size, data, false, false,
+                   "glBufferSubData");
+}
+
+void GLAPIENTRY
+_mesa_NamedBufferSubData_no_error(GLuint buffer, GLintptr offset,
+                                  GLsizeiptr size, const GLvoid *data)
+{
+   buffer_sub_data(0, buffer, offset, size, data, true, true,
+                   "glNamedBufferSubData");
 }
 
 void GLAPIENTRY
 _mesa_NamedBufferSubData(GLuint buffer, GLintptr offset,
                          GLsizeiptr size, const GLvoid *data)
 {
-   GET_CURRENT_CONTEXT(ctx);
-   struct gl_buffer_object *bufObj;
-
-   bufObj = _mesa_lookup_bufferobj_err(ctx, buffer, "glNamedBufferSubData");
-   if (!bufObj)
-      return;
-
-   _mesa_buffer_sub_data(ctx, bufObj, offset, size, data,
-                         "glNamedBufferSubData");
+   buffer_sub_data(0, buffer, offset, size, data, true, false,
+                   "glNamedBufferSubData");
 }
 
 
@@ -1759,14 +2000,11 @@ _mesa_GetNamedBufferSubData(GLuint buffer, GLintptr offset,
 /**
  * \param subdata   true if caller is *SubData, false if *Data
  */
-void
-_mesa_clear_buffer_sub_data(struct gl_context *ctx,
-                            struct gl_buffer_object *bufObj,
-                            GLenum internalformat,
-                            GLintptr offset, GLsizeiptr size,
-                            GLenum format, GLenum type,
-                            const GLvoid *data,
-                            const char *func, bool subdata)
+static void
+clear_buffer_sub_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
+                      GLenum internalformat, GLintptr offset, GLsizeiptr size,
+                      GLenum format, GLenum type, const GLvoid *data,
+                      const char *func, bool subdata)
 {
    mesa_format mesaFormat;
    GLubyte clearValue[MAX_PIXEL_BYTES];
@@ -1793,12 +2031,16 @@ _mesa_clear_buffer_sub_data(struct gl_context *ctx,
       return;
    }
 
+   /* Bail early. Negative size has already been checked. */
+   if (size == 0)
+      return;
+
+   bufObj->MinMaxCacheDirty = true;
+
    if (data == NULL) {
       /* clear to zeros, per the spec */
-      if (size > 0) {
-         ctx->Driver.ClearBufferSubData(ctx, offset, size,
-                                        NULL, clearValueSize, bufObj);
-      }
+      ctx->Driver.ClearBufferSubData(ctx, offset, size,
+                                     NULL, clearValueSize, bufObj);
       return;
    }
 
@@ -1807,10 +2049,8 @@ _mesa_clear_buffer_sub_data(struct gl_context *ctx,
       return;
    }
 
-   if (size > 0) {
-      ctx->Driver.ClearBufferSubData(ctx, offset, size,
-                                     clearValue, clearValueSize, bufObj);
-   }
+   ctx->Driver.ClearBufferSubData(ctx, offset, size,
+                                  clearValue, clearValueSize, bufObj);
 }
 
 void GLAPIENTRY
@@ -1824,9 +2064,8 @@ _mesa_ClearBufferData(GLenum target, GLenum internalformat, GLenum format,
    if (!bufObj)
       return;
 
-   _mesa_clear_buffer_sub_data(ctx, bufObj, internalformat, 0, bufObj->Size,
-                               format, type, data,
-                               "glClearBufferData", false);
+   clear_buffer_sub_data(ctx, bufObj, internalformat, 0, bufObj->Size,
+                         format, type, data, "glClearBufferData", false);
 }
 
 void GLAPIENTRY
@@ -1840,9 +2079,8 @@ _mesa_ClearNamedBufferData(GLuint buffer, GLenum internalformat,
    if (!bufObj)
       return;
 
-   _mesa_clear_buffer_sub_data(ctx, bufObj, internalformat, 0, bufObj->Size,
-                               format, type, data,
-                               "glClearNamedBufferData", false);
+   clear_buffer_sub_data(ctx, bufObj, internalformat, 0, bufObj->Size,
+                         format, type, data, "glClearNamedBufferData", false);
 }
 
 
@@ -1859,9 +2097,8 @@ _mesa_ClearBufferSubData(GLenum target, GLenum internalformat,
    if (!bufObj)
       return;
 
-   _mesa_clear_buffer_sub_data(ctx, bufObj, internalformat, offset, size,
-                               format, type, data,
-                               "glClearBufferSubData", true);
+   clear_buffer_sub_data(ctx, bufObj, internalformat, offset, size,
+                         format, type, data, "glClearBufferSubData", true);
 }
 
 void GLAPIENTRY
@@ -1878,17 +2115,27 @@ _mesa_ClearNamedBufferSubData(GLuint buffer, GLenum internalformat,
    if (!bufObj)
       return;
 
-   _mesa_clear_buffer_sub_data(ctx, bufObj, internalformat, offset, size,
-                               format, type, data,
-                               "glClearNamedBufferSubData", true);
+   clear_buffer_sub_data(ctx, bufObj, internalformat, offset, size, format,
+                         type, data, "glClearNamedBufferSubData", true);
 }
 
-
-GLboolean
-_mesa_unmap_buffer(struct gl_context *ctx, struct gl_buffer_object *bufObj,
-                   const char *func)
+static GLboolean
+unmap_buffer(struct gl_context *ctx, struct gl_buffer_object *bufObj)
 {
-   GLboolean status = GL_TRUE;
+   GLboolean status = ctx->Driver.UnmapBuffer(ctx, bufObj, MAP_USER);
+   bufObj->Mappings[MAP_USER].AccessFlags = 0;
+   assert(bufObj->Mappings[MAP_USER].Pointer == NULL);
+   assert(bufObj->Mappings[MAP_USER].Offset == 0);
+   assert(bufObj->Mappings[MAP_USER].Length == 0);
+
+   return status;
+}
+
+static GLboolean
+validate_and_unmap_buffer(struct gl_context *ctx,
+                          struct gl_buffer_object *bufObj,
+                          const char *func)
+{
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, GL_FALSE);
 
    if (!_mesa_bufferobj_mapped(bufObj, MAP_USER)) {
@@ -1933,13 +2180,17 @@ _mesa_unmap_buffer(struct gl_context *ctx, struct gl_buffer_object *bufObj,
    }
 #endif
 
-   status = ctx->Driver.UnmapBuffer(ctx, bufObj, MAP_USER);
-   bufObj->Mappings[MAP_USER].AccessFlags = 0;
-   assert(bufObj->Mappings[MAP_USER].Pointer == NULL);
-   assert(bufObj->Mappings[MAP_USER].Offset == 0);
-   assert(bufObj->Mappings[MAP_USER].Length == 0);
+   return unmap_buffer(ctx, bufObj);
+}
 
-   return status;
+GLboolean GLAPIENTRY
+_mesa_UnmapBuffer_no_error(GLenum target)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+   struct gl_buffer_object *bufObj = *bufObjPtr;
+
+   return unmap_buffer(ctx, bufObj);
 }
 
 GLboolean GLAPIENTRY
@@ -1952,7 +2203,16 @@ _mesa_UnmapBuffer(GLenum target)
    if (!bufObj)
       return GL_FALSE;
 
-   return _mesa_unmap_buffer(ctx, bufObj, "glUnmapBuffer");
+   return validate_and_unmap_buffer(ctx, bufObj, "glUnmapBuffer");
+}
+
+GLboolean GLAPIENTRY
+_mesa_UnmapNamedBuffer_no_error(GLuint buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+
+   return unmap_buffer(ctx, bufObj);
 }
 
 GLboolean GLAPIENTRY
@@ -1965,7 +2225,7 @@ _mesa_UnmapNamedBuffer(GLuint buffer)
    if (!bufObj)
       return GL_FALSE;
 
-   return _mesa_unmap_buffer(ctx, bufObj, "glUnmapNamedBuffer");
+   return validate_and_unmap_buffer(ctx, bufObj, "glUnmapNamedBuffer");
 }
 
 
@@ -2144,12 +2404,10 @@ _mesa_GetNamedBufferPointerv(GLuint buffer, GLenum pname, GLvoid **params)
 }
 
 
-void
-_mesa_copy_buffer_sub_data(struct gl_context *ctx,
-                           struct gl_buffer_object *src,
-                           struct gl_buffer_object *dst,
-                           GLintptr readOffset, GLintptr writeOffset,
-                           GLsizeiptr size, const char *func)
+static void
+copy_buffer_sub_data(struct gl_context *ctx, struct gl_buffer_object *src,
+                     struct gl_buffer_object *dst, GLintptr readOffset,
+                     GLintptr writeOffset, GLsizeiptr size, const char *func)
 {
    if (_mesa_check_disallowed_mapping(src)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
@@ -2210,7 +2468,27 @@ _mesa_copy_buffer_sub_data(struct gl_context *ctx,
       }
    }
 
+   dst->MinMaxCacheDirty = true;
+
    ctx->Driver.CopyBufferSubData(ctx, src, dst, readOffset, writeOffset, size);
+}
+
+void GLAPIENTRY
+_mesa_CopyBufferSubData_no_error(GLenum readTarget, GLenum writeTarget,
+                                 GLintptr readOffset, GLintptr writeOffset,
+                                 GLsizeiptr size)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object **src_ptr = get_buffer_target(ctx, readTarget);
+   struct gl_buffer_object *src = *src_ptr;
+
+   struct gl_buffer_object **dst_ptr = get_buffer_target(ctx, writeTarget);
+   struct gl_buffer_object *dst = *dst_ptr;
+
+   dst->MinMaxCacheDirty = true;
+   ctx->Driver.CopyBufferSubData(ctx, src, dst, readOffset, writeOffset,
+                                 size);
 }
 
 void GLAPIENTRY
@@ -2231,8 +2509,23 @@ _mesa_CopyBufferSubData(GLenum readTarget, GLenum writeTarget,
    if (!dst)
       return;
 
-   _mesa_copy_buffer_sub_data(ctx, src, dst, readOffset, writeOffset, size,
-                              "glCopyBufferSubData");
+   copy_buffer_sub_data(ctx, src, dst, readOffset, writeOffset, size,
+                        "glCopyBufferSubData");
+}
+
+void GLAPIENTRY
+_mesa_CopyNamedBufferSubData_no_error(GLuint readBuffer, GLuint writeBuffer,
+                                      GLintptr readOffset,
+                                      GLintptr writeOffset, GLsizeiptr size)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object *src = _mesa_lookup_bufferobj(ctx, readBuffer);
+   struct gl_buffer_object *dst = _mesa_lookup_bufferobj(ctx, writeBuffer);
+
+   dst->MinMaxCacheDirty = true;
+   ctx->Driver.CopyBufferSubData(ctx, src, dst, readOffset, writeOffset,
+                                 size);
 }
 
 void GLAPIENTRY
@@ -2253,32 +2546,30 @@ _mesa_CopyNamedBufferSubData(GLuint readBuffer, GLuint writeBuffer,
    if (!dst)
       return;
 
-   _mesa_copy_buffer_sub_data(ctx, src, dst, readOffset, writeOffset, size,
-                              "glCopyNamedBufferSubData");
+   copy_buffer_sub_data(ctx, src, dst, readOffset, writeOffset, size,
+                        "glCopyNamedBufferSubData");
 }
 
-
-void *
-_mesa_map_buffer_range(struct gl_context *ctx,
-                       struct gl_buffer_object *bufObj,
-                       GLintptr offset, GLsizeiptr length,
-                       GLbitfield access, const char *func)
+static bool
+validate_map_buffer_range(struct gl_context *ctx,
+                          struct gl_buffer_object *bufObj, GLintptr offset,
+                          GLsizeiptr length, GLbitfield access,
+                          const char *func)
 {
-   void *map;
    GLbitfield allowed_access;
 
-   ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, NULL);
+   ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, false);
 
    if (offset < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(offset %ld < 0)", func, (long) offset);
-      return NULL;
+      return false;
    }
 
    if (length < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(length %ld < 0)", func, (long) length);
-      return NULL;
+      return false;
    }
 
    /* Page 38 of the PDF of the OpenGL ES 3.0 spec says:
@@ -2294,7 +2585,7 @@ _mesa_map_buffer_range(struct gl_context *ctx,
     */
    if (length == 0) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(length = 0)", func);
-      return NULL;
+      return false;
    }
 
    allowed_access = GL_MAP_READ_BIT |
@@ -2313,13 +2604,13 @@ _mesa_map_buffer_range(struct gl_context *ctx,
       /* generate an error if any bits other than those allowed are set */
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(access has undefined bits set)", func);
-      return NULL;
+      return false;
    }
 
    if ((access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == 0) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(access indicates neither read or write)", func);
-      return NULL;
+      return false;
    }
 
    if ((access & GL_MAP_READ_BIT) &&
@@ -2328,66 +2619,87 @@ _mesa_map_buffer_range(struct gl_context *ctx,
                   GL_MAP_UNSYNCHRONIZED_BIT))) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(read access with disallowed bits)", func);
-      return NULL;
+      return false;
    }
 
    if ((access & GL_MAP_FLUSH_EXPLICIT_BIT) &&
        ((access & GL_MAP_WRITE_BIT) == 0)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(access has flush explicit without write)", func);
-      return NULL;
+      return false;
    }
 
    if (access & GL_MAP_READ_BIT &&
        !(bufObj->StorageFlags & GL_MAP_READ_BIT)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(buffer does not allow read access)", func);
-      return NULL;
+      return false;
    }
 
    if (access & GL_MAP_WRITE_BIT &&
        !(bufObj->StorageFlags & GL_MAP_WRITE_BIT)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(buffer does not allow write access)", func);
-      return NULL;
+      return false;
    }
 
    if (access & GL_MAP_COHERENT_BIT &&
        !(bufObj->StorageFlags & GL_MAP_COHERENT_BIT)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(buffer does not allow coherent access)", func);
-      return NULL;
+      return false;
    }
 
    if (access & GL_MAP_PERSISTENT_BIT &&
        !(bufObj->StorageFlags & GL_MAP_PERSISTENT_BIT)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(buffer does not allow persistent access)", func);
-      return NULL;
+      return false;
    }
 
    if (offset + length > bufObj->Size) {
       _mesa_error(ctx, GL_INVALID_VALUE,
-                  "%s(offset %td + length %td > buffer_size %td)", func,
-                  offset, length, bufObj->Size);
-      return NULL;
+                  "%s(offset %lu + length %lu > buffer_size %lu)", func,
+                  (unsigned long) offset, (unsigned long) length,
+                  (unsigned long) bufObj->Size);
+      return false;
    }
 
    if (_mesa_bufferobj_mapped(bufObj, MAP_USER)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "%s(buffer already mapped)", func);
-      return NULL;
+      return false;
    }
 
+   if (access & GL_MAP_WRITE_BIT) {
+      bufObj->NumMapBufferWriteCalls++;
+      if ((bufObj->Usage == GL_STATIC_DRAW ||
+           bufObj->Usage == GL_STATIC_COPY) &&
+          bufObj->NumMapBufferWriteCalls >= BUFFER_WARNING_CALL_COUNT) {
+         BUFFER_USAGE_WARNING(ctx,
+                              "using %s(buffer %u, offset %u, length %u) to "
+                              "update a %s buffer",
+                              func, bufObj->Name, offset, length,
+                              _mesa_enum_to_string(bufObj->Usage));
+      }
+   }
+
+   return true;
+}
+
+static void *
+map_buffer_range(struct gl_context *ctx, struct gl_buffer_object *bufObj,
+                 GLintptr offset, GLsizeiptr length, GLbitfield access,
+                 const char *func)
+{
    if (!bufObj->Size) {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s(buffer size = 0)", func);
       return NULL;
    }
 
-
    assert(ctx->Driver.MapBufferRange);
-   map = ctx->Driver.MapBufferRange(ctx, offset, length, access, bufObj,
-                                    MAP_USER);
+   void *map = ctx->Driver.MapBufferRange(ctx, offset, length, access, bufObj,
+                                          MAP_USER);
    if (!map) {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s(map failed)", func);
    }
@@ -2402,8 +2714,10 @@ _mesa_map_buffer_range(struct gl_context *ctx,
       assert(bufObj->Mappings[MAP_USER].AccessFlags == access);
    }
 
-   if (access & GL_MAP_WRITE_BIT)
+   if (access & GL_MAP_WRITE_BIT) {
       bufObj->Written = GL_TRUE;
+      bufObj->MinMaxCacheDirty = true;
+   }
 
 #ifdef VBO_DEBUG
    if (strstr(func, "Range") == NULL) { /* If not MapRange */
@@ -2434,6 +2748,19 @@ _mesa_map_buffer_range(struct gl_context *ctx,
 }
 
 void * GLAPIENTRY
+_mesa_MapBufferRange_no_error(GLenum target, GLintptr offset,
+                              GLsizeiptr length, GLbitfield access)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+   struct gl_buffer_object *bufObj = *bufObjPtr;
+
+   return map_buffer_range(ctx, bufObj, offset, length, access,
+                           "glMapBufferRange");
+}
+
+void * GLAPIENTRY
 _mesa_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length,
                      GLbitfield access)
 {
@@ -2450,8 +2777,23 @@ _mesa_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length,
    if (!bufObj)
       return NULL;
 
-   return _mesa_map_buffer_range(ctx, bufObj, offset, length, access,
-                                 "glMapBufferRange");
+   if (!validate_map_buffer_range(ctx, bufObj, offset, length, access,
+                                  "glMapBufferRange"))
+      return NULL;
+
+   return map_buffer_range(ctx, bufObj, offset, length, access,
+                           "glMapBufferRange");
+}
+
+void * GLAPIENTRY
+_mesa_MapNamedBufferRange_no_error(GLuint buffer, GLintptr offset,
+                                   GLsizeiptr length, GLbitfield access)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+
+   return map_buffer_range(ctx, bufObj, offset, length, access,
+                           "glMapNamedBufferRange");
 }
 
 void * GLAPIENTRY
@@ -2472,13 +2814,17 @@ _mesa_MapNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr length,
    if (!bufObj)
       return NULL;
 
-   return _mesa_map_buffer_range(ctx, bufObj, offset, length, access,
-                                 "glMapNamedBufferRange");
+   if (!validate_map_buffer_range(ctx, bufObj, offset, length, access,
+                                  "glMapNamedBufferRange"))
+      return NULL;
+
+   return map_buffer_range(ctx, bufObj, offset, length, access,
+                           "glMapNamedBufferRange");
 }
 
 /**
  * Converts GLenum access from MapBuffer and MapNamedBuffer into
- * flags for input to _mesa_map_buffer_range.
+ * flags for input to map_buffer_range.
  *
  * \return true if the type of requested access is permissible.
  */
@@ -2502,6 +2848,21 @@ get_map_buffer_access_flags(struct gl_context *ctx, GLenum access,
 }
 
 void * GLAPIENTRY
+_mesa_MapBuffer_no_error(GLenum target, GLenum access)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   GLbitfield accessFlags;
+   get_map_buffer_access_flags(ctx, access, &accessFlags);
+
+   struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+   struct gl_buffer_object *bufObj = *bufObjPtr;
+
+   return map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                           "glMapBuffer");
+}
+
+void * GLAPIENTRY
 _mesa_MapBuffer(GLenum target, GLenum access)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -2517,8 +2878,26 @@ _mesa_MapBuffer(GLenum target, GLenum access)
    if (!bufObj)
       return NULL;
 
-   return _mesa_map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
-                                 "glMapBuffer");
+   if (!validate_map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                                  "glMapBuffer"))
+      return NULL;
+
+   return map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                           "glMapBuffer");
+}
+
+void * GLAPIENTRY
+_mesa_MapNamedBuffer_no_error(GLuint buffer, GLenum access)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   GLbitfield accessFlags;
+   get_map_buffer_access_flags(ctx, access, &accessFlags);
+
+   struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+
+   return map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                           "glMapNamedBuffer");
 }
 
 void * GLAPIENTRY
@@ -2537,16 +2916,20 @@ _mesa_MapNamedBuffer(GLuint buffer, GLenum access)
    if (!bufObj)
       return NULL;
 
-   return _mesa_map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
-                                 "glMapNamedBuffer");
+   if (!validate_map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                                  "glMapNamedBuffer"))
+      return NULL;
+
+   return map_buffer_range(ctx, bufObj, 0, bufObj->Size, accessFlags,
+                           "glMapNamedBuffer");
 }
 
 
-void
-_mesa_flush_mapped_buffer_range(struct gl_context *ctx,
-                                struct gl_buffer_object *bufObj,
-                                GLintptr offset, GLsizeiptr length,
-                                const char *func)
+static void
+flush_mapped_buffer_range(struct gl_context *ctx,
+                          struct gl_buffer_object *bufObj,
+                          GLintptr offset, GLsizeiptr length,
+                          const char *func)
 {
    if (!ctx->Extensions.ARB_map_buffer_range) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
@@ -2596,6 +2979,19 @@ _mesa_flush_mapped_buffer_range(struct gl_context *ctx,
 }
 
 void GLAPIENTRY
+_mesa_FlushMappedBufferRange_no_error(GLenum target, GLintptr offset,
+                                      GLsizeiptr length)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object **bufObjPtr = get_buffer_target(ctx, target);
+   struct gl_buffer_object *bufObj = *bufObjPtr;
+
+   if (ctx->Driver.FlushMappedBufferRange)
+      ctx->Driver.FlushMappedBufferRange(ctx, offset, length, bufObj,
+                                         MAP_USER);
+}
+
+void GLAPIENTRY
 _mesa_FlushMappedBufferRange(GLenum target, GLintptr offset,
                              GLsizeiptr length)
 {
@@ -2607,8 +3003,20 @@ _mesa_FlushMappedBufferRange(GLenum target, GLintptr offset,
    if (!bufObj)
       return;
 
-   _mesa_flush_mapped_buffer_range(ctx, bufObj, offset, length,
-                                   "glFlushMappedBufferRange");
+   flush_mapped_buffer_range(ctx, bufObj, offset, length,
+                             "glFlushMappedBufferRange");
+}
+
+void GLAPIENTRY
+_mesa_FlushMappedNamedBufferRange_no_error(GLuint buffer, GLintptr offset,
+                                           GLsizeiptr length)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+
+   if (ctx->Driver.FlushMappedBufferRange)
+      ctx->Driver.FlushMappedBufferRange(ctx, offset, length, bufObj,
+                                         MAP_USER);
 }
 
 void GLAPIENTRY
@@ -2623,8 +3031,8 @@ _mesa_FlushMappedNamedBufferRange(GLuint buffer, GLintptr offset,
    if (!bufObj)
       return;
 
-   _mesa_flush_mapped_buffer_range(ctx, bufObj, offset, length,
-                                   "glFlushMappedNamedBufferRange");
+   flush_mapped_buffer_range(ctx, bufObj, offset, length,
+                             "glFlushMappedNamedBufferRange");
 }
 
 
@@ -2744,6 +3152,20 @@ bind_shader_storage_buffer(struct gl_context *ctx,
    set_ssbo_binding(ctx, binding, bufObj, offset, size, autoSize);
 }
 
+static void
+bind_buffer_range_uniform_buffer(struct gl_context *ctx, GLuint index,
+                                 struct gl_buffer_object *bufObj,
+                                 GLintptr offset, GLsizeiptr size)
+{
+   if (bufObj == ctx->Shared->NullBufferObj) {
+      offset = -1;
+      size = -1;
+   }
+
+   _mesa_reference_buffer_object(ctx, &ctx->UniformBuffer, bufObj);
+   bind_uniform_buffer(ctx, index, bufObj, offset, size, GL_FALSE);
+}
+
 /**
  * Bind a region of a buffer object to a uniform block binding point.
  * \param index  the uniform buffer binding point index
@@ -2752,11 +3174,9 @@ bind_shader_storage_buffer(struct gl_context *ctx,
  * \param size  size of the buffer object region
  */
 static void
-bind_buffer_range_uniform_buffer(struct gl_context *ctx,
-				 GLuint index,
-				 struct gl_buffer_object *bufObj,
-				 GLintptr offset,
-				 GLsizeiptr size)
+bind_buffer_range_uniform_buffer_err(struct gl_context *ctx, GLuint index,
+                                     struct gl_buffer_object *bufObj,
+                                     GLintptr offset, GLsizeiptr size)
 {
    if (index >= ctx->Const.MaxUniformBufferBindings) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glBindBufferRange(index=%d)", index);
@@ -2770,13 +3190,23 @@ bind_buffer_range_uniform_buffer(struct gl_context *ctx,
       return;
    }
 
+   bind_buffer_range_uniform_buffer(ctx, index, bufObj, offset, size);
+}
+
+static void
+bind_buffer_range_shader_storage_buffer(struct gl_context *ctx,
+                                        GLuint index,
+                                        struct gl_buffer_object *bufObj,
+                                        GLintptr offset,
+                                        GLsizeiptr size)
+{
    if (bufObj == ctx->Shared->NullBufferObj) {
       offset = -1;
       size = -1;
    }
 
-   _mesa_reference_buffer_object(ctx, &ctx->UniformBuffer, bufObj);
-   bind_uniform_buffer(ctx, index, bufObj, offset, size, GL_FALSE);
+   _mesa_reference_buffer_object(ctx, &ctx->ShaderStorageBuffer, bufObj);
+   bind_shader_storage_buffer(ctx, index, bufObj, offset, size, GL_FALSE);
 }
 
 /**
@@ -2787,11 +3217,10 @@ bind_buffer_range_uniform_buffer(struct gl_context *ctx,
  * \param size  size of the buffer object region
  */
 static void
-bind_buffer_range_shader_storage_buffer(struct gl_context *ctx,
-                                        GLuint index,
-                                        struct gl_buffer_object *bufObj,
-                                        GLintptr offset,
-                                        GLsizeiptr size)
+bind_buffer_range_shader_storage_buffer_err(struct gl_context *ctx,
+                                            GLuint index,
+                                            struct gl_buffer_object *bufObj,
+                                            GLintptr offset, GLsizeiptr size)
 {
    if (index >= ctx->Const.MaxShaderStorageBufferBindings) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glBindBufferRange(index=%d)", index);
@@ -2805,13 +3234,7 @@ bind_buffer_range_shader_storage_buffer(struct gl_context *ctx,
       return;
    }
 
-   if (bufObj == ctx->Shared->NullBufferObj) {
-      offset = -1;
-      size = -1;
-   }
-
-   _mesa_reference_buffer_object(ctx, &ctx->ShaderStorageBuffer, bufObj);
-   bind_shader_storage_buffer(ctx, index, bufObj, offset, size, GL_FALSE);
+   bind_buffer_range_shader_storage_buffer(ctx, index, bufObj, offset, size);
 }
 
 /**
@@ -2874,8 +3297,8 @@ set_atomic_buffer_binding(struct gl_context *ctx,
    _mesa_reference_buffer_object(ctx, &binding->BufferObject, bufObj);
 
    if (bufObj == ctx->Shared->NullBufferObj) {
-      binding->Offset = -1;
-      binding->Size = -1;
+      binding->Offset = 0;
+      binding->Size = 0;
    } else {
       binding->Offset = offset;
       binding->Size = size;
@@ -2883,39 +3306,15 @@ set_atomic_buffer_binding(struct gl_context *ctx,
    }
 }
 
-/**
- * Binds a buffer object to an atomic buffer binding point.
- *
- * Unlike set_atomic_buffer_binding(), this function also validates the
- * index and offset, flushes vertices, and updates NewDriverState.
- * It also checks if the binding has actually changing before
- * updating it.
- */
 static void
-bind_atomic_buffer(struct gl_context *ctx,
-                   unsigned index,
-                   struct gl_buffer_object *bufObj,
-                   GLintptr offset,
-                   GLsizeiptr size,
-                   const char *name)
+bind_atomic_buffer(struct gl_context *ctx, unsigned index,
+                   struct gl_buffer_object *bufObj, GLintptr offset,
+                   GLsizeiptr size)
 {
-   struct gl_atomic_buffer_binding *binding;
-
-   if (index >= ctx->Const.MaxAtomicBufferBindings) {
-      _mesa_error(ctx, GL_INVALID_VALUE, "%s(index=%d)", name, index);
-      return;
-   }
-
-   if (offset & (ATOMIC_COUNTER_SIZE - 1)) {
-      _mesa_error(ctx, GL_INVALID_VALUE,
-                  "%s(offset misaligned %d/%d)", name, (int) offset,
-                  ATOMIC_COUNTER_SIZE);
-      return;
-   }
-
    _mesa_reference_buffer_object(ctx, &ctx->AtomicBuffer, bufObj);
 
-   binding = &ctx->AtomicBufferBindings[index];
+   struct gl_atomic_buffer_binding *binding =
+      &ctx->AtomicBufferBindings[index];
    if (binding->BufferObject == bufObj &&
        binding->Offset == offset &&
        binding->Size == size) {
@@ -2928,6 +3327,34 @@ bind_atomic_buffer(struct gl_context *ctx,
    set_atomic_buffer_binding(ctx, binding, bufObj, offset, size);
 }
 
+/**
+ * Binds a buffer object to an atomic buffer binding point.
+ *
+ * Unlike set_atomic_buffer_binding(), this function also validates the
+ * index and offset, flushes vertices, and updates NewDriverState.
+ * It also checks if the binding has actually changing before
+ * updating it.
+ */
+static void
+bind_atomic_buffer_err(struct gl_context *ctx, unsigned index,
+                       struct gl_buffer_object *bufObj, GLintptr offset,
+                       GLsizeiptr size, const char *name)
+{
+   if (index >= ctx->Const.MaxAtomicBufferBindings) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(index=%d)", name, index);
+      return;
+   }
+
+   if (offset & (ATOMIC_COUNTER_SIZE - 1)) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "%s(offset misaligned %d/%d)", name, (int) offset,
+                  ATOMIC_COUNTER_SIZE);
+      return;
+   }
+
+   bind_atomic_buffer(ctx, index, bufObj, offset, size);
+}
+
 static inline bool
 bind_buffers_check_offset_and_size(struct gl_context *ctx,
                                    GLuint index,
@@ -2935,11 +3362,11 @@ bind_buffers_check_offset_and_size(struct gl_context *ctx,
                                    const GLsizeiptr *sizes)
 {
    if (offsets[index] < 0) {
-     /* The ARB_multi_bind spec says:
-      *
-      *    "An INVALID_VALUE error is generated by BindBuffersRange if any
-      *     value in <offsets> is less than zero (per binding)."
-      */
+      /* The ARB_multi_bind spec says:
+       *
+       *    "An INVALID_VALUE error is generated by BindBuffersRange if any
+       *     value in <offsets> is less than zero (per binding)."
+       */
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "glBindBuffersRange(offsets[%u]=%" PRId64 " < 0)",
                   index, (int64_t) offsets[index]);
@@ -2947,11 +3374,11 @@ bind_buffers_check_offset_and_size(struct gl_context *ctx,
    }
 
    if (sizes[index] <= 0) {
-     /* The ARB_multi_bind spec says:
-      *
-      *     "An INVALID_VALUE error is generated by BindBuffersRange if any
-      *      value in <sizes> is less than or equal to zero (per binding)."
-      */
+      /* The ARB_multi_bind spec says:
+       *
+       *     "An INVALID_VALUE error is generated by BindBuffersRange if any
+       *      value in <sizes> is less than or equal to zero (per binding)."
+       */
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "glBindBuffersRange(sizes[%u]=%" PRId64 " <= 0)",
                   index, (int64_t) sizes[index]);
@@ -3027,9 +3454,8 @@ static void
 unbind_uniform_buffers(struct gl_context *ctx, GLuint first, GLsizei count)
 {
    struct gl_buffer_object *bufObj = ctx->Shared->NullBufferObj;
-   GLint i;
 
-   for (i = 0; i < count; i++)
+   for (int i = 0; i < count; i++)
       set_ubo_binding(ctx, &ctx->UniformBufferBindings[first + i],
                       bufObj, -1, -1, GL_TRUE);
 }
@@ -3043,155 +3469,20 @@ unbind_shader_storage_buffers(struct gl_context *ctx, GLuint first,
                               GLsizei count)
 {
    struct gl_buffer_object *bufObj = ctx->Shared->NullBufferObj;
-   GLint i;
 
-   for (i = 0; i < count; i++)
+   for (int i = 0; i < count; i++)
       set_ssbo_binding(ctx, &ctx->ShaderStorageBufferBindings[first + i],
                        bufObj, -1, -1, GL_TRUE);
 }
 
 static void
-bind_uniform_buffers_base(struct gl_context *ctx, GLuint first, GLsizei count,
-                          const GLuint *buffers)
+bind_uniform_buffers(struct gl_context *ctx, GLuint first, GLsizei count,
+                     const GLuint *buffers,
+                     bool range,
+                     const GLintptr *offsets, const GLsizeiptr *sizes,
+                     const char *caller)
 {
-   GLint i;
-
-   if (!error_check_bind_uniform_buffers(ctx, first, count, "glBindBuffersBase"))
-      return;
-
-   /* Assume that at least one binding will be changed */
-   FLUSH_VERTICES(ctx, 0);
-   ctx->NewDriverState |= ctx->DriverFlags.NewUniformBuffer;
-
-   if (!buffers) {
-      /* The ARB_multi_bind spec says:
-       *
-       *   "If <buffers> is NULL, all bindings from <first> through
-       *    <first>+<count>-1 are reset to their unbound (zero) state."
-       */
-      unbind_uniform_buffers(ctx, first, count);
-      return;
-   }
-
-   /* Note that the error semantics for multi-bind commands differ from
-    * those of other GL commands.
-    *
-    * The Issues section in the ARB_multi_bind spec says:
-    *
-    *    "(11) Typically, OpenGL specifies that if an error is generated by a
-    *          command, that command has no effect.  This is somewhat
-    *          unfortunate for multi-bind commands, because it would require a
-    *          first pass to scan the entire list of bound objects for errors
-    *          and then a second pass to actually perform the bindings.
-    *          Should we have different error semantics?
-    *
-    *       RESOLVED:  Yes.  In this specification, when the parameters for
-    *       one of the <count> binding points are invalid, that binding point
-    *       is not updated and an error will be generated.  However, other
-    *       binding points in the same command will be updated if their
-    *       parameters are valid and no other error occurs."
-    */
-
-   _mesa_begin_bufferobj_lookups(ctx);
-
-   for (i = 0; i < count; i++) {
-      struct gl_uniform_buffer_binding *binding =
-          &ctx->UniformBufferBindings[first + i];
-      struct gl_buffer_object *bufObj;
-
-      if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
-         bufObj = binding->BufferObject;
-      else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersBase");
-
-      if (bufObj) {
-         if (bufObj == ctx->Shared->NullBufferObj)
-            set_ubo_binding(ctx, binding, bufObj, -1, -1, GL_TRUE);
-         else
-            set_ubo_binding(ctx, binding, bufObj, 0, 0, GL_TRUE);
-      }
-   }
-
-   _mesa_end_bufferobj_lookups(ctx);
-}
-
-static void
-bind_shader_storage_buffers_base(struct gl_context *ctx, GLuint first,
-                                 GLsizei count, const GLuint *buffers)
-{
-   GLint i;
-
-   if (!error_check_bind_shader_storage_buffers(ctx, first, count,
-                                                "glBindBuffersBase"))
-      return;
-
-   /* Assume that at least one binding will be changed */
-   FLUSH_VERTICES(ctx, 0);
-   ctx->NewDriverState |= ctx->DriverFlags.NewShaderStorageBuffer;
-
-   if (!buffers) {
-      /* The ARB_multi_bind spec says:
-       *
-       *   "If <buffers> is NULL, all bindings from <first> through
-       *    <first>+<count>-1 are reset to their unbound (zero) state."
-       */
-      unbind_shader_storage_buffers(ctx, first, count);
-      return;
-   }
-
-   /* Note that the error semantics for multi-bind commands differ from
-    * those of other GL commands.
-    *
-    * The Issues section in the ARB_multi_bind spec says:
-    *
-    *    "(11) Typically, OpenGL specifies that if an error is generated by a
-    *          command, that command has no effect.  This is somewhat
-    *          unfortunate for multi-bind commands, because it would require a
-    *          first pass to scan the entire list of bound objects for errors
-    *          and then a second pass to actually perform the bindings.
-    *          Should we have different error semantics?
-    *
-    *       RESOLVED:  Yes.  In this specification, when the parameters for
-    *       one of the <count> binding points are invalid, that binding point
-    *       is not updated and an error will be generated.  However, other
-    *       binding points in the same command will be updated if their
-    *       parameters are valid and no other error occurs."
-    */
-
-   _mesa_begin_bufferobj_lookups(ctx);
-
-   for (i = 0; i < count; i++) {
-      struct gl_shader_storage_buffer_binding *binding =
-          &ctx->ShaderStorageBufferBindings[first + i];
-      struct gl_buffer_object *bufObj;
-
-      if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
-         bufObj = binding->BufferObject;
-      else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersBase");
-
-      if (bufObj) {
-         if (bufObj == ctx->Shared->NullBufferObj)
-            set_ssbo_binding(ctx, binding, bufObj, -1, -1, GL_TRUE);
-         else
-            set_ssbo_binding(ctx, binding, bufObj, 0, 0, GL_TRUE);
-      }
-   }
-
-   _mesa_end_bufferobj_lookups(ctx);
-}
-
-static void
-bind_uniform_buffers_range(struct gl_context *ctx, GLuint first, GLsizei count,
-                           const GLuint *buffers,
-                           const GLintptr *offsets, const GLsizeiptr *sizes)
-{
-   GLint i;
-
-   if (!error_check_bind_uniform_buffers(ctx, first, count,
-                                         "glBindBuffersRange"))
+   if (!error_check_bind_uniform_buffers(ctx, first, count, caller))
       return;
 
    /* Assume that at least one binding will be changed */
@@ -3230,74 +3521,78 @@ bind_uniform_buffers_range(struct gl_context *ctx, GLuint first, GLsizei count,
     *       parameters are valid and no other error occurs."
     */
 
-   _mesa_begin_bufferobj_lookups(ctx);
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
 
-   for (i = 0; i < count; i++) {
+   for (int i = 0; i < count; i++) {
       struct gl_uniform_buffer_binding *binding =
          &ctx->UniformBufferBindings[first + i];
       struct gl_buffer_object *bufObj;
+      GLintptr offset = 0;
+      GLsizeiptr size = 0;
 
-      if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
-         continue;
+      if (range) {
+         if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
+            continue;
 
-      /* The ARB_multi_bind spec says:
-       *
-       *     "An INVALID_VALUE error is generated by BindBuffersRange if any
-       *      pair of values in <offsets> and <sizes> does not respectively
-       *      satisfy the constraints described for those parameters for the
-       *      specified target, as described in section 6.7.1 (per binding)."
-       *
-       * Section 6.7.1 refers to table 6.5, which says:
-       *
-       *     "┌───────────────────────────────────────────────────────────────┐
-       *      │ Uniform buffer array bindings (see sec. 7.6)                  │
-       *      ├─────────────────────┬─────────────────────────────────────────┤
-       *      │  ...                │  ...                                    │
-       *      │  offset restriction │  multiple of value of UNIFORM_BUFFER_-  │
-       *      │                     │  OFFSET_ALIGNMENT                       │
-       *      │  ...                │  ...                                    │
-       *      │  size restriction   │  none                                   │
-       *      └─────────────────────┴─────────────────────────────────────────┘"
-       */
-      if (offsets[i] & (ctx->Const.UniformBufferOffsetAlignment - 1)) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glBindBuffersRange(offsets[%u]=%" PRId64
-                     " is misaligned; it must be a multiple of the value of "
-                     "GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT=%u when "
-                     "target=GL_UNIFORM_BUFFER)",
-                     i, (int64_t) offsets[i],
-                     ctx->Const.UniformBufferOffsetAlignment);
-         continue;
+         /* The ARB_multi_bind spec says:
+          *
+          *     "An INVALID_VALUE error is generated by BindBuffersRange if any
+          *      pair of values in <offsets> and <sizes> does not respectively
+          *      satisfy the constraints described for those parameters for the
+          *      specified target, as described in section 6.7.1 (per binding)."
+          *
+          * Section 6.7.1 refers to table 6.5, which says:
+          *
+          *     "┌───────────────────────────────────────────────────────────────┐
+          *      │ Uniform buffer array bindings (see sec. 7.6)                  │
+          *      ├─────────────────────┬─────────────────────────────────────────┤
+          *      │  ...                │  ...                                    │
+          *      │  offset restriction │  multiple of value of UNIFORM_BUFFER_-  │
+          *      │                     │  OFFSET_ALIGNMENT                       │
+          *      │  ...                │  ...                                    │
+          *      │  size restriction   │  none                                   │
+          *      └─────────────────────┴─────────────────────────────────────────┘"
+          */
+         if (offsets[i] & (ctx->Const.UniformBufferOffsetAlignment - 1)) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "glBindBuffersRange(offsets[%u]=%" PRId64
+                        " is misaligned; it must be a multiple of the value of "
+                        "GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT=%u when "
+                        "target=GL_UNIFORM_BUFFER)",
+                        i, (int64_t) offsets[i],
+                        ctx->Const.UniformBufferOffsetAlignment);
+            continue;
+         }
+
+         offset = offsets[i];
+         size = sizes[i];
       }
 
       if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
          bufObj = binding->BufferObject;
       else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersRange");
+         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i, caller);
 
       if (bufObj) {
          if (bufObj == ctx->Shared->NullBufferObj)
-            set_ubo_binding(ctx, binding, bufObj, -1, -1, GL_FALSE);
+            set_ubo_binding(ctx, binding, bufObj, -1, -1, !range);
          else
-            set_ubo_binding(ctx, binding, bufObj,
-                            offsets[i], sizes[i], GL_FALSE);
+            set_ubo_binding(ctx, binding, bufObj, offset, size, !range);
       }
    }
 
-   _mesa_end_bufferobj_lookups(ctx);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
 static void
-bind_shader_storage_buffers_range(struct gl_context *ctx, GLuint first,
-                                  GLsizei count, const GLuint *buffers,
-                                  const GLintptr *offsets,
-                                  const GLsizeiptr *sizes)
+bind_shader_storage_buffers(struct gl_context *ctx, GLuint first,
+                            GLsizei count, const GLuint *buffers,
+                            bool range,
+                            const GLintptr *offsets,
+                            const GLsizeiptr *sizes,
+                            const char *caller)
 {
-   GLint i;
-
-   if (!error_check_bind_shader_storage_buffers(ctx, first, count,
-                                                "glBindBuffersRange"))
+   if (!error_check_bind_shader_storage_buffers(ctx, first, count, caller))
       return;
 
    /* Assume that at least one binding will be changed */
@@ -3336,62 +3631,67 @@ bind_shader_storage_buffers_range(struct gl_context *ctx, GLuint first,
     *       parameters are valid and no other error occurs."
     */
 
-   _mesa_begin_bufferobj_lookups(ctx);
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
 
-   for (i = 0; i < count; i++) {
+   for (int i = 0; i < count; i++) {
       struct gl_shader_storage_buffer_binding *binding =
          &ctx->ShaderStorageBufferBindings[first + i];
       struct gl_buffer_object *bufObj;
+      GLintptr offset = 0;
+      GLsizeiptr size = 0;
 
-      if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
-         continue;
+      if (range) {
+         if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
+            continue;
 
-      /* The ARB_multi_bind spec says:
-       *
-       *     "An INVALID_VALUE error is generated by BindBuffersRange if any
-       *      pair of values in <offsets> and <sizes> does not respectively
-       *      satisfy the constraints described for those parameters for the
-       *      specified target, as described in section 6.7.1 (per binding)."
-       *
-       * Section 6.7.1 refers to table 6.5, which says:
-       *
-       *     "┌───────────────────────────────────────────────────────────────┐
-       *      │ Shader storage buffer array bindings (see sec. 7.8)           │
-       *      ├─────────────────────┬─────────────────────────────────────────┤
-       *      │  ...                │  ...                                    │
-       *      │  offset restriction │  multiple of value of SHADER_STORAGE_-  │
-       *      │                     │  BUFFER_OFFSET_ALIGNMENT                │
-       *      │  ...                │  ...                                    │
-       *      │  size restriction   │  none                                   │
-       *      └─────────────────────┴─────────────────────────────────────────┘"
-       */
-      if (offsets[i] & (ctx->Const.ShaderStorageBufferOffsetAlignment - 1)) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glBindBuffersRange(offsets[%u]=%" PRId64
-                     " is misaligned; it must be a multiple of the value of "
-                     "GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT=%u when "
-                     "target=GL_SHADER_STORAGE_BUFFER)",
-                     i, (int64_t) offsets[i],
-                     ctx->Const.ShaderStorageBufferOffsetAlignment);
-         continue;
+         /* The ARB_multi_bind spec says:
+         *
+         *     "An INVALID_VALUE error is generated by BindBuffersRange if any
+         *      pair of values in <offsets> and <sizes> does not respectively
+         *      satisfy the constraints described for those parameters for the
+         *      specified target, as described in section 6.7.1 (per binding)."
+         *
+         * Section 6.7.1 refers to table 6.5, which says:
+         *
+         *     "┌───────────────────────────────────────────────────────────────┐
+         *      │ Shader storage buffer array bindings (see sec. 7.8)           │
+         *      ├─────────────────────┬─────────────────────────────────────────┤
+         *      │  ...                │  ...                                    │
+         *      │  offset restriction │  multiple of value of SHADER_STORAGE_-  │
+         *      │                     │  BUFFER_OFFSET_ALIGNMENT                │
+         *      │  ...                │  ...                                    │
+         *      │  size restriction   │  none                                   │
+         *      └─────────────────────┴─────────────────────────────────────────┘"
+         */
+         if (offsets[i] & (ctx->Const.ShaderStorageBufferOffsetAlignment - 1)) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "glBindBuffersRange(offsets[%u]=%" PRId64
+                        " is misaligned; it must be a multiple of the value of "
+                        "GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT=%u when "
+                        "target=GL_SHADER_STORAGE_BUFFER)",
+                        i, (int64_t) offsets[i],
+                        ctx->Const.ShaderStorageBufferOffsetAlignment);
+            continue;
+         }
+
+         offset = offsets[i];
+         size = sizes[i];
       }
 
       if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
          bufObj = binding->BufferObject;
       else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersRange");
+         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i, caller);
 
       if (bufObj) {
          if (bufObj == ctx->Shared->NullBufferObj)
-            set_ssbo_binding(ctx, binding, bufObj, -1, -1, GL_FALSE);
+            set_ssbo_binding(ctx, binding, bufObj, -1, -1, !range);
          else
-            set_ssbo_binding(ctx, binding, bufObj,
-                             offsets[i], sizes[i], GL_FALSE);
+            set_ssbo_binding(ctx, binding, bufObj, offset, size, !range);
       }
    }
 
-   _mesa_end_bufferobj_lookups(ctx);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
 static bool
@@ -3451,92 +3751,25 @@ unbind_xfb_buffers(struct gl_context *ctx,
                    GLuint first, GLsizei count)
 {
    struct gl_buffer_object * const bufObj = ctx->Shared->NullBufferObj;
-   GLint i;
 
-   for (i = 0; i < count; i++)
+   for (int i = 0; i < count; i++)
       _mesa_set_transform_feedback_binding(ctx, tfObj, first + i,
                                            bufObj, 0, 0);
 }
 
 static void
-bind_xfb_buffers_base(struct gl_context *ctx,
-                      GLuint first, GLsizei count,
-                      const GLuint *buffers)
-{
-   struct gl_transform_feedback_object *tfObj =
-      ctx->TransformFeedback.CurrentObject;
-   GLint i;
-
-   if (!error_check_bind_xfb_buffers(ctx, tfObj, first, count,
-                                     "glBindBuffersBase"))
-      return;
-
-   /* Assume that at least one binding will be changed */
-   FLUSH_VERTICES(ctx, 0);
-   ctx->NewDriverState |= ctx->DriverFlags.NewTransformFeedback;
-
-   if (!buffers) {
-      /* The ARB_multi_bind spec says:
-       *
-       *   "If <buffers> is NULL, all bindings from <first> through
-       *    <first>+<count>-1 are reset to their unbound (zero) state."
-       */
-      unbind_xfb_buffers(ctx, tfObj, first, count);
-      return;
-   }
-
-   /* Note that the error semantics for multi-bind commands differ from
-    * those of other GL commands.
-    *
-    * The Issues section in the ARB_multi_bind spec says:
-    *
-    *    "(11) Typically, OpenGL specifies that if an error is generated by a
-    *          command, that command has no effect.  This is somewhat
-    *          unfortunate for multi-bind commands, because it would require a
-    *          first pass to scan the entire list of bound objects for errors
-    *          and then a second pass to actually perform the bindings.
-    *          Should we have different error semantics?
-    *
-    *       RESOLVED:  Yes.  In this specification, when the parameters for
-    *       one of the <count> binding points are invalid, that binding point
-    *       is not updated and an error will be generated.  However, other
-    *       binding points in the same command will be updated if their
-    *       parameters are valid and no other error occurs."
-    */
-
-   _mesa_begin_bufferobj_lookups(ctx);
-
-   for (i = 0; i < count; i++) {
-      struct gl_buffer_object * const boundBufObj = tfObj->Buffers[first + i];
-      struct gl_buffer_object *bufObj;
-
-      if (boundBufObj && boundBufObj->Name == buffers[i])
-         bufObj = boundBufObj;
-      else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersBase");
-
-      if (bufObj)
-         _mesa_set_transform_feedback_binding(ctx, tfObj, first + i,
-                                              bufObj, 0, 0);
-   }
-
-   _mesa_end_bufferobj_lookups(ctx);
-}
-
-static void
-bind_xfb_buffers_range(struct gl_context *ctx,
-                       GLuint first, GLsizei count,
-                       const GLuint *buffers,
-                       const GLintptr *offsets,
-                       const GLsizeiptr *sizes)
+bind_xfb_buffers(struct gl_context *ctx,
+                 GLuint first, GLsizei count,
+                 const GLuint *buffers,
+                 bool range,
+                 const GLintptr *offsets,
+                 const GLsizeiptr *sizes,
+                 const char *caller)
 {
    struct gl_transform_feedback_object *tfObj =
        ctx->TransformFeedback.CurrentObject;
-   GLint i;
 
-   if (!error_check_bind_xfb_buffers(ctx, tfObj, first, count,
-                                     "glBindBuffersRange"))
+   if (!error_check_bind_xfb_buffers(ctx, tfObj, first, count, caller))
       return;
 
    /* Assume that at least one binding will be changed */
@@ -3575,64 +3808,73 @@ bind_xfb_buffers_range(struct gl_context *ctx,
     *       parameters are valid and no other error occurs."
     */
 
-   _mesa_begin_bufferobj_lookups(ctx);
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
 
-   for (i = 0; i < count; i++) {
+   for (int i = 0; i < count; i++) {
       const GLuint index = first + i;
       struct gl_buffer_object * const boundBufObj = tfObj->Buffers[index];
       struct gl_buffer_object *bufObj;
+      GLintptr offset = 0;
+      GLsizeiptr size = 0;
 
-      if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
-         continue;
+      if (range) {
+         offset = offsets[i];
+         size = sizes[i];
 
-      /* The ARB_multi_bind spec says:
-       *
-       *     "An INVALID_VALUE error is generated by BindBuffersRange if any
-       *      pair of values in <offsets> and <sizes> does not respectively
-       *      satisfy the constraints described for those parameters for the
-       *      specified target, as described in section 6.7.1 (per binding)."
-       *
-       * Section 6.7.1 refers to table 6.5, which says:
-       *
-       *     "┌───────────────────────────────────────────────────────────────┐
-       *      │ Transform feedback array bindings (see sec. 13.2.2)           │
-       *      ├───────────────────────┬───────────────────────────────────────┤
-       *      │    ...                │    ...                                │
-       *      │    offset restriction │    multiple of 4                      │
-       *      │    ...                │    ...                                │
-       *      │    size restriction   │    multiple of 4                      │
-       *      └───────────────────────┴───────────────────────────────────────┘"
-       */
-      if (offsets[i] & 0x3) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glBindBuffersRange(offsets[%u]=%" PRId64
-                     " is misaligned; it must be a multiple of 4 when "
-                     "target=GL_TRANSFORM_FEEDBACK_BUFFER)",
-                     i, (int64_t) offsets[i]);
-         continue;
-      }
+         if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
+            continue;
 
-      if (sizes[i] & 0x3) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glBindBuffersRange(sizes[%u]=%" PRId64
-                     " is misaligned; it must be a multiple of 4 when "
-                     "target=GL_TRANSFORM_FEEDBACK_BUFFER)",
-                     i, (int64_t) sizes[i]);
-         continue;
+         /* The ARB_multi_bind spec says:
+          *
+          *     "An INVALID_VALUE error is generated by BindBuffersRange if any
+          *      pair of values in <offsets> and <sizes> does not respectively
+          *      satisfy the constraints described for those parameters for the
+          *      specified target, as described in section 6.7.1 (per binding)."
+          *
+          * Section 6.7.1 refers to table 6.5, which says:
+          *
+          *     "┌───────────────────────────────────────────────────────────────┐
+          *      │ Transform feedback array bindings (see sec. 13.2.2)           │
+          *      ├───────────────────────┬───────────────────────────────────────┤
+          *      │    ...                │    ...                                │
+          *      │    offset restriction │    multiple of 4                      │
+          *      │    ...                │    ...                                │
+          *      │    size restriction   │    multiple of 4                      │
+          *      └───────────────────────┴───────────────────────────────────────┘"
+          */
+         if (offsets[i] & 0x3) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "glBindBuffersRange(offsets[%u]=%" PRId64
+                        " is misaligned; it must be a multiple of 4 when "
+                        "target=GL_TRANSFORM_FEEDBACK_BUFFER)",
+                        i, (int64_t) offsets[i]);
+            continue;
+         }
+
+         if (sizes[i] & 0x3) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "glBindBuffersRange(sizes[%u]=%" PRId64
+                        " is misaligned; it must be a multiple of 4 when "
+                        "target=GL_TRANSFORM_FEEDBACK_BUFFER)",
+                        i, (int64_t) sizes[i]);
+            continue;
+         }
+
+         offset = offsets[i];
+         size = sizes[i];
       }
 
       if (boundBufObj && boundBufObj->Name == buffers[i])
          bufObj = boundBufObj;
       else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersRange");
+         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i, caller);
 
       if (bufObj)
          _mesa_set_transform_feedback_binding(ctx, tfObj, index, bufObj,
-                                              offsets[i], sizes[i]);
+                                              offset, size);
    }
 
-   _mesa_end_bufferobj_lookups(ctx);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
 static bool
@@ -3671,90 +3913,23 @@ static void
 unbind_atomic_buffers(struct gl_context *ctx, GLuint first, GLsizei count)
 {
    struct gl_buffer_object * const bufObj = ctx->Shared->NullBufferObj;
-   GLint i;
 
-   for (i = 0; i < count; i++)
+   for (int i = 0; i < count; i++)
       set_atomic_buffer_binding(ctx, &ctx->AtomicBufferBindings[first + i],
                                 bufObj, -1, -1);
 }
 
 static void
-bind_atomic_buffers_base(struct gl_context *ctx,
-                         GLuint first,
-                         GLsizei count,
-                         const GLuint *buffers)
+bind_atomic_buffers(struct gl_context *ctx,
+                    GLuint first,
+                    GLsizei count,
+                    const GLuint *buffers,
+                    bool range,
+                    const GLintptr *offsets,
+                    const GLsizeiptr *sizes,
+                    const char *caller)
 {
-   GLint i;
-
-   if (!error_check_bind_atomic_buffers(ctx, first, count,
-                                        "glBindBuffersBase"))
-     return;
-
-   /* Assume that at least one binding will be changed */
-   FLUSH_VERTICES(ctx, 0);
-   ctx->NewDriverState |= ctx->DriverFlags.NewAtomicBuffer;
-
-   if (!buffers) {
-      /* The ARB_multi_bind spec says:
-       *
-       *   "If <buffers> is NULL, all bindings from <first> through
-       *    <first>+<count>-1 are reset to their unbound (zero) state."
-       */
-      unbind_atomic_buffers(ctx, first, count);
-      return;
-   }
-
-   /* Note that the error semantics for multi-bind commands differ from
-    * those of other GL commands.
-    *
-    * The Issues section in the ARB_multi_bind spec says:
-    *
-    *    "(11) Typically, OpenGL specifies that if an error is generated by a
-    *          command, that command has no effect.  This is somewhat
-    *          unfortunate for multi-bind commands, because it would require a
-    *          first pass to scan the entire list of bound objects for errors
-    *          and then a second pass to actually perform the bindings.
-    *          Should we have different error semantics?
-    *
-    *       RESOLVED:  Yes.  In this specification, when the parameters for
-    *       one of the <count> binding points are invalid, that binding point
-    *       is not updated and an error will be generated.  However, other
-    *       binding points in the same command will be updated if their
-    *       parameters are valid and no other error occurs."
-    */
-
-   _mesa_begin_bufferobj_lookups(ctx);
-
-   for (i = 0; i < count; i++) {
-      struct gl_atomic_buffer_binding *binding =
-         &ctx->AtomicBufferBindings[first + i];
-      struct gl_buffer_object *bufObj;
-
-      if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
-         bufObj = binding->BufferObject;
-      else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersBase");
-
-      if (bufObj)
-         set_atomic_buffer_binding(ctx, binding, bufObj, 0, 0);
-   }
-
-   _mesa_end_bufferobj_lookups(ctx);
-}
-
-static void
-bind_atomic_buffers_range(struct gl_context *ctx,
-                          GLuint first,
-                          GLsizei count,
-                          const GLuint *buffers,
-                          const GLintptr *offsets,
-                          const GLsizeiptr *sizes)
-{
-   GLint i;
-
-   if (!error_check_bind_atomic_buffers(ctx, first, count,
-                                        "glBindBuffersRange"))
+   if (!error_check_bind_atomic_buffers(ctx, first, count, caller))
      return;
 
    /* Assume that at least one binding will be changed */
@@ -3793,62 +3968,74 @@ bind_atomic_buffers_range(struct gl_context *ctx,
     *       parameters are valid and no other error occurs."
     */
 
-   _mesa_begin_bufferobj_lookups(ctx);
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
 
-   for (i = 0; i < count; i++) {
+   for (int i = 0; i < count; i++) {
       struct gl_atomic_buffer_binding *binding =
          &ctx->AtomicBufferBindings[first + i];
       struct gl_buffer_object *bufObj;
+      GLintptr offset = 0;
+      GLsizeiptr size = 0;
 
-      if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
-         continue;
+      if (range) {
+         if (!bind_buffers_check_offset_and_size(ctx, i, offsets, sizes))
+            continue;
 
-      /* The ARB_multi_bind spec says:
-       *
-       *     "An INVALID_VALUE error is generated by BindBuffersRange if any
-       *      pair of values in <offsets> and <sizes> does not respectively
-       *      satisfy the constraints described for those parameters for the
-       *      specified target, as described in section 6.7.1 (per binding)."
-       *
-       * Section 6.7.1 refers to table 6.5, which says:
-       *
-       *     "┌───────────────────────────────────────────────────────────────┐
-       *      │ Atomic counter array bindings (see sec. 7.7.2)                │
-       *      ├───────────────────────┬───────────────────────────────────────┤
-       *      │    ...                │    ...                                │
-       *      │    offset restriction │    multiple of 4                      │
-       *      │    ...                │    ...                                │
-       *      │    size restriction   │    none                               │
-       *      └───────────────────────┴───────────────────────────────────────┘"
-       */
-      if (offsets[i] & (ATOMIC_COUNTER_SIZE - 1)) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glBindBuffersRange(offsets[%u]=%" PRId64
-                     " is misaligned; it must be a multiple of %d when "
-                     "target=GL_ATOMIC_COUNTER_BUFFER)",
-                     i, (int64_t) offsets[i], ATOMIC_COUNTER_SIZE);
-         continue;
+         /* The ARB_multi_bind spec says:
+          *
+          *     "An INVALID_VALUE error is generated by BindBuffersRange if any
+          *      pair of values in <offsets> and <sizes> does not respectively
+          *      satisfy the constraints described for those parameters for the
+          *      specified target, as described in section 6.7.1 (per binding)."
+          *
+          * Section 6.7.1 refers to table 6.5, which says:
+          *
+          *     "┌───────────────────────────────────────────────────────────────┐
+          *      │ Atomic counter array bindings (see sec. 7.7.2)                │
+          *      ├───────────────────────┬───────────────────────────────────────┤
+          *      │    ...                │    ...                                │
+          *      │    offset restriction │    multiple of 4                      │
+          *      │    ...                │    ...                                │
+          *      │    size restriction   │    none                               │
+          *      └───────────────────────┴───────────────────────────────────────┘"
+          */
+         if (offsets[i] & (ATOMIC_COUNTER_SIZE - 1)) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "glBindBuffersRange(offsets[%u]=%" PRId64
+                        " is misaligned; it must be a multiple of %d when "
+                        "target=GL_ATOMIC_COUNTER_BUFFER)",
+                        i, (int64_t) offsets[i], ATOMIC_COUNTER_SIZE);
+            continue;
+         }
+
+         offset = offsets[i];
+         size = sizes[i];
       }
 
       if (binding->BufferObject && binding->BufferObject->Name == buffers[i])
          bufObj = binding->BufferObject;
       else
-         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i,
-                                                    "glBindBuffersRange");
+         bufObj = _mesa_multi_bind_lookup_bufferobj(ctx, buffers, i, caller);
 
       if (bufObj)
-         set_atomic_buffer_binding(ctx, binding, bufObj, offsets[i], sizes[i]);
+         set_atomic_buffer_binding(ctx, binding, bufObj, offset, size);
    }
 
-   _mesa_end_bufferobj_lookups(ctx);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
-void GLAPIENTRY
-_mesa_BindBufferRange(GLenum target, GLuint index,
-                      GLuint buffer, GLintptr offset, GLsizeiptr size)
+static ALWAYS_INLINE void
+bind_buffer_range(GLenum target, GLuint index, GLuint buffer, GLintptr offset,
+                  GLsizeiptr size, bool no_error)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_buffer_object *bufObj;
+
+   if (MESA_VERBOSE & VERBOSE_API) {
+      _mesa_debug(ctx, "glBindBufferRange(%s, %u, %u, %lu, %lu)\n",
+                  _mesa_enum_to_string(target), index, buffer,
+                  (unsigned long) offset, (unsigned long) size);
+   }
 
    if (buffer == 0) {
       bufObj = ctx->Shared->NullBufferObj;
@@ -3859,41 +4046,82 @@ _mesa_BindBufferRange(GLenum target, GLuint index,
                                      &bufObj, "glBindBufferRange"))
       return;
 
-   if (!bufObj) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glBindBufferRange(invalid buffer=%u)", buffer);
-      return;
-   }
+   if (no_error) {
+      switch (target) {
+      case GL_TRANSFORM_FEEDBACK_BUFFER:
+         _mesa_bind_buffer_range_xfb(ctx, ctx->TransformFeedback.CurrentObject,
+                                     index, bufObj, offset, size);
+         return;
+      case GL_UNIFORM_BUFFER:
+         bind_buffer_range_uniform_buffer(ctx, index, bufObj, offset, size);
+         return;
+      case GL_SHADER_STORAGE_BUFFER:
+         bind_buffer_range_shader_storage_buffer(ctx, index, bufObj, offset,
+                                                 size);
+         return;
+      case GL_ATOMIC_COUNTER_BUFFER:
+         bind_atomic_buffer(ctx, index, bufObj, offset, size);
+         return;
+      default:
+         unreachable("invalid BindBufferRange target with KHR_no_error");
+      }
+   } else {
+      if (!bufObj) {
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "glBindBufferRange(invalid buffer=%u)", buffer);
+         return;
+      }
 
-   if (buffer != 0) {
-      if (size <= 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE, "glBindBufferRange(size=%d)",
-                     (int) size);
+      if (buffer != 0) {
+         if (size <= 0) {
+            _mesa_error(ctx, GL_INVALID_VALUE, "glBindBufferRange(size=%d)",
+                        (int) size);
+            return;
+         }
+      }
+
+      switch (target) {
+      case GL_TRANSFORM_FEEDBACK_BUFFER:
+         if (!_mesa_validate_buffer_range_xfb(ctx,
+                                              ctx->TransformFeedback.CurrentObject,
+                                              index, bufObj, offset, size,
+                                              false))
+            return;
+
+         _mesa_bind_buffer_range_xfb(ctx, ctx->TransformFeedback.CurrentObject,
+                                     index, bufObj, offset, size);
+         return;
+      case GL_UNIFORM_BUFFER:
+         bind_buffer_range_uniform_buffer_err(ctx, index, bufObj, offset,
+                                              size);
+         return;
+      case GL_SHADER_STORAGE_BUFFER:
+         bind_buffer_range_shader_storage_buffer_err(ctx, index, bufObj,
+                                                     offset, size);
+         return;
+      case GL_ATOMIC_COUNTER_BUFFER:
+         bind_atomic_buffer_err(ctx, index, bufObj, offset, size,
+                                "glBindBufferRange");
+         return;
+      default:
+         _mesa_error(ctx, GL_INVALID_ENUM, "glBindBufferRange(target)");
          return;
       }
    }
+}
 
-   switch (target) {
-   case GL_TRANSFORM_FEEDBACK_BUFFER:
-      _mesa_bind_buffer_range_transform_feedback(ctx,
-                                                 ctx->TransformFeedback.CurrentObject,
-                                                 index, bufObj, offset, size,
-                                                 false);
-      return;
-   case GL_UNIFORM_BUFFER:
-      bind_buffer_range_uniform_buffer(ctx, index, bufObj, offset, size);
-      return;
-   case GL_SHADER_STORAGE_BUFFER:
-      bind_buffer_range_shader_storage_buffer(ctx, index, bufObj, offset, size);
-      return;
-   case GL_ATOMIC_COUNTER_BUFFER:
-      bind_atomic_buffer(ctx, index, bufObj, offset, size,
-                         "glBindBufferRange");
-      return;
-   default:
-      _mesa_error(ctx, GL_INVALID_ENUM, "glBindBufferRange(target)");
-      return;
-   }
+void GLAPIENTRY
+_mesa_BindBufferRange_no_error(GLenum target, GLuint index, GLuint buffer,
+                               GLintptr offset, GLsizeiptr size)
+{
+   bind_buffer_range(target, index, buffer, offset, size, true);
+}
+
+void GLAPIENTRY
+_mesa_BindBufferRange(GLenum target, GLuint index,
+                      GLuint buffer, GLintptr offset, GLsizeiptr size)
+{
+   bind_buffer_range(target, index, buffer, offset, size, false);
 }
 
 void GLAPIENTRY
@@ -3901,6 +4129,11 @@ _mesa_BindBufferBase(GLenum target, GLuint index, GLuint buffer)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_buffer_object *bufObj;
+
+   if (MESA_VERBOSE & VERBOSE_API) {
+      _mesa_debug(ctx, "glBindBufferBase(%s, %u, %u)\n",
+                  _mesa_enum_to_string(target), index, buffer);
+   }
 
    if (buffer == 0) {
       bufObj = ctx->Shared->NullBufferObj;
@@ -3956,8 +4189,8 @@ _mesa_BindBufferBase(GLenum target, GLuint index, GLuint buffer)
       bind_buffer_base_shader_storage_buffer(ctx, index, bufObj);
       return;
    case GL_ATOMIC_COUNTER_BUFFER:
-      bind_atomic_buffer(ctx, index, bufObj, 0, 0,
-                         "glBindBufferBase");
+      bind_atomic_buffer_err(ctx, index, bufObj, 0, 0,
+                             "glBindBufferBase");
       return;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glBindBufferBase(target)");
@@ -3972,20 +4205,28 @@ _mesa_BindBuffersRange(GLenum target, GLuint first, GLsizei count,
 {
    GET_CURRENT_CONTEXT(ctx);
 
+   if (MESA_VERBOSE & VERBOSE_API) {
+      _mesa_debug(ctx, "glBindBuffersRange(%s, %u, %d, %p, %p, %p)\n",
+                  _mesa_enum_to_string(target), first, count,
+                  buffers, offsets, sizes);
+   }
+
    switch (target) {
    case GL_TRANSFORM_FEEDBACK_BUFFER:
-      bind_xfb_buffers_range(ctx, first, count, buffers, offsets, sizes);
+      bind_xfb_buffers(ctx, first, count, buffers, true, offsets, sizes,
+                       "glBindBuffersRange");
       return;
    case GL_UNIFORM_BUFFER:
-      bind_uniform_buffers_range(ctx, first, count, buffers, offsets, sizes);
+      bind_uniform_buffers(ctx, first, count, buffers, true, offsets, sizes,
+                           "glBindBuffersRange");
       return;
    case GL_SHADER_STORAGE_BUFFER:
-      bind_shader_storage_buffers_range(ctx, first, count, buffers, offsets,
-                                        sizes);
+      bind_shader_storage_buffers(ctx, first, count, buffers, true, offsets, sizes,
+                                  "glBindBuffersRange");
       return;
    case GL_ATOMIC_COUNTER_BUFFER:
-      bind_atomic_buffers_range(ctx, first, count, buffers,
-                                offsets, sizes);
+      bind_atomic_buffers(ctx, first, count, buffers, true, offsets, sizes,
+                          "glBindBuffersRange");
       return;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glBindBuffersRange(target=%s)",
@@ -4000,24 +4241,52 @@ _mesa_BindBuffersBase(GLenum target, GLuint first, GLsizei count,
 {
    GET_CURRENT_CONTEXT(ctx);
 
+   if (MESA_VERBOSE & VERBOSE_API) {
+      _mesa_debug(ctx, "glBindBuffersBase(%s, %u, %d, %p)\n",
+                  _mesa_enum_to_string(target), first, count, buffers);
+   }
+
    switch (target) {
    case GL_TRANSFORM_FEEDBACK_BUFFER:
-      bind_xfb_buffers_base(ctx, first, count, buffers);
+      bind_xfb_buffers(ctx, first, count, buffers, false, NULL, NULL,
+                       "glBindBuffersBase");
       return;
    case GL_UNIFORM_BUFFER:
-      bind_uniform_buffers_base(ctx, first, count, buffers);
+      bind_uniform_buffers(ctx, first, count, buffers, false, NULL, NULL,
+                           "glBindBuffersBase");
       return;
    case GL_SHADER_STORAGE_BUFFER:
-      bind_shader_storage_buffers_base(ctx, first, count, buffers);
+      bind_shader_storage_buffers(ctx, first, count, buffers, false, NULL, NULL,
+                                  "glBindBuffersBase");
       return;
    case GL_ATOMIC_COUNTER_BUFFER:
-      bind_atomic_buffers_base(ctx, first, count, buffers);
+      bind_atomic_buffers(ctx, first, count, buffers, false, NULL, NULL,
+                          "glBindBuffersBase");
       return;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glBindBuffersBase(target=%s)",
                   _mesa_enum_to_string(target));
       break;
    }
+}
+
+static ALWAYS_INLINE void
+invalidate_buffer_subdata(struct gl_context *ctx,
+                          struct gl_buffer_object *bufObj, GLintptr offset,
+                          GLsizeiptr length)
+{
+   if (ctx->Driver.InvalidateBufferSubData)
+      ctx->Driver.InvalidateBufferSubData(ctx, bufObj, offset, length);
+}
+
+void GLAPIENTRY
+_mesa_InvalidateBufferSubData_no_error(GLuint buffer, GLintptr offset,
+                                       GLsizeiptr length)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object *bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+   invalidate_buffer_subdata(ctx, bufObj, offset, length);
 }
 
 void GLAPIENTRY
@@ -4028,10 +4297,16 @@ _mesa_InvalidateBufferSubData(GLuint buffer, GLintptr offset,
    struct gl_buffer_object *bufObj;
    const GLintptr end = offset + length;
 
+   /* Section 6.5 (Invalidating Buffer Data) of the OpenGL 4.5 (Compatibility
+    * Profile) spec says:
+    *
+    *     "An INVALID_VALUE error is generated if buffer is zero or is not the
+    *     name of an existing buffer object."
+    */
    bufObj = _mesa_lookup_bufferobj(ctx, buffer);
-   if (!bufObj) {
+   if (!bufObj || bufObj == &DummyBufferObject) {
       _mesa_error(ctx, GL_INVALID_VALUE,
-                  "glInvalidateBufferSubData(name = 0x%x) invalid object",
+                  "glInvalidateBufferSubData(name = %u) invalid object",
                   buffer);
       return;
    }
@@ -4042,7 +4317,7 @@ _mesa_InvalidateBufferSubData(GLuint buffer, GLintptr offset,
     *     negative, or if <offset> + <length> is greater than the value of
     *     BUFFER_SIZE."
     */
-   if (end < 0 || end > bufObj->Size) {
+   if (offset < 0 || length < 0 || end > bufObj->Size) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "glInvalidateBufferSubData(invalid offset or length)");
       return;
@@ -4063,10 +4338,16 @@ _mesa_InvalidateBufferSubData(GLuint buffer, GLintptr offset,
       return;
    }
 
-   /* We don't actually do anything for this yet.  Just return after
-    * validating the parameters and generating the required errors.
-    */
-   return;
+   invalidate_buffer_subdata(ctx, bufObj, offset, length);
+}
+
+void GLAPIENTRY
+_mesa_InvalidateBufferData_no_error(GLuint buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_buffer_object *bufObj =_mesa_lookup_bufferobj(ctx, buffer);
+   invalidate_buffer_subdata(ctx, bufObj, 0, bufObj->Size);
 }
 
 void GLAPIENTRY
@@ -4075,10 +4356,16 @@ _mesa_InvalidateBufferData(GLuint buffer)
    GET_CURRENT_CONTEXT(ctx);
    struct gl_buffer_object *bufObj;
 
+   /* Section 6.5 (Invalidating Buffer Data) of the OpenGL 4.5 (Compatibility
+    * Profile) spec says:
+    *
+    *     "An INVALID_VALUE error is generated if buffer is zero or is not the
+    *     name of an existing buffer object."
+    */
    bufObj = _mesa_lookup_bufferobj(ctx, buffer);
-   if (!bufObj) {
+   if (!bufObj || bufObj == &DummyBufferObject) {
       _mesa_error(ctx, GL_INVALID_VALUE,
-                  "glInvalidateBufferData(name = 0x%x) invalid object",
+                  "glInvalidateBufferData(name = %u) invalid object",
                   buffer);
       return;
    }
@@ -4097,8 +4384,83 @@ _mesa_InvalidateBufferData(GLuint buffer)
       return;
    }
 
-   /* We don't actually do anything for this yet.  Just return after
-    * validating the parameters and generating the required errors.
+   invalidate_buffer_subdata(ctx, bufObj, 0, bufObj->Size);
+}
+
+static void
+buffer_page_commitment(struct gl_context *ctx,
+                       struct gl_buffer_object *bufferObj,
+                       GLintptr offset, GLsizeiptr size,
+                       GLboolean commit, const char *func)
+{
+   if (!(bufferObj->StorageFlags & GL_SPARSE_STORAGE_BIT_ARB)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s(not a sparse buffer object)",
+                  func);
+      return;
+   }
+
+   if (size < 0 || size > bufferObj->Size ||
+       offset < 0 || offset > bufferObj->Size - size) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(out of bounds)",
+                  func);
+      return;
+   }
+
+   /* The GL_ARB_sparse_buffer extension specification says:
+    *
+    *     "INVALID_VALUE is generated by BufferPageCommitmentARB if <offset> is
+    *     not an integer multiple of SPARSE_BUFFER_PAGE_SIZE_ARB, or if <size>
+    *     is not an integer multiple of SPARSE_BUFFER_PAGE_SIZE_ARB and does
+    *     not extend to the end of the buffer's data store."
     */
-   return;
+   if (offset % ctx->Const.SparseBufferPageSize != 0) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(offset not aligned to page size)",
+                  func);
+      return;
+   }
+
+   if (size % ctx->Const.SparseBufferPageSize != 0 &&
+       offset + size != bufferObj->Size) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "%s(size not aligned to page size)",
+                  func);
+      return;
+   }
+
+   ctx->Driver.BufferPageCommitment(ctx, bufferObj, offset, size, commit);
+}
+
+void GLAPIENTRY
+_mesa_BufferPageCommitmentARB(GLenum target, GLintptr offset, GLsizeiptr size,
+                              GLboolean commit)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufferObj;
+
+   bufferObj = get_buffer(ctx, "glBufferPageCommitmentARB", target,
+                          GL_INVALID_ENUM);
+   if (!bufferObj)
+      return;
+
+   buffer_page_commitment(ctx, bufferObj, offset, size, commit,
+                          "glBufferPageCommitmentARB");
+}
+
+void GLAPIENTRY
+_mesa_NamedBufferPageCommitmentARB(GLuint buffer, GLintptr offset,
+                                   GLsizeiptr size, GLboolean commit)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufferObj;
+
+   bufferObj = _mesa_lookup_bufferobj(ctx, buffer);
+   if (!bufferObj || bufferObj == &DummyBufferObject) {
+      /* Note: the extension spec is not clear about the excpected error value. */
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glNamedBufferPageCommitmentARB(name = %u) invalid object",
+                  buffer);
+      return;
+   }
+
+   buffer_page_commitment(ctx, bufferObj, offset, size, commit,
+                          "glNamedBufferPageCommitmentARB");
 }

@@ -215,7 +215,7 @@ static boolean r300_reserve_cs_dwords(struct r300_context *r300,
     cs_dwords += r300_get_num_cs_end_dwords(r300);
 
     /* Reserve requested CS space. */
-    if (cs_dwords > (r300->cs->max_dw - r300->cs->cdw)) {
+    if (!r300->rws->cs_check_space(r300->cs, cs_dwords)) {
         r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         flushed = TRUE;
     }
@@ -373,7 +373,7 @@ static void r300_draw_arrays_immediate(struct r300_context *r300,
         /* Map the buffer. */
         if (!map[vbi]) {
             map[vbi] = (uint32_t*)r300->rws->buffer_map(
-                r300_resource(vbuf->buffer)->cs_buf,
+                r300_resource(vbuf->buffer.resource)->buf,
                 r300->cs, PIPE_TRANSFER_READ | PIPE_TRANSFER_UNSYNCHRONIZED);
             map[vbi] += (vbuf->buffer_offset / 4) + stride[i] * info->start;
         }
@@ -501,7 +501,7 @@ static void r300_draw_elements_immediate(struct r300_context *r300,
     const uint8_t *ptr1;
     const uint16_t *ptr2;
     const uint32_t *ptr4;
-    unsigned index_size = r300->index_buffer.index_size;
+    unsigned index_size = info->index_size;
     unsigned i, count_dwords = index_size == 4 ? info->count :
                                                  (info->count + 1) / 2;
     CS_LOCALS(r300);
@@ -519,7 +519,7 @@ static void r300_draw_elements_immediate(struct r300_context *r300,
 
     switch (index_size) {
     case 1:
-        ptr1 = (uint8_t*)r300->index_buffer.user_buffer;
+        ptr1 = (uint8_t*)info->index.user;
         ptr1 += info->start;
 
         OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_INDICES | (info->count << 16) |
@@ -543,7 +543,7 @@ static void r300_draw_elements_immediate(struct r300_context *r300,
         break;
 
     case 2:
-        ptr2 = (uint16_t*)r300->index_buffer.user_buffer;
+        ptr2 = (uint16_t*)info->index.user;
         ptr2 += info->start;
 
         OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_INDICES | (info->count << 16) |
@@ -562,7 +562,7 @@ static void r300_draw_elements_immediate(struct r300_context *r300,
         break;
 
     case 4:
-        ptr4 = (uint32_t*)r300->index_buffer.user_buffer;
+        ptr4 = (uint32_t*)info->index.user;
         ptr4 += info->start;
 
         OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_INDICES | (info->count << 16) |
@@ -584,8 +584,9 @@ static void r300_draw_elements(struct r300_context *r300,
                                const struct pipe_draw_info *info,
                                int instance_id)
 {
-    struct pipe_resource *indexBuffer = r300->index_buffer.buffer;
-    unsigned indexSize = r300->index_buffer.index_size;
+    struct pipe_resource *indexBuffer =
+       info->has_user_indices ? NULL : info->index.resource;
+    unsigned indexSize = info->index_size;
     struct pipe_resource* orgIndexBuffer = indexBuffer;
     unsigned start = info->start;
     unsigned count = info->count;
@@ -600,13 +601,13 @@ static void r300_draw_elements(struct r300_context *r300,
                               &index_offset);
     }
 
-    r300_translate_index_buffer(r300, &r300->index_buffer, &indexBuffer,
+    r300_translate_index_buffer(r300, info, &indexBuffer,
                                 &indexSize, index_offset, &start, count);
 
     /* Fallback for misaligned ushort indices. */
     if (indexSize == 2 && (start & 1) && indexBuffer) {
         /* If we got here, then orgIndexBuffer == indexBuffer. */
-        uint16_t *ptr = r300->rws->buffer_map(r300_resource(orgIndexBuffer)->cs_buf,
+        uint16_t *ptr = r300->rws->buffer_map(r300_resource(orgIndexBuffer)->buf,
                                               r300->cs,
                                               PIPE_TRANSFER_READ |
                                               PIPE_TRANSFER_UNSYNCHRONIZED);
@@ -621,10 +622,10 @@ static void r300_draw_elements(struct r300_context *r300,
                                      count, (uint8_t*)ptr);
         }
     } else {
-        if (r300->index_buffer.user_buffer)
+        if (info->has_user_indices)
             r300_upload_index_buffer(r300, &indexBuffer, indexSize,
                                      &start, count,
-                                     r300->index_buffer.user_buffer);
+                                     info->index.user);
     }
 
     /* 19 dwords for emit_draw_elements. Give up if the function fails. */
@@ -741,13 +742,13 @@ static unsigned r300_max_vertex_count(struct r300_context *r300)
       unsigned size, max_count, value;
 
       /* We're not interested in constant and per-instance attribs. */
-      if (!vb->buffer ||
+      if (!vb->buffer.resource ||
           !vb->stride ||
           velems[i].instance_divisor) {
          continue;
       }
 
-      size = vb->buffer->width0;
+      size = vb->buffer.resource->width0;
 
       /* Subtract buffer_offset. */
       value = vb->buffer_offset;
@@ -792,7 +793,7 @@ static void r300_draw_vbo(struct pipe_context* pipe,
     r300_update_derived_state(r300);
 
     /* Draw. */
-    if (info.indexed) {
+    if (info.index_size) {
         unsigned max_count = r300_max_vertex_count(r300);
 
         if (!max_count) {
@@ -807,11 +808,9 @@ static void r300_draw_vbo(struct pipe_context* pipe,
         }
 
         info.max_index = max_count - 1;
-        info.start += r300->index_buffer.offset / r300->index_buffer.index_size;
 
         if (info.instance_count <= 1) {
-            if (info.count <= 8 &&
-                r300->index_buffer.user_buffer) {
+            if (info.count <= 8 && info.has_user_indices) {
                 r300_draw_elements_immediate(r300, &info);
             } else {
                 r300_draw_elements(r300, &info, -1);
@@ -845,6 +844,17 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
 
     if (r300->skip_rendering) {
         return;
+    }
+
+    if (!u_trim_pipe_prim(info->mode, (unsigned*)&info->count))
+       return;
+
+    if (info->index_size) {
+        draw_set_indexes(r300->draw,
+                         info->has_user_indices ?
+                             info->index.user :
+                             r300_resource(info->index.resource)->malloced_buffer,
+                         info->index_size, ~0);
     }
 
     r300_update_derived_state(r300);
@@ -899,19 +909,18 @@ static boolean r300_render_allocate_vertices(struct vbuf_render* render,
 
     if (!r300->vbo || size + r300->draw_vbo_offset > r300->vbo->size) {
 	pb_reference(&r300->vbo, NULL);
-        r300->vbo_cs = NULL;
+        r300->vbo = NULL;
         r300render->vbo_ptr = NULL;
 
         r300->vbo = rws->buffer_create(rws,
                                        MAX2(R300_MAX_DRAW_VBO_SIZE, size),
-                                       R300_BUFFER_ALIGNMENT, TRUE,
+                                       R300_BUFFER_ALIGNMENT,
                                        RADEON_DOMAIN_GTT, 0);
         if (!r300->vbo) {
             return FALSE;
         }
-        r300->vbo_cs = rws->buffer_get_cs_handle(r300->vbo);
         r300->draw_vbo_offset = 0;
-        r300render->vbo_ptr = rws->buffer_map(r300->vbo_cs, r300->cs,
+        r300render->vbo_ptr = rws->buffer_map(r300->vbo, r300->cs,
                                               PIPE_TRANSFER_WRITE);
     }
 
@@ -1011,7 +1020,7 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     CS_LOCALS(r300);
     DBG(r300, DBG_DRAW, "r300: render_draw_elements (count: %d)\n", count);
 
-    u_upload_data(r300->uploader, 0, count * 2, indices,
+    u_upload_data(r300->uploader, 0, count * 2, 4, indices,
                   &index_buffer_offset, &index_buffer);
     if (!index_buffer) {
         return;

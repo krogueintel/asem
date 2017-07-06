@@ -20,7 +20,6 @@
 # IN THE SOFTWARE.
 
 if HAVE_SHARED_GLAPI
-SHARED_GLAPI_CFLAGS = -DGLX_SHARED_GLAPI
 SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
 endif
 
@@ -37,12 +36,11 @@ AM_CFLAGS = \
 	-I$(top_srcdir)/include/GL/internal \
 	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/loader \
-	-I$(top_srcdir)/src/mapi \
-	-I$(top_srcdir)/src/mapi/glapi \
 	-I$(top_builddir)/src/mapi \
+	-I$(top_srcdir)/src/mapi \
 	-I$(top_builddir)/src/mapi/glapi \
+	-I$(top_srcdir)/src/mapi/glapi \
 	$(VISIBILITY_CFLAGS) \
-	$(SHARED_GLAPI_CFLAGS) \
 	$(EXTRA_DEFINES_XF86VIDMODE) \
 	-D_REENTRANT \
 	-DDEFAULT_DRIVER_DIR=\"$(DRI_DRIVER_SEARCH_DIR)\" \
@@ -112,6 +110,7 @@ libglx_la_SOURCES += \
 	dri_common.c \
 	dri_common.h \
 	dri_common_query_renderer.c \
+	dri_common_interop.c \
 	xfont.c
 endif
 
@@ -132,6 +131,8 @@ if HAVE_DRI3
 libglx_la_SOURCES += \
 	dri3_glx.c \
 	dri3_priv.h
+
+libglx_la_LIBADD += $(top_builddir)/src/loader/libloader_dri3_helper.la
 endif
 
 if HAVE_APPLEDRI
@@ -142,7 +143,39 @@ SUBDIRS += apple
 libglx_la_LIBADD += $(builddir)/apple/libappleglx.la
 endif
 
+if HAVE_WINDOWSDRI
+libglx_la_SOURCES += \
+	  driwindows_glx.c
+
+SUBDIRS += windows
+libglx_la_LIBADD += \
+	  $(builddir)/windows/libwindowsdri.la \
+	  $(builddir)/windows/libwindowsglx.la
+endif
+
+if USE_LIBGLVND
+AM_CFLAGS += \
+	-DGL_LIB_NAME=\"lib@GL_LIB@.so.0\" \
+	$(GLVND_CFLAGS)
+
+libglx_la_SOURCES += \
+	g_glxglvnddispatchfuncs.c \
+	g_glxglvnddispatchindices.h \
+	glxglvnd.c \
+	glxglvnd.h \
+	glxglvnddispatchfuncs.h
+
+GL_LIB_VERSION=0
+else
+AM_CFLAGS += \
+	-DGL_LIB_NAME=\"lib@GL_LIB@.so.1\"
+GL_LIB_VERSION=1:2
+endif
+
+# Push the libdrm furhter up, as due to libtool bug we might end up relinking
+# against the system one.
 GL_LIBS = \
+	$(LIBDRM_LIBS) \
 	libglx.la \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
 	$(SHARED_GLAPI_LIB) \
@@ -150,7 +183,7 @@ GL_LIBS = \
 
 GL_LDFLAGS = \
 	-no-undefined \
-	-version-number 1:2 \
+	-version-number $(GL_LIB_VERSION) \
 	$(BSYMBOLIC) \
 	$(GC_SECTIONS) \
 	$(LD_NO_UNDEFINED)
@@ -158,6 +191,10 @@ GL_LDFLAGS = \
 lib@GL_LIB@_la_SOURCES =
 lib@GL_LIB@_la_LIBADD = $(GL_LIBS)
 lib@GL_LIB@_la_LDFLAGS = $(GL_LDFLAGS)
+
+if HAVE_WINDOWSDRI
+lib@GL_LIB@_la_LDFLAGS += -lgdi32 -lopengl32 -Wl,--disable-stdcall-fixup
+endif
 
 SUBDIRS += . tests
 

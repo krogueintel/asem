@@ -213,13 +213,13 @@ aa_transform_prolog(struct tgsi_transform_context *ctx)
    tgsi_transform_op2_inst(ctx, TGSI_OPCODE_MUL,
                            TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_XY,
                            TGSI_FILE_INPUT, texInput,
-                           TGSI_FILE_INPUT, texInput);
+                           TGSI_FILE_INPUT, texInput, false);
 
    /* ADD t0.x, t0.x, t0.y;  # x^2 + y^2 */
    tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_ADD,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_X,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
-                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y);
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y, false);
 
 #if NORMALIZE  /* OPTIONAL normalization of length */
    /* RSQ t0.x, t0.x; */
@@ -237,7 +237,7 @@ aa_transform_prolog(struct tgsi_transform_context *ctx)
    tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SGT,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
-                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W);
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W, false);
 
    /* KILL_IF -tmp0.yyyy;   # if -tmp0.y < 0, KILL */
    tgsi_transform_kill_inst(ctx, TGSI_FILE_TEMPORARY, tmp0,
@@ -246,10 +246,10 @@ aa_transform_prolog(struct tgsi_transform_context *ctx)
    /* compute coverage factor = (1-d)/(1-k) */
 
    /* SUB t0.z, tex.w, tex.z;  # m = 1 - k */
-   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SUB,
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_ADD,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Z,
                                TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W,
-                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z);
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z, true);
 
    /* RCP t0.z, t0.z;  # t0.z = 1 / m */
    newInst = tgsi_default_full_instruction();
@@ -265,22 +265,22 @@ aa_transform_prolog(struct tgsi_transform_context *ctx)
    ctx->emit_instruction(ctx, &newInst);
 
    /* SUB t0.y, 1, t0.x;  # d = 1 - d */
-   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SUB,
+   tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_ADD,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
                                TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_W,
-                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X);
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X, true);
 
    /* MUL t0.w, t0.y, t0.z;   # coverage = d * m */
    tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_MUL,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_W,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Y,
-                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Z);
+                               TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_Z, false);
 
    /* SLE t0.y, t0.x, tex.z;  # bool b = distance <= k */
    tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SLE,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_WRITEMASK_Y,
                                TGSI_FILE_TEMPORARY, tmp0, TGSI_SWIZZLE_X,
-                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z);
+                               TGSI_FILE_INPUT, texInput, TGSI_SWIZZLE_Z, false);
 
    /* CMP t0.w, -t0.y, tex.w, t0.w;
     *  # if -t0.y < 0 then
@@ -318,7 +318,7 @@ aa_transform_epilog(struct tgsi_transform_context *ctx)
                            TGSI_FILE_OUTPUT, aactx->colorOutput,
                            TGSI_WRITEMASK_W,
                            TGSI_FILE_TEMPORARY, aactx->colorTemp,
-                           TGSI_FILE_TEMPORARY, aactx->tmp0);
+                           TGSI_FILE_TEMPORARY, aactx->tmp0, false);
 }
 
 
@@ -662,7 +662,7 @@ static struct aapoint_stage *
 draw_aapoint_stage(struct draw_context *draw)
 {
    struct aapoint_stage *aapoint = CALLOC_STRUCT(aapoint_stage);
-   if (aapoint == NULL)
+   if (!aapoint)
       goto fail;
 
    aapoint->stage.draw = draw;
@@ -707,7 +707,7 @@ aapoint_create_fs_state(struct pipe_context *pipe,
 {
    struct aapoint_stage *aapoint = aapoint_stage_from_pipe(pipe);
    struct aapoint_fragment_shader *aafs = CALLOC_STRUCT(aapoint_fragment_shader);
-   if (aafs == NULL) 
+   if (!aafs)
       return NULL;
 
    aafs->state.tokens = tgsi_dup_tokens(fs->tokens);
@@ -767,7 +767,7 @@ draw_install_aapoint_stage(struct draw_context *draw,
     * Create / install AA point drawing / prim stage
     */
    aapoint = draw_aapoint_stage( draw );
-   if (aapoint == NULL)
+   if (!aapoint)
       return FALSE;
 
    /* save original driver functions */

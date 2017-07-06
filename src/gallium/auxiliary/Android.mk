@@ -31,6 +31,7 @@ include $(CLEAR_VARS)
 LOCAL_SRC_FILES := \
 	$(C_SOURCES) \
 	$(NIR_SOURCES) \
+	$(RENDERONLY_SOURCES) \
 	$(VL_STUB_SOURCES)
 
 LOCAL_C_INCLUDES := \
@@ -38,15 +39,17 @@ LOCAL_C_INCLUDES := \
 
 ifeq ($(MESA_ENABLE_LLVM),true)
 LOCAL_SRC_FILES += \
-	$(GALLIVM_SOURCES) \
-	$(GALLIVM_CPP_SOURCES)
-
-LOCAL_CPPFLAGS := -std=c++11
+	$(GALLIVM_SOURCES)
+$(call mesa-build-with-llvm)
 endif
 
-# We need libmesa_glsl to get NIR's generated include directories.
+LOCAL_CPPFLAGS += -std=c++11
+
+# We need libmesa_nir to get NIR's generated include directories.
 LOCAL_MODULE := libmesa_gallium
-LOCAL_STATIC_LIBRARIES += libmesa_glsl
+LOCAL_STATIC_LIBRARIES += libmesa_nir
+
+LOCAL_WHOLE_STATIC_LIBRARIES += cpufeatures
 
 # generate sources
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
@@ -63,6 +66,8 @@ $(intermediates)/util/u_format_srgb.c: $(intermediates)/%.c: $(LOCAL_PATH)/%.py
 
 $(intermediates)/util/u_format_table.c: $(intermediates)/%.c: $(LOCAL_PATH)/%.py $(LOCAL_PATH)/util/u_format.csv
 	$(transform-generated-source)
+
+LOCAL_GENERATED_SOURCES += $(MESA_GEN_NIR_H)
 
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

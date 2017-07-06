@@ -28,10 +28,11 @@
 #ifndef _GBM_DRI_INTERNAL_H_
 #define _GBM_DRI_INTERNAL_H_
 
+#include <xf86drm.h>
+#include <string.h>
 #include <sys/mman.h>
 #include "gbmint.h"
-
-#include "common_drm.h"
+#include "c11/threads.h"
 
 #include <GL/gl.h> /* dri_interface needs GL types */
 #include "GL/internal/dri_interface.h"
@@ -40,21 +41,24 @@ struct gbm_dri_surface;
 struct gbm_dri_bo;
 
 struct gbm_dri_device {
-   struct gbm_drm_device base;
+   struct gbm_device base;
 
    void *driver;
+   char *driver_name; /* Name of the DRI module, without the _dri suffix */
 
    __DRIscreen *screen;
+   __DRIcontext *context;
+   mtx_t mutex;
 
    const __DRIcoreExtension   *core;
    const __DRIdri2Extension   *dri2;
+   const __DRI2fenceExtension *fence;
    const __DRIimageExtension  *image;
    const __DRIswrastExtension *swrast;
    const __DRI2flushExtension *flush;
-   const __DRIdri2LoaderExtension *loader;
 
    const __DRIconfig   **driver_configs;
-   const __DRIextension **extensions;
+   const __DRIextension **loader_extensions;
    const __DRIextension **driver_extensions;
 
    __DRIimage *(*lookup_image)(__DRIscreen *screen, void *image, void *data);
@@ -96,7 +100,7 @@ struct gbm_dri_device {
 };
 
 struct gbm_dri_bo {
-   struct gbm_drm_bo base;
+   struct gbm_bo base;
 
    __DRIimage *image;
 
@@ -130,7 +134,7 @@ gbm_dri_surface(struct gbm_surface *surface)
 }
 
 static inline void *
-gbm_dri_bo_map(struct gbm_dri_bo *bo)
+gbm_dri_bo_map_dumb(struct gbm_dri_bo *bo)
 {
    struct drm_mode_map_dumb map_arg;
    int ret;
@@ -144,12 +148,12 @@ gbm_dri_bo_map(struct gbm_dri_bo *bo)
    memset(&map_arg, 0, sizeof(map_arg));
    map_arg.handle = bo->handle;
 
-   ret = drmIoctl(bo->base.base.gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
+   ret = drmIoctl(bo->base.gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
    if (ret)
       return NULL;
 
    bo->map = mmap(0, bo->size, PROT_WRITE,
-                  MAP_SHARED, bo->base.base.gbm->fd, map_arg.offset);
+                  MAP_SHARED, bo->base.gbm->fd, map_arg.offset);
    if (bo->map == MAP_FAILED) {
       bo->map = NULL;
       return NULL;
@@ -159,7 +163,7 @@ gbm_dri_bo_map(struct gbm_dri_bo *bo)
 }
 
 static inline void
-gbm_dri_bo_unmap(struct gbm_dri_bo *bo)
+gbm_dri_bo_unmap_dumb(struct gbm_dri_bo *bo)
 {
    munmap(bo->map, bo->size);
    bo->map = NULL;

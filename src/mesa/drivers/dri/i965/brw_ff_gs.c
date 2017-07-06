@@ -29,7 +29,6 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 #include "main/transformfeedback.h"
@@ -38,7 +37,6 @@
 
 #include "brw_defines.h"
 #include "brw_context.h"
-#include "brw_eu.h"
 #include "brw_util.h"
 #include "brw_state.h"
 #include "brw_ff_gs.h"
@@ -57,14 +55,14 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
    memset(&c, 0, sizeof(c));
 
    c.key = *key;
-   c.vue_map = brw->vs.prog_data->base.vue_map;
+   c.vue_map = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map;
    c.nr_regs = (c.vue_map.num_slots + 1)/2;
 
    mem_ctx = ralloc_context(NULL);
 
    /* Begin the compilation:
     */
-   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
@@ -136,7 +134,7 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
       fprintf(stderr, "gs:\n");
-      brw_disassemble(brw->intelScreen->devinfo, c.func.store,
+      brw_disassemble(&brw->screen->devinfo, c.func.store,
                       0, program_size, stderr);
       fprintf(stderr, "\n");
     }
@@ -150,7 +148,7 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
 }
 
 static bool
-brw_ff_gs_state_dirty(struct brw_context *brw)
+brw_ff_gs_state_dirty(const struct brw_context *brw)
 {
    return brw_state_dirty(brw,
                           _NEW_LIGHT,
@@ -175,7 +173,7 @@ brw_ff_gs_populate_key(struct brw_context *brw,
    memset(key, 0, sizeof(*key));
 
    /* BRW_NEW_VS_PROG_DATA (part of VUE map) */
-   key->attrs = brw->vs.prog_data->base.vue_map.slots_valid;
+   key->attrs = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map.slots_valid;
 
    /* BRW_NEW_PRIMITIVE */
    key->primitive = brw->primitive;
@@ -196,10 +194,10 @@ brw_ff_gs_populate_key(struct brw_context *brw,
       /* On Gen6, GS is used for transform feedback. */
       /* BRW_NEW_TRANSFORM_FEEDBACK */
       if (_mesa_is_xfb_active_and_unpaused(ctx)) {
-         const struct gl_shader_program *shaderprog =
+         const struct gl_program *prog =
             ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX];
          const struct gl_transform_feedback_info *linked_xfb_info =
-            &shaderprog->LinkedTransformFeedback;
+            prog->sh.LinkedTransformFeedback;
          int i;
 
          /* Make sure that the VUE slots won't overflow the unsigned chars in

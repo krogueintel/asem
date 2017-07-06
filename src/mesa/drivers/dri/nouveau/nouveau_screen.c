@@ -40,13 +40,16 @@
 #include "main/renderbuffer.h"
 #include "swrast/s_renderbuffer.h"
 
+#include <nvif/class.h>
+#include <nvif/cl0080.h>
+
 static const __DRIextension *nouveau_screen_extensions[];
 
 static void
 nouveau_destroy_screen(__DRIscreen *dri_screen);
 
 static const __DRIconfig **
-nouveau_get_configs(void)
+nouveau_get_configs(uint32_t chipset)
 {
 	__DRIconfig **configs = NULL;
 	int i;
@@ -75,7 +78,7 @@ nouveau_get_configs(void)
 					  ARRAY_SIZE(back_buffer_modes),
 					  msaa_samples,
 					  ARRAY_SIZE(msaa_samples),
-					  GL_TRUE);
+					  GL_TRUE, chipset < 0x10);
 		assert(config);
 
 		configs = driConcatConfigs(configs, config);
@@ -99,9 +102,19 @@ nouveau_init_screen2(__DRIscreen *dri_screen)
 	dri_screen->driverPrivate = screen;
 
 	/* Open the DRM device. */
-	ret = nouveau_device_wrap(dri_screen->fd, 0, &screen->device);
+	ret = nouveau_drm_new(dri_screen->fd, &screen->drm);
 	if (ret) {
 		nouveau_error("Error opening the DRM device.\n");
+		goto fail;
+	}
+
+	ret = nouveau_device_new(&screen->drm->client, NV_DEVICE,
+				 &(struct nv_device_v0) {
+					.device = ~0ULL,
+				 }, sizeof(struct nv_device_v0),
+				 &screen->device);
+	if (ret) {
+		nouveau_error("Error creating device object.\n");
 		goto fail;
 	}
 
@@ -117,6 +130,7 @@ nouveau_init_screen2(__DRIscreen *dri_screen)
 		dri_screen->max_gl_es1_version = 10;
 		break;
 	case 0x20:
+	case 0x30:
 		screen->driver = &nv20_driver;
 		dri_screen->max_gl_compat_version = 13;
 		dri_screen->max_gl_es1_version = 10;
@@ -130,7 +144,7 @@ nouveau_init_screen2(__DRIscreen *dri_screen)
 	dri_screen->extensions = nouveau_screen_extensions;
 	screen->dri_screen = dri_screen;
 
-	configs = nouveau_get_configs();
+	configs = nouveau_get_configs(screen->device->chipset);
 	if (!configs)
 		goto fail;
 
@@ -213,6 +227,7 @@ nouveau_destroy_screen(__DRIscreen *dri_screen)
 		return;
 
 	nouveau_device_del(&screen->device);
+	nouveau_drm_del(&screen->drm);
 
 	free(screen);
 	dri_screen->driverPrivate = NULL;
@@ -244,27 +259,27 @@ nouveau_create_buffer(__DRIscreen *dri_screen,
 
 	/* Front buffer. */
 	rb = nouveau_renderbuffer_dri_new(color_format, drawable);
-	_mesa_add_renderbuffer(fb, BUFFER_FRONT_LEFT, rb);
+	_mesa_attach_and_own_rb(fb, BUFFER_FRONT_LEFT, rb);
 
 	/* Back buffer */
 	if (visual->doubleBufferMode) {
 		rb = nouveau_renderbuffer_dri_new(color_format, drawable);
-		_mesa_add_renderbuffer(fb, BUFFER_BACK_LEFT, rb);
+		_mesa_attach_and_own_rb(fb, BUFFER_BACK_LEFT, rb);
 	}
 
 	/* Depth/stencil buffer. */
 	if (visual->depthBits == 24 && visual->stencilBits == 8) {
 		rb = nouveau_renderbuffer_dri_new(GL_DEPTH24_STENCIL8_EXT, drawable);
-		_mesa_add_renderbuffer(fb, BUFFER_DEPTH, rb);
-		_mesa_add_renderbuffer(fb, BUFFER_STENCIL, rb);
+		_mesa_attach_and_own_rb(fb, BUFFER_DEPTH, rb);
+		_mesa_attach_and_reference_rb(fb, BUFFER_STENCIL, rb);
 
 	} else if (visual->depthBits == 24) {
 		rb = nouveau_renderbuffer_dri_new(GL_DEPTH_COMPONENT24, drawable);
-		_mesa_add_renderbuffer(fb, BUFFER_DEPTH, rb);
+		_mesa_attach_and_own_rb(fb, BUFFER_DEPTH, rb);
 
 	} else if (visual->depthBits == 16) {
 		rb = nouveau_renderbuffer_dri_new(GL_DEPTH_COMPONENT16, drawable);
-		_mesa_add_renderbuffer(fb, BUFFER_DEPTH, rb);
+		_mesa_attach_and_own_rb(fb, BUFFER_DEPTH, rb);
 	}
 
 	/* Software renderbuffers. */

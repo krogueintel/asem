@@ -5,6 +5,7 @@ SUBDIRS =
 ##
 
 SUBDIRS += auxiliary
+SUBDIRS += auxiliary/pipe-loader
 
 ##
 ## Gallium pipe drivers and their respective winsys'
@@ -24,11 +25,6 @@ endif
 ## i915g/i915
 if HAVE_GALLIUM_I915
 SUBDIRS += drivers/i915 winsys/i915/drm
-endif
-
-## ilo/i965
-if HAVE_GALLIUM_ILO
-SUBDIRS += drivers/ilo winsys/intel/drm
 endif
 
 ## nouveau
@@ -67,6 +63,18 @@ if NEED_RADEON_DRM_WINSYS
 SUBDIRS += winsys/radeon/drm
 endif
 
+if HAVE_GALLIUM_ETNAVIV
+SUBDIRS += drivers/etnaviv winsys/etnaviv/drm
+endif
+
+if HAVE_GALLIUM_IMX
+SUBDIRS += drivers/imx winsys/imx/drm
+endif
+
+if HAVE_GALLIUM_PL111
+SUBDIRS += drivers/pl111 winsys/pl111/drm
+endif
+
 ## swrast/softpipe
 if HAVE_GALLIUM_SOFTPIPE
 SUBDIRS += drivers/softpipe
@@ -77,9 +85,18 @@ SUBDIRS += drivers/llvmpipe
 endif
 endif
 
+if HAVE_GALLIUM_SWR
+SUBDIRS += drivers/swr
+endif
+
 ## vc4/rpi
 if HAVE_GALLIUM_VC4
 SUBDIRS += drivers/vc4 winsys/vc4/drm
+endif
+
+## virgl
+if HAVE_GALLIUM_VIRGL
+SUBDIRS += drivers/virgl winsys/virgl/drm winsys/virgl/vtest
 endif
 
 ## the sw winsys'
@@ -93,7 +110,7 @@ if HAVE_DRISW
 SUBDIRS += winsys/sw/dri
 endif
 
-if HAVE_DRI2
+if HAVE_DRISW_KMS
 SUBDIRS += winsys/sw/kms-dri
 endif
 
@@ -115,7 +132,8 @@ EXTRA_DIST = \
 ## Gallium state trackers and their users (targets)
 ##
 
-if HAVE_LOADER_GALLIUM
+## XXX: Rename the conditional once we have a config switch for static/dynamic pipe-drivers
+if HAVE_CLOVER
 SUBDIRS += targets/pipe-loader
 endif
 
@@ -127,7 +145,7 @@ if HAVE_DRICOMMON
 SUBDIRS += state_trackers/dri targets/dri
 endif
 
-if HAVE_X11_DRIVER
+if HAVE_GALLIUM_XLIB_GLX
 SUBDIRS += state_trackers/glx/xlib targets/libgl-xlib
 endif
 

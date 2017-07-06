@@ -30,17 +30,26 @@ LOCAL_SRC_FILES := \
 	$(a2xx_SOURCES) \
 	$(a3xx_SOURCES)	\
 	$(a4xx_SOURCES) \
+	$(a5xx_SOURCES) \
 	$(ir3_SOURCES)
 
-LOCAL_CFLAGS := \
-	-Wno-packed-bitfield-compat
+#LOCAL_CFLAGS := \
+#	-Wno-packed-bitfield-compat
 
 LOCAL_C_INCLUDES := \
 	$(LOCAL_PATH)/ir3
 
-LOCAL_SHARED_LIBRARIES := libdrm libdrm_freedreno
-LOCAL_STATIC_LIBRARIES := libmesa_glsl
+LOCAL_GENERATED_SOURCES := $(MESA_GEN_NIR_H)
+
+LOCAL_SHARED_LIBRARIES := libdrm_freedreno
+LOCAL_STATIC_LIBRARIES := libmesa_glsl libmesa_nir
 LOCAL_MODULE := libmesa_pipe_freedreno
 
+include $(LOCAL_PATH)/Android.gen.mk
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
+
+ifneq ($(HAVE_GALLIUM_FREEDRENO),)
+$(eval GALLIUM_LIBS += $(LOCAL_MODULE) libmesa_winsys_freedreno)
+$(eval GALLIUM_SHARED_LIBS += $(LOCAL_SHARED_LIBRARIES))
+endif

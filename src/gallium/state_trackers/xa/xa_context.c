@@ -57,7 +57,7 @@ xa_context_create(struct xa_tracker *xa)
 
     ctx->xa = xa;
     ctx->pipe = xa->screen->context_create(xa->screen, NULL, 0);
-    ctx->cso = cso_create_context(ctx->pipe);
+    ctx->cso = cso_create_context(ctx->pipe, 0);
     ctx->shaders = xa_shaders_create(ctx);
     renderer_init_state(ctx);
 
@@ -383,7 +383,7 @@ xa_fence_wait(struct xa_fence *fence, uint64_t timeout)
 	struct pipe_screen *screen = fence->xa->screen;
 	boolean timed_out;
 
-	timed_out = !screen->fence_finish(screen, fence->pipe_fence, timeout);
+	timed_out = !screen->fence_finish(screen, NULL, fence->pipe_fence, timeout);
 	if (timed_out)
 	    return -XA_ERR_BUSY;
 

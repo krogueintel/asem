@@ -56,6 +56,7 @@
 #include "vbo_exec.h"
 #include "vbo_save.h"
 
+#include "main/api_arrayelt.h"
 #include "main/macros.h"
 
 #ifdef __cplusplus
@@ -63,7 +64,7 @@ extern "C" {
 #endif
 
 struct vbo_context {
-   struct gl_client_array currval[VBO_ATTRIB_MAX];
+   struct gl_vertex_array currval[VBO_ATTRIB_MAX];
    
    /** Map VERT_ATTRIB_x to VBO_ATTRIB_y */
    GLuint map_vp_none[VERT_ATTRIB_MAX];
@@ -76,12 +77,36 @@ struct vbo_context {
     * is responsible for initiating any fallback actions required:
     */
    vbo_draw_func draw_prims;
+
+   /* Optional callback for indirect draws. This allows multidraws to not be
+    * broken up, as well as for the actual count to be passed in as a separate
+    * indirect parameter.
+    */
+   vbo_indirect_draw_func draw_indirect_prims;
 };
 
 
 static inline struct vbo_context *vbo_context(struct gl_context *ctx) 
 {
    return ctx->vbo_context;
+}
+
+
+static inline void
+vbo_exec_invalidate_state(struct gl_context *ctx)
+{
+   struct vbo_context *vbo = vbo_context(ctx);
+   struct vbo_exec_context *exec = &vbo->exec;
+
+   if (ctx->NewState & (_NEW_PROGRAM | _NEW_ARRAY)) {
+      if (!exec->validating)
+         exec->array.recalculate_inputs = GL_TRUE;
+
+      _ae_invalidate_state(ctx);
+   }
+
+   if (ctx->NewState & _NEW_EVAL)
+      exec->eval.recalculate_maps = GL_TRUE;
 }
 
 
@@ -150,6 +175,7 @@ vbo_attrtype_to_integer_flag(GLenum format)
       return GL_FALSE;
    case GL_INT:
    case GL_UNSIGNED_INT:
+   case GL_UNSIGNED_INT64_ARB:
       return GL_TRUE;
    default:
       assert(0);
@@ -164,6 +190,7 @@ vbo_attrtype_to_double_flag(GLenum format)
    case GL_FLOAT:
    case GL_INT:
    case GL_UNSIGNED_INT:
+   case GL_UNSIGNED_INT64_ARB:
       return GL_FALSE;
    case GL_DOUBLE:
       return GL_TRUE;
@@ -195,6 +222,27 @@ vbo_get_default_vals_as_union(GLenum format)
       return NULL;
    }
 }
+
+
+/**
+ * Compute the max number of vertices which can be stored in
+ * a vertex buffer, given the current vertex size, and the amount
+ * of space already used.
+ */
+static inline unsigned
+vbo_compute_max_verts(const struct vbo_exec_context *exec)
+{
+   unsigned n = (VBO_VERT_BUFFER_SIZE - exec->vtx.buffer_used) /
+      (exec->vtx.vertex_size * sizeof(GLfloat));
+   if (n == 0)
+      return 0;
+   /* Subtract one so we're always sure to have room for an extra
+    * vertex for GL_LINE_LOOP -> GL_LINE_STRIP conversion.
+    */
+   n--;
+   return n;
+}
+
 
 #ifdef __cplusplus
 } // extern "C"

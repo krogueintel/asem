@@ -38,42 +38,48 @@ qir_opt_small_immediates(struct vc4_compile *c)
 {
         bool progress = false;
 
-        list_for_each_entry(struct qinst, inst, &c->instructions, link) {
+        qir_for_each_inst_inorder(inst, c) {
                 /* The small immediate value sits in the raddr B field, so we
                  * can't have 2 small immediates in one instruction (unless
                  * they're the same value, but that should be optimized away
                  * elsewhere).
                  */
                 bool uses_small_imm = false;
-                for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+                for (int i = 0; i < qir_get_nsrc(inst); i++) {
                         if (inst->src[i].file == QFILE_SMALL_IMM)
                                 uses_small_imm = true;
                 }
                 if (uses_small_imm)
                         continue;
 
-                for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+                /* Don't propagate small immediates into the top-end bounds
+                 * checking for indirect UBO loads.  The kernel doesn't parse
+                 * small immediates and rejects the shader in this case.  UBO
+                 * loads are much more expensive than the uniform load, and
+                 * indirect UBO regions are usually much larger than a small
+                 * immediate, so it's not worth updating the kernel to allow
+                 * optimizing it.
+                 */
+                if (inst->op == QOP_MIN_NOIMM)
+                        continue;
+
+                for (int i = 0; i < qir_get_nsrc(inst); i++) {
                         struct qreg src = qir_follow_movs(c, inst->src[i]);
 
                         if (src.file != QFILE_UNIF ||
+                            src.pack ||
                             c->uniform_contents[src.index] !=
                             QUNIFORM_CONSTANT) {
                                 continue;
                         }
 
-                        if (i == 1 &&
-                            (inst->op == QOP_TEX_S ||
-                             inst->op == QOP_TEX_T ||
-                             inst->op == QOP_TEX_R ||
-                             inst->op == QOP_TEX_B)) {
+                        if (qir_is_tex(inst) &&
+                            i == qir_get_tex_uniform_src(inst)) {
                                 /* No turning the implicit uniform read into
                                  * an immediate.
                                  */
                                 continue;
                         }
-
-                        if (qir_src_needs_a_file(inst))
-                                continue;
 
                         uint32_t imm = c->uniform_data[src.index];
                         uint32_t small_imm = qpu_encode_small_immediate(imm);

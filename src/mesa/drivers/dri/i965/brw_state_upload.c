@@ -32,7 +32,9 @@
 
 
 #include "brw_context.h"
+#include "brw_defines.h"
 #include "brw_state.h"
+#include "brw_program.h"
 #include "drivers/common/meta.h"
 #include "intel_batchbuffer.h"
 #include "intel_buffers.h"
@@ -42,323 +44,6 @@
 #include "brw_wm.h"
 #include "brw_cs.h"
 #include "main/framebuffer.h"
-
-static const struct brw_tracked_state *gen4_atoms[] =
-{
-   &brw_interpolation_map,
-
-   &brw_clip_prog, /* must do before state base address */
-   &brw_sf_prog, /* must do before state base address */
-
-   /* Once all the programs are done, we know how large urb entry
-    * sizes need to be and can decide if we need to change the urb
-    * layout.
-    */
-   &brw_curbe_offsets,
-   &brw_recalculate_urb_fence,
-
-   &brw_cc_vp,
-   &brw_cc_unit,
-
-   /* Surface state setup.  Must come before the VS/WM unit.  The binding
-    * table upload must be last.
-    */
-   &brw_vs_pull_constants,
-   &brw_wm_pull_constants,
-   &brw_renderbuffer_surfaces,
-   &brw_texture_surfaces,
-   &brw_vs_binding_table,
-   &brw_wm_binding_table,
-
-   &brw_fs_samplers,
-   &brw_vs_samplers,
-
-   /* These set up state for brw_psp_urb_cbs */
-   &brw_wm_unit,
-   &brw_sf_vp,
-   &brw_sf_unit,
-   &brw_vs_unit,		/* always required, enabled or not */
-   &brw_clip_unit,
-   &brw_gs_unit,
-
-   /* Command packets:
-    */
-   &brw_invariant_state,
-   &brw_state_base_address,
-
-   &brw_binding_table_pointers,
-   &brw_blend_constant_color,
-
-   &brw_depthbuffer,
-
-   &brw_polygon_stipple,
-   &brw_polygon_stipple_offset,
-
-   &brw_line_stipple,
-   &brw_aa_line_parameters,
-
-   &brw_psp_urb_cbs,
-
-   &brw_drawing_rect,
-   &brw_indices, /* must come before brw_vertices */
-   &brw_index_buffer,
-   &brw_vertices,
-
-   &brw_constant_buffer
-};
-
-static const struct brw_tracked_state *gen6_atoms[] =
-{
-   &gen6_clip_vp,
-   &gen6_sf_vp,
-
-   /* Command packets: */
-
-   /* must do before binding table pointers, cc state ptrs */
-   &brw_state_base_address,
-
-   &brw_cc_vp,
-   &gen6_viewport_state,	/* must do after *_vp stages */
-
-   &gen6_urb,
-   &gen6_blend_state,		/* must do before cc unit */
-   &gen6_color_calc_state,	/* must do before cc unit */
-   &gen6_depth_stencil_state,	/* must do before cc unit */
-
-   &gen6_vs_push_constants, /* Before vs_state */
-   &gen6_gs_push_constants, /* Before gs_state */
-   &gen6_wm_push_constants, /* Before wm_state */
-
-   /* Surface state setup.  Must come before the VS/WM unit.  The binding
-    * table upload must be last.
-    */
-   &brw_vs_pull_constants,
-   &brw_vs_ubo_surfaces,
-   &brw_gs_pull_constants,
-   &brw_gs_ubo_surfaces,
-   &brw_wm_pull_constants,
-   &brw_wm_ubo_surfaces,
-   &gen6_renderbuffer_surfaces,
-   &brw_texture_surfaces,
-   &gen6_sol_surface,
-   &brw_vs_binding_table,
-   &gen6_gs_binding_table,
-   &brw_wm_binding_table,
-
-   &brw_fs_samplers,
-   &brw_vs_samplers,
-   &brw_gs_samplers,
-   &gen6_sampler_state,
-   &gen6_multisample_state,
-
-   &gen6_vs_state,
-   &gen6_gs_state,
-   &gen6_clip_state,
-   &gen6_sf_state,
-   &gen6_wm_state,
-
-   &gen6_scissor_state,
-
-   &gen6_binding_table_pointers,
-
-   &brw_depthbuffer,
-
-   &brw_polygon_stipple,
-   &brw_polygon_stipple_offset,
-
-   &brw_line_stipple,
-   &brw_aa_line_parameters,
-
-   &brw_drawing_rect,
-
-   &brw_indices, /* must come before brw_vertices */
-   &brw_index_buffer,
-   &brw_vertices,
-};
-
-static const struct brw_tracked_state *gen7_render_atoms[] =
-{
-   /* Command packets: */
-
-   /* must do before binding table pointers, cc state ptrs */
-   &brw_state_base_address,
-
-   &brw_cc_vp,
-   &gen7_sf_clip_viewport,
-
-   &gen7_push_constant_space,
-   &gen7_urb,
-   &gen6_blend_state,		/* must do before cc unit */
-   &gen6_color_calc_state,	/* must do before cc unit */
-   &gen6_depth_stencil_state,	/* must do before cc unit */
-
-   &gen7_hw_binding_tables, /* Enable hw-generated binding tables for Haswell */
-
-   &brw_vs_image_surfaces, /* Before vs push/pull constants and binding table */
-   &brw_gs_image_surfaces, /* Before gs push/pull constants and binding table */
-   &brw_wm_image_surfaces, /* Before wm push/pull constants and binding table */
-
-   &gen6_vs_push_constants, /* Before vs_state */
-   &gen6_gs_push_constants, /* Before gs_state */
-   &gen6_wm_push_constants, /* Before wm_surfaces and constant_buffer */
-
-   /* Surface state setup.  Must come before the VS/WM unit.  The binding
-    * table upload must be last.
-    */
-   &brw_vs_pull_constants,
-   &brw_vs_ubo_surfaces,
-   &brw_vs_abo_surfaces,
-   &brw_gs_pull_constants,
-   &brw_gs_ubo_surfaces,
-   &brw_gs_abo_surfaces,
-   &brw_wm_pull_constants,
-   &brw_wm_ubo_surfaces,
-   &brw_wm_abo_surfaces,
-   &gen6_renderbuffer_surfaces,
-   &brw_texture_surfaces,
-   &brw_vs_binding_table,
-   &brw_gs_binding_table,
-   &brw_wm_binding_table,
-
-   &brw_fs_samplers,
-   &brw_vs_samplers,
-   &brw_gs_samplers,
-   &gen6_multisample_state,
-
-   &gen7_disable_stages,
-   &gen7_vs_state,
-   &gen7_gs_state,
-   &gen7_sol_state,
-   &gen7_clip_state,
-   &gen7_sbe_state,
-   &gen7_sf_state,
-   &gen7_wm_state,
-   &gen7_ps_state,
-
-   &gen6_scissor_state,
-
-   &gen7_depthbuffer,
-
-   &brw_polygon_stipple,
-   &brw_polygon_stipple_offset,
-
-   &brw_line_stipple,
-   &brw_aa_line_parameters,
-
-   &brw_drawing_rect,
-
-   &brw_indices, /* must come before brw_vertices */
-   &brw_index_buffer,
-   &brw_vertices,
-
-   &haswell_cut_index,
-};
-
-static const struct brw_tracked_state *gen7_compute_atoms[] =
-{
-   &brw_state_base_address,
-   &brw_cs_image_surfaces,
-   &gen7_cs_push_constants,
-   &brw_cs_ubo_surfaces,
-   &brw_cs_abo_surfaces,
-   &brw_texture_surfaces,
-   &brw_cs_work_groups_surface,
-   &brw_cs_state,
-};
-
-static const struct brw_tracked_state *gen8_render_atoms[] =
-{
-   /* Command packets: */
-   &gen8_state_base_address,
-
-   &brw_cc_vp,
-   &gen8_sf_clip_viewport,
-
-   &gen7_push_constant_space,
-   &gen7_urb,
-   &gen8_blend_state,
-   &gen6_color_calc_state,
-
-   &gen7_hw_binding_tables, /* Enable hw-generated binding tables for Broadwell */
-
-   &brw_vs_image_surfaces, /* Before vs push/pull constants and binding table */
-   &brw_gs_image_surfaces, /* Before gs push/pull constants and binding table */
-   &brw_wm_image_surfaces, /* Before wm push/pull constants and binding table */
-
-   &gen6_vs_push_constants, /* Before vs_state */
-   &gen6_gs_push_constants, /* Before gs_state */
-   &gen6_wm_push_constants, /* Before wm_surfaces and constant_buffer */
-
-   /* Surface state setup.  Must come before the VS/WM unit.  The binding
-    * table upload must be last.
-    */
-   &brw_vs_pull_constants,
-   &brw_vs_ubo_surfaces,
-   &brw_vs_abo_surfaces,
-   &brw_gs_pull_constants,
-   &brw_gs_ubo_surfaces,
-   &brw_gs_abo_surfaces,
-   &brw_wm_pull_constants,
-   &brw_wm_ubo_surfaces,
-   &brw_wm_abo_surfaces,
-   &gen6_renderbuffer_surfaces,
-   &brw_texture_surfaces,
-   &brw_vs_binding_table,
-   &brw_gs_binding_table,
-   &brw_wm_binding_table,
-
-   &brw_fs_samplers,
-   &brw_vs_samplers,
-   &brw_gs_samplers,
-   &gen8_multisample_state,
-
-   &gen8_disable_stages,
-   &gen8_vs_state,
-   &gen8_gs_state,
-   &gen8_sol_state,
-   &gen6_clip_state,
-   &gen8_raster_state,
-   &gen8_sbe_state,
-   &gen8_sf_state,
-   &gen8_ps_blend,
-   &gen8_ps_extra,
-   &gen8_ps_state,
-   &gen8_wm_depth_stencil,
-   &gen8_wm_state,
-
-   &gen6_scissor_state,
-
-   &gen7_depthbuffer,
-
-   &brw_polygon_stipple,
-   &brw_polygon_stipple_offset,
-
-   &brw_line_stipple,
-   &brw_aa_line_parameters,
-
-   &brw_drawing_rect,
-
-   &gen8_vf_topology,
-
-   &brw_indices,
-   &gen8_index_buffer,
-   &gen8_vertices,
-
-   &haswell_cut_index,
-   &gen8_pma_fix,
-};
-
-static const struct brw_tracked_state *gen8_compute_atoms[] =
-{
-   &gen8_state_base_address,
-   &brw_cs_image_surfaces,
-   &gen7_cs_push_constants,
-   &brw_cs_ubo_surfaces,
-   &brw_cs_abo_surfaces,
-   &brw_texture_surfaces,
-   &brw_cs_work_groups_surface,
-   &brw_cs_state,
-};
 
 static void
 brw_upload_initial_gpu_state(struct brw_context *brw)
@@ -375,18 +60,35 @@ brw_upload_initial_gpu_state(struct brw_context *brw)
 
    brw_upload_invariant_state(brw);
 
-   /* Recommended optimization for Victim Cache eviction in pixel backend. */
-   if (brw->gen >= 9) {
+   if (brw->gen == 9) {
+      /* Recommended optimizations for Victim Cache eviction and floating
+       * point blending.
+       */
       BEGIN_BATCH(3);
       OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
       OUT_BATCH(GEN7_CACHE_MODE_1);
-      OUT_BATCH((GEN9_PARTIAL_RESOLVE_DISABLE_IN_VC << 16) |
+      OUT_BATCH(REG_MASK(GEN9_FLOAT_BLEND_OPTIMIZATION_ENABLE) |
+                REG_MASK(GEN9_PARTIAL_RESOLVE_DISABLE_IN_VC) |
+                GEN9_FLOAT_BLEND_OPTIMIZATION_ENABLE |
                 GEN9_PARTIAL_RESOLVE_DISABLE_IN_VC);
       ADVANCE_BATCH();
    }
 
    if (brw->gen >= 8) {
       gen8_emit_3dstate_sample_pattern(brw);
+
+      BEGIN_BATCH(5);
+      OUT_BATCH(_3DSTATE_WM_HZ_OP << 16 | (5 - 2));
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+
+      BEGIN_BATCH(2);
+      OUT_BATCH(_3DSTATE_WM_CHROMAKEY << 16 | (2 - 2));
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
    }
 }
 
@@ -406,7 +108,7 @@ brw_get_pipeline_atoms(struct brw_context *brw,
    }
 }
 
-static void
+void
 brw_copy_pipeline_atoms(struct brw_context *brw,
                         enum brw_pipeline pipeline,
                         const struct brw_tracked_state **atoms,
@@ -434,40 +136,26 @@ void brw_init_state( struct brw_context *brw )
    /* Force the first brw_select_pipeline to emit pipeline select */
    brw->last_pipeline = BRW_NUM_PIPELINES;
 
-   STATIC_ASSERT(ARRAY_SIZE(gen4_atoms) <= ARRAY_SIZE(brw->render_atoms));
-   STATIC_ASSERT(ARRAY_SIZE(gen6_atoms) <= ARRAY_SIZE(brw->render_atoms));
-   STATIC_ASSERT(ARRAY_SIZE(gen7_render_atoms) <=
-                 ARRAY_SIZE(brw->render_atoms));
-   STATIC_ASSERT(ARRAY_SIZE(gen8_render_atoms) <=
-                 ARRAY_SIZE(brw->render_atoms));
-   STATIC_ASSERT(ARRAY_SIZE(gen7_compute_atoms) <=
-                 ARRAY_SIZE(brw->compute_atoms));
-   STATIC_ASSERT(ARRAY_SIZE(gen8_compute_atoms) <=
-                 ARRAY_SIZE(brw->compute_atoms));
-
    brw_init_caches(brw);
 
-   if (brw->gen >= 8) {
-      brw_copy_pipeline_atoms(brw, BRW_RENDER_PIPELINE,
-                              gen8_render_atoms,
-                              ARRAY_SIZE(gen8_render_atoms));
-      brw_copy_pipeline_atoms(brw, BRW_COMPUTE_PIPELINE,
-                              gen8_compute_atoms,
-                              ARRAY_SIZE(gen8_compute_atoms));
-   } else if (brw->gen == 7) {
-      brw_copy_pipeline_atoms(brw, BRW_RENDER_PIPELINE,
-                              gen7_render_atoms,
-                              ARRAY_SIZE(gen7_render_atoms));
-      brw_copy_pipeline_atoms(brw, BRW_COMPUTE_PIPELINE,
-                              gen7_compute_atoms,
-                              ARRAY_SIZE(gen7_compute_atoms));
-   } else if (brw->gen == 6) {
-      brw_copy_pipeline_atoms(brw, BRW_RENDER_PIPELINE,
-                              gen6_atoms, ARRAY_SIZE(gen6_atoms));
-   } else {
-      brw_copy_pipeline_atoms(brw, BRW_RENDER_PIPELINE,
-                              gen4_atoms, ARRAY_SIZE(gen4_atoms));
-   }
+   if (brw->gen >= 10)
+      gen10_init_atoms(brw);
+   else if (brw->gen >= 9)
+      gen9_init_atoms(brw);
+   else if (brw->gen >= 8)
+      gen8_init_atoms(brw);
+   else if (brw->is_haswell)
+      gen75_init_atoms(brw);
+   else if (brw->gen >= 7)
+      gen7_init_atoms(brw);
+   else if (brw->gen >= 6)
+      gen6_init_atoms(brw);
+   else if (brw->gen >= 5)
+      gen5_init_atoms(brw);
+   else if (brw->is_g4x)
+      gen45_init_atoms(brw);
+   else
+      gen4_init_atoms(brw);
 
    brw_upload_initial_gpu_state(brw);
 
@@ -492,6 +180,8 @@ void brw_init_state( struct brw_context *brw )
    ctx->DriverFlags.NewTextureBuffer = BRW_NEW_TEXTURE_BUFFER;
    ctx->DriverFlags.NewAtomicBuffer = BRW_NEW_ATOMIC_BUFFER;
    ctx->DriverFlags.NewImageUnits = BRW_NEW_IMAGE_UNITS;
+   ctx->DriverFlags.NewDefaultTessLevels = BRW_NEW_DEFAULT_TESS_LEVELS;
+   ctx->DriverFlags.NewIntelConservativeRasterization = BRW_NEW_CONSERVATIVE_RASTERIZATION;
 }
 
 
@@ -550,9 +240,10 @@ static struct dirty_bit_map mesa_bits[] = {
    DEFINE_BIT(_NEW_POLYGONSTIPPLE),
    DEFINE_BIT(_NEW_SCISSOR),
    DEFINE_BIT(_NEW_STENCIL),
-   DEFINE_BIT(_NEW_TEXTURE),
+   DEFINE_BIT(_NEW_TEXTURE_OBJECT),
    DEFINE_BIT(_NEW_TRANSFORM),
    DEFINE_BIT(_NEW_VIEWPORT),
+   DEFINE_BIT(_NEW_TEXTURE_STATE),
    DEFINE_BIT(_NEW_ARRAY),
    DEFINE_BIT(_NEW_RENDERMODE),
    DEFINE_BIT(_NEW_BUFFERS),
@@ -561,7 +252,6 @@ static struct dirty_bit_map mesa_bits[] = {
    DEFINE_BIT(_NEW_TRACK_MATRIX),
    DEFINE_BIT(_NEW_PROGRAM),
    DEFINE_BIT(_NEW_PROGRAM_CONSTANTS),
-   DEFINE_BIT(_NEW_BUFFER_OBJECT),
    DEFINE_BIT(_NEW_FRAG_CLAMP),
    /* Avoid sign extension problems. */
    {(unsigned) _NEW_VARYING_VP_INPUTS, "_NEW_VARYING_VP_INPUTS", 0},
@@ -575,26 +265,30 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_VS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_FF_GS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_GS_PROG_DATA),
+   DEFINE_BIT(BRW_NEW_TCS_PROG_DATA),
+   DEFINE_BIT(BRW_NEW_TES_PROG_DATA),
    DEFINE_BIT(BRW_NEW_CLIP_PROG_DATA),
    DEFINE_BIT(BRW_NEW_CS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_URB_FENCE),
    DEFINE_BIT(BRW_NEW_FRAGMENT_PROGRAM),
    DEFINE_BIT(BRW_NEW_GEOMETRY_PROGRAM),
+   DEFINE_BIT(BRW_NEW_TESS_PROGRAMS),
    DEFINE_BIT(BRW_NEW_VERTEX_PROGRAM),
-   DEFINE_BIT(BRW_NEW_CURBE_OFFSETS),
    DEFINE_BIT(BRW_NEW_REDUCED_PRIMITIVE),
+   DEFINE_BIT(BRW_NEW_PATCH_PRIMITIVE),
    DEFINE_BIT(BRW_NEW_PRIMITIVE),
    DEFINE_BIT(BRW_NEW_CONTEXT),
    DEFINE_BIT(BRW_NEW_PSP),
    DEFINE_BIT(BRW_NEW_SURFACES),
-   DEFINE_BIT(BRW_NEW_VS_BINDING_TABLE),
-   DEFINE_BIT(BRW_NEW_GS_BINDING_TABLE),
-   DEFINE_BIT(BRW_NEW_PS_BINDING_TABLE),
+   DEFINE_BIT(BRW_NEW_BINDING_TABLE_POINTERS),
    DEFINE_BIT(BRW_NEW_INDICES),
    DEFINE_BIT(BRW_NEW_VERTICES),
+   DEFINE_BIT(BRW_NEW_DEFAULT_TESS_LEVELS),
    DEFINE_BIT(BRW_NEW_BATCH),
    DEFINE_BIT(BRW_NEW_INDEX_BUFFER),
    DEFINE_BIT(BRW_NEW_VS_CONSTBUF),
+   DEFINE_BIT(BRW_NEW_TCS_CONSTBUF),
+   DEFINE_BIT(BRW_NEW_TES_CONSTBUF),
    DEFINE_BIT(BRW_NEW_GS_CONSTBUF),
    DEFINE_BIT(BRW_NEW_PROGRAM_CACHE),
    DEFINE_BIT(BRW_NEW_STATE_BASE_ADDRESS),
@@ -606,7 +300,6 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_ATOMIC_BUFFER),
    DEFINE_BIT(BRW_NEW_IMAGE_UNITS),
    DEFINE_BIT(BRW_NEW_META_IN_PROGRESS),
-   DEFINE_BIT(BRW_NEW_INTERPOLATION_MAP),
    DEFINE_BIT(BRW_NEW_PUSH_CONSTANT_ALLOCATION),
    DEFINE_BIT(BRW_NEW_NUM_SAMPLES),
    DEFINE_BIT(BRW_NEW_TEXTURE_BUFFER),
@@ -618,6 +311,11 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_VS_ATTRIB_WORKAROUNDS),
    DEFINE_BIT(BRW_NEW_COMPUTE_PROGRAM),
    DEFINE_BIT(BRW_NEW_CS_WORK_GROUPS),
+   DEFINE_BIT(BRW_NEW_URB_SIZE),
+   DEFINE_BIT(BRW_NEW_CC_STATE),
+   DEFINE_BIT(BRW_NEW_BLORP),
+   DEFINE_BIT(BRW_NEW_VIEWPORT_COUNT),
+   DEFINE_BIT(BRW_NEW_CONSERVATIVE_RASTERIZATION),
    {0, 0, 0}
 };
 
@@ -635,9 +333,21 @@ brw_print_dirty_count(struct dirty_bit_map *bit_map)
 {
    for (int i = 0; bit_map[i].bit != 0; i++) {
       if (bit_map[i].count > 1) {
-         fprintf(stderr, "0x%016lx: %12d (%s)\n",
+         fprintf(stderr, "0x%016"PRIx64": %12d (%s)\n",
                  bit_map[i].bit, bit_map[i].count, bit_map[i].name);
       }
+   }
+}
+
+static inline void
+brw_upload_tess_programs(struct brw_context *brw)
+{
+   if (brw->tess_eval_program) {
+      brw_upload_tcs_prog(brw);
+      brw_upload_tes_prog(brw);
+   } else {
+      brw->tcs.base.prog_data = NULL;
+      brw->tes.base.prog_data = NULL;
    }
 }
 
@@ -645,8 +355,11 @@ static inline void
 brw_upload_programs(struct brw_context *brw,
                     enum brw_pipeline pipeline)
 {
+   struct gl_context *ctx = &brw->ctx;
+
    if (pipeline == BRW_RENDER_PIPELINE) {
       brw_upload_vs_prog(brw);
+      brw_upload_tess_programs(brw);
 
       if (brw->gen < 6)
          brw_upload_ff_gs_prog(brw);
@@ -658,17 +371,35 @@ brw_upload_programs(struct brw_context *brw,
        */
       GLbitfield64 old_slots = brw->vue_map_geom_out.slots_valid;
       bool old_separate = brw->vue_map_geom_out.separate;
+      struct brw_vue_prog_data *vue_prog_data;
       if (brw->geometry_program)
-         brw->vue_map_geom_out = brw->gs.prog_data->base.vue_map;
+         vue_prog_data = brw_vue_prog_data(brw->gs.base.prog_data);
+      else if (brw->tess_eval_program)
+         vue_prog_data = brw_vue_prog_data(brw->tes.base.prog_data);
       else
-         brw->vue_map_geom_out = brw->vs.prog_data->base.vue_map;
+         vue_prog_data = brw_vue_prog_data(brw->vs.base.prog_data);
+
+      brw->vue_map_geom_out = vue_prog_data->vue_map;
 
       /* If the layout has changed, signal BRW_NEW_VUE_MAP_GEOM_OUT. */
       if (old_slots != brw->vue_map_geom_out.slots_valid ||
           old_separate != brw->vue_map_geom_out.separate)
          brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_GEOM_OUT;
 
+      if ((old_slots ^ brw->vue_map_geom_out.slots_valid) &
+          VARYING_BIT_VIEWPORT) {
+         ctx->NewDriverState |= BRW_NEW_VIEWPORT_COUNT;
+         brw->clip.viewport_count =
+            (brw->vue_map_geom_out.slots_valid & VARYING_BIT_VIEWPORT) ?
+            ctx->Const.MaxViewports : 1;
+      }
+
       brw_upload_wm_prog(brw);
+
+      if (brw->gen < 6) {
+         brw_upload_clip_prog(brw);
+         brw_upload_sf_prog(brw);
+      }
    } else if (pipeline == BRW_COMPUTE_PIPELINE) {
       brw_upload_cs_prog(brw);
    }
@@ -717,6 +448,16 @@ brw_upload_pipeline_state(struct brw_context *brw,
          brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
       }
 
+      if (brw->tess_eval_program != ctx->TessEvalProgram._Current) {
+         brw->tess_eval_program = ctx->TessEvalProgram._Current;
+         brw->ctx.NewDriverState |= BRW_NEW_TESS_PROGRAMS;
+      }
+
+      if (brw->tess_ctrl_program != ctx->TessCtrlProgram._Current) {
+         brw->tess_ctrl_program = ctx->TessCtrlProgram._Current;
+         brw->ctx.NewDriverState |= BRW_NEW_TESS_PROGRAMS;
+      }
+
       if (brw->geometry_program != ctx->GeometryProgram._Current) {
          brw->geometry_program = ctx->GeometryProgram._Current;
          brw->ctx.NewDriverState |= BRW_NEW_GEOMETRY_PROGRAM;
@@ -754,6 +495,8 @@ brw_upload_pipeline_state(struct brw_context *brw,
 
    brw_upload_programs(brw, pipeline);
    merge_ctx_state(brw, &state);
+
+   brw_upload_state_base_address(brw);
 
    const struct brw_tracked_state *atoms =
       brw_get_pipeline_atoms(brw, pipeline);

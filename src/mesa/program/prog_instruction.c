@@ -52,25 +52,9 @@ _mesa_init_instructions(struct prog_instruction *inst, GLuint count)
 
       inst[i].DstReg.File = PROGRAM_UNDEFINED;
       inst[i].DstReg.WriteMask = WRITEMASK_XYZW;
-      inst[i].DstReg.CondMask = COND_TR;
-      inst[i].DstReg.CondSwizzle = SWIZZLE_NOOP;
 
       inst[i].Saturate = GL_FALSE;
-      inst[i].Precision = FLOAT32;
    }
-}
-
-
-/**
- * Allocate an array of program instructions.
- * \param numInst  number of instructions
- * \return pointer to instruction memory
- */
-struct prog_instruction *
-_mesa_alloc_instructions(GLuint numInst)
-{
-   return
-      calloc(numInst, sizeof(struct prog_instruction));
 }
 
 
@@ -85,27 +69,8 @@ struct prog_instruction *
 _mesa_copy_instructions(struct prog_instruction *dest,
                         const struct prog_instruction *src, GLuint n)
 {
-   GLuint i;
    memcpy(dest, src, n * sizeof(struct prog_instruction));
-   for (i = 0; i < n; i++) {
-      if (src[i].Comment)
-         dest[i].Comment = strdup(src[i].Comment);
-   }
    return dest;
-}
-
-
-/**
- * Free an array of instructions
- */
-void
-_mesa_free_instructions(struct prog_instruction *inst, GLuint count)
-{
-   GLuint i;
-   for (i = 0; i < count; i++) {
-      free((char *)inst[i].Comment);
-   }
-   free(inst);
 }
 
 
@@ -154,7 +119,6 @@ static const struct instruction_info InstInfo[MAX_OPCODE] = {
    { OPCODE_FRC,    "FRC",     1, 1 },
    { OPCODE_IF,     "IF",      1, 0 },
    { OPCODE_KIL,    "KIL",     1, 0 },
-   { OPCODE_KIL_NV, "KIL_NV",  0, 0 },
    { OPCODE_LG2,    "LG2",     1, 1 },
    { OPCODE_LIT,    "LIT",     1, 1 },
    { OPCODE_LOG,    "LOG",     1, 1 },
@@ -173,13 +137,9 @@ static const struct instruction_info InstInfo[MAX_OPCODE] = {
    { OPCODE_RET,    "RET",     0, 0 },
    { OPCODE_RSQ,    "RSQ",     1, 1 },
    { OPCODE_SCS,    "SCS",     1, 1 },
-   { OPCODE_SEQ,    "SEQ",     2, 1 },
    { OPCODE_SGE,    "SGE",     2, 1 },
-   { OPCODE_SGT,    "SGT",     2, 1 },
    { OPCODE_SIN,    "SIN",     1, 1 },
-   { OPCODE_SLE,    "SLE",     2, 1 },
    { OPCODE_SLT,    "SLT",     2, 1 },
-   { OPCODE_SNE,    "SNE",     2, 1 },
    { OPCODE_SSG,    "SSG",     1, 1 },
    { OPCODE_SUB,    "SUB",     2, 1 },
    { OPCODE_SWZ,    "SWZ",     1, 1 },
@@ -188,7 +148,6 @@ static const struct instruction_info InstInfo[MAX_OPCODE] = {
    { OPCODE_TXD,    "TXD",     3, 1 },
    { OPCODE_TXL,    "TXL",     1, 1 },
    { OPCODE_TXP,    "TXP",     1, 1 },
-   { OPCODE_TXP_NV, "TXP_NV",  1, 1 },
    { OPCODE_TRUNC,  "TRUNC",   1, 1 },
    { OPCODE_XPD,    "XPD",     2, 1 }
 };

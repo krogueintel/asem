@@ -127,7 +127,7 @@ i915_update_stencil(struct gl_context * ctx)
                  S5_STENCIL_PASS_Z_PASS_SHIFT));
 
    /* Set back state if different from front. */
-   if (ctx->Stencil._TestTwoSide) {
+   if (_mesa_stencil_is_two_sided(ctx)) {
       set_ctx_bits(I915_CTXREG_BF_STENCIL_OPS,
                    BFO_STENCIL_REF_MASK |
                    BFO_STENCIL_TEST_MASK |
@@ -650,20 +650,17 @@ i915_update_sprite_point_enable(struct gl_context *ctx)
    /* _NEW_PROGRAM */
    struct i915_fragment_program *p =
       (struct i915_fragment_program *) ctx->FragmentProgram._Current;
-   const GLbitfield64 inputsRead = p->FragProg.Base.InputsRead;
+   const GLbitfield64 inputsRead = p->FragProg.info.inputs_read;
    struct i915_context *i915 = i915_context(ctx);
    GLuint s4 = i915->state.Ctx[I915_CTXREG_LIS4] & ~S4_VFMT_MASK;
-   int i;
    GLuint coord_replace_bits = 0x0;
-   GLuint tex_coord_unit_bits = 0x0;
 
-   for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
-      /* _NEW_POINT */
-      if (ctx->Point.CoordReplace[i] && ctx->Point.PointSprite)
-         coord_replace_bits |= (1 << i);
-      if (inputsRead & VARYING_BIT_TEX(i))
-         tex_coord_unit_bits |= (1 << i);
-   }
+   /* _NEW_POINT */
+   if (ctx->Point.PointSprite)
+      coord_replace_bits = ctx->Point.CoordReplace;
+
+   GLuint tex_coord_unit_bits =
+      (GLuint)((inputsRead & VARYING_BITS_TEX_ANY) >> VARYING_SLOT_TEX0);
 
    /*
     * Here we can't enable the SPRITE_POINT_ENABLE bit when the mis-match
@@ -928,11 +925,12 @@ i915_init_packets(struct i915_context *i915)
        * piece changes.
        */
       i915->state.Ctx[I915_CTXREG_LI] = (_3DSTATE_LOAD_STATE_IMMEDIATE_1 |
-                                         I1_LOAD_S(2) |
-                                         I1_LOAD_S(4) |
-                                         I1_LOAD_S(5) | I1_LOAD_S(6) | (3));
+                                         I1_LOAD_S(2) | I1_LOAD_S(3) |
+                                         I1_LOAD_S(4) | I1_LOAD_S(5) |
+                                         I1_LOAD_S(6) | (4));
       i915->state.Ctx[I915_CTXREG_LIS2] = 0;
       i915->state.Ctx[I915_CTXREG_LIS4] = 0;
+      i915->state.Ctx[I915_CTXREG_LIS3] = 0;
       i915->state.Ctx[I915_CTXREG_LIS5] = 0;
 
       if (i915->intel.ctx.Visual.rgbBits == 16)

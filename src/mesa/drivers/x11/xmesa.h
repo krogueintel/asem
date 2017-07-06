@@ -64,14 +64,14 @@ and create a window, you must do the following to use the X/Mesa interface:
 #ifndef XMESA_H
 #define XMESA_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include "xmesa_x.h"
 #include "GL/gl.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define XMESA_MAJOR_VERSION 6
 #define XMESA_MINOR_VERSION 3
@@ -238,6 +238,12 @@ extern XMesaBuffer XMesaGetCurrentBuffer( void );
  * New in Mesa 3.3
  */
 extern XMesaBuffer XMesaGetCurrentReadBuffer( void );
+
+
+/*
+ * Return display of current context.
+ */
+extern Display *XMesaGetCurrentDisplay( void );
 
 
 /*

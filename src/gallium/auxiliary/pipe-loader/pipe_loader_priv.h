@@ -32,7 +32,7 @@
 
 struct pipe_loader_ops {
    struct pipe_screen *(*create_screen)(struct pipe_loader_device *dev,
-                                        const char *library_paths);
+                                        unsigned flags);
 
    const struct drm_conf_ret *(*configuration)(struct pipe_loader_device *dev,
                                                enum drm_conf conf);

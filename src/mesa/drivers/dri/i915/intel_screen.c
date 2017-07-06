@@ -62,6 +62,10 @@ DRI_CONF_BEGIN
 	 DRI_CONF_DESC(en, "Enable early Z in classic mode (unstable, 945-only).")
       DRI_CONF_OPT_END
 
+      DRI_CONF_OPT_BEGIN_B(fragment_shader, "true")
+	 DRI_CONF_DESC(en, "Enable limited ARB_fragment_shader support on 915/945.")
+      DRI_CONF_OPT_END
+
    DRI_CONF_SECTION_END
    DRI_CONF_SECTION_QUALITY
       DRI_CONF_FORCE_S3TC_ENABLE("false")
@@ -74,6 +78,10 @@ DRI_CONF_BEGIN
       DRI_CONF_FORCE_GLSL_EXTENSIONS_WARN("false")
       DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS("false")
       DRI_CONF_DISABLE_BLEND_FUNC_EXTENDED("false")
+
+      DRI_CONF_OPT_BEGIN_B(stub_occlusion_query, "false")
+	 DRI_CONF_DESC(en, "Enable stub ARB_occlusion_query support on 915/945.")
+      DRI_CONF_OPT_END
 
       DRI_CONF_OPT_BEGIN_B(shader_precompile, "true")
 	 DRI_CONF_DESC(en, "Perform code generation at shader link time.")
@@ -270,7 +278,7 @@ intel_setup_image_from_mipmap_tree(struct intel_context *intel, __DRIimage *imag
 
    intel_miptree_check_level_layer(mt, level, zoffset);
 
-   intel_region_get_tile_masks(mt->region, &mask_x, &mask_y, false);
+   intel_region_get_tile_masks(mt->region, &mask_x, &mask_y);
    intel_miptree_get_image_offset(mt, level, zoffset, &draw_x, &draw_y);
 
    image->width = mt->level[level].width;
@@ -280,8 +288,7 @@ intel_setup_image_from_mipmap_tree(struct intel_context *intel, __DRIimage *imag
 
    image->offset = intel_region_get_aligned_offset(mt->region,
                                                    draw_x & ~mask_x,
-                                                   draw_y & ~mask_y,
-                                                   false);
+                                                   draw_y & ~mask_y);
 
    intel_region_reference(&image->region, mt->region);
 }
@@ -489,9 +496,7 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
       *value = image->planar_format->components;
       return true;
    case __DRI_IMAGE_ATTRIB_FD:
-      if (drm_intel_bo_gem_export_to_prime(image->region->bo, value) == 0)
-         return true;
-      return false;
+      return !drm_intel_bo_gem_export_to_prime(image->region->bo, value);
   default:
       return false;
    }
@@ -679,7 +684,7 @@ intel_from_planar(__DRIimage *parent, int plane, void *loaderPrivate)
     image->offset = offset;
     intel_setup_image_from_dimensions(image);
 
-    intel_region_get_tile_masks(image->region, &mask_x, &mask_y, false);
+    intel_region_get_tile_masks(image->region, &mask_x, &mask_y);
     if (offset & mask_x)
        _mesa_warning(NULL,
                      "intel_create_sub_image: offset not on tile boundary");
@@ -750,6 +755,9 @@ i915_query_renderer_integer(__DRIscreen *psp, int param, unsigned int *value)
    case __DRI2_RENDERER_UNIFIED_MEMORY_ARCHITECTURE:
       value[0] = 1;
       return 0;
+   case __DRI2_RENDERER_HAS_TEXTURE_3D:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(psp, param, value);
    }
@@ -786,6 +794,7 @@ static const __DRI2rendererQueryExtension intelRendererQueryExtension = {
 
 static const __DRIextension *intelScreenExtensions[] = {
     &intelTexBufferExtension.base,
+    &intelFenceExtension.base,
     &intelFlushExtension.base,
     &intelImageExtension.base,
     &intelRendererQueryExtension.base,
@@ -865,11 +874,11 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
 
    /* setup the hardware-based renderbuffers */
    rb = intel_create_renderbuffer(rgbFormat);
-   _mesa_add_renderbuffer(fb, BUFFER_FRONT_LEFT, &rb->Base.Base);
+   _mesa_attach_and_own_rb(fb, BUFFER_FRONT_LEFT, &rb->Base.Base);
 
    if (mesaVis->doubleBufferMode) {
       rb = intel_create_renderbuffer(rgbFormat);
-      _mesa_add_renderbuffer(fb, BUFFER_BACK_LEFT, &rb->Base.Base);
+      _mesa_attach_and_own_rb(fb, BUFFER_BACK_LEFT, &rb->Base.Base);
    }
 
    /*
@@ -885,13 +894,13 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
        * attached to two attachment points.
        */
       rb = intel_create_private_renderbuffer(MESA_FORMAT_Z24_UNORM_S8_UINT);
-      _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base.Base);
-      _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &rb->Base.Base);
+      _mesa_attach_and_own_rb(fb, BUFFER_DEPTH, &rb->Base.Base);
+      _mesa_attach_and_reference_rb(fb, BUFFER_STENCIL, &rb->Base.Base);
    }
    else if (mesaVis->depthBits == 16) {
       assert(mesaVis->stencilBits == 0);
       rb = intel_create_private_renderbuffer(MESA_FORMAT_Z_UNORM16);
-      _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base.Base);
+      _mesa_attach_and_own_rb(fb, BUFFER_DEPTH, &rb->Base.Base);
    }
    else {
       assert(mesaVis->depthBits == 0);
@@ -1042,7 +1051,8 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
 {
    static const mesa_format formats[] = {
       MESA_FORMAT_B5G6R5_UNORM,
-      MESA_FORMAT_B8G8R8A8_UNORM
+      MESA_FORMAT_B8G8R8A8_UNORM,
+      MESA_FORMAT_B8G8R8X8_UNORM
    };
 
    /* GLX_SWAP_COPY_OML is not supported due to page flipping. */
@@ -1081,7 +1091,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      num_depth_stencil_bits,
                                      back_buffer_modes, 2,
                                      singlesample_samples, 1,
-                                     false);
+                                     false, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1103,7 +1113,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      depth_bits, stencil_bits, 1,
                                      back_buffer_modes, 1,
                                      singlesample_samples, 1,
-                                     true);
+                                     true, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1122,12 +1132,21 @@ set_max_gl_versions(struct intel_screen *screen)
    __DRIscreen *psp = screen->driScrnPriv;
 
    switch (screen->gen) {
-   case 3:
+   case 3: {
+      bool has_fragment_shader = driQueryOptionb(&screen->optionCache, "fragment_shader");
+      bool has_occlusion_query = driQueryOptionb(&screen->optionCache, "stub_occlusion_query");
+
       psp->max_gl_core_version = 0;
       psp->max_gl_es1_version = 11;
-      psp->max_gl_compat_version = 21;
       psp->max_gl_es2_version = 20;
+
+      if (has_fragment_shader && has_occlusion_query) {
+         psp->max_gl_compat_version = 21;
+      } else {
+         psp->max_gl_compat_version = 14;
+      }
       break;
+   }
    case 2:
       psp->max_gl_core_version = 0;
       psp->max_gl_compat_version = 13;

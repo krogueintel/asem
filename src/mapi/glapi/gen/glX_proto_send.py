@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 
 # (C) Copyright IBM Corporation 2004, 2005
 # All Rights Reserved.
@@ -174,13 +173,35 @@ class PrintGlxProtoStubs(glX_proto_common.glx_print_proto):
         print '#include <X11/Xlib-xcb.h>'
         print '#include <xcb/xcb.h>'
         print '#include <xcb/glx.h>'
+        print '#include <limits.h>'
 
-        print ''
-        print '#define __GLX_PAD(n) (((n) + 3) & ~3)'
         print ''
         self.printFastcall()
         self.printNoinline()
         print ''
+
+        print 'static _X_INLINE int safe_add(int a, int b)'
+        print '{'
+        print '    if (a < 0 || b < 0) return -1;'
+        print '    if (INT_MAX - a < b) return -1;'
+        print '    return a + b;'
+        print '}'
+        print 'static _X_INLINE int safe_mul(int a, int b)'
+        print '{'
+        print '    if (a < 0 || b < 0) return -1;'
+        print '    if (a == 0 || b == 0) return 0;'
+        print '    if (a > INT_MAX / b) return -1;'
+        print '    return a * b;'
+        print '}'
+        print 'static _X_INLINE int safe_pad(int a)'
+        print '{'
+        print '    int ret;'
+        print '    if (a < 0) return -1;'
+        print '    if ((ret = safe_add(a, 3)) < 0) return -1;'
+        print '    return ret & (GLuint)~3;'
+        print '}'
+        print ''
+
         print '#ifndef __GNUC__'
         print '#  define __builtin_expect(x, y) x'
         print '#endif'
@@ -361,7 +382,7 @@ const GLuint __glXDefaultPixelStore[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 1 };
                     procs[n] = func.static_glx_name(n)
 
         print """
-#ifdef GLX_SHARED_GLAPI
+#ifdef GLX_INDIRECT_RENDERING
 
 static const struct proc_pair
 {
@@ -397,7 +418,7 @@ __indirect_get_proc_address(const char *name)
    return (pair) ? pair->proc : NULL;
 }
 
-#endif /* GLX_SHARED_GLAPI */
+#endif /* GLX_INDIRECT_RENDERING */
 """
         return
 
@@ -551,7 +572,7 @@ generic_%u_byte( GLint rop, const void * ptr )
                         condition = 'compsize > 0'
 
                     print 'if (%s) {' % (condition)
-                    print '    (*gc->fillImage)(gc, %s, %s, %s, %s, %s, %s, %s, %s, %s);' % (dim_str, width, height, depth, param.img_format, param.img_type, param.name, pcPtr, pixHeaderPtr)
+                    print '    gc->fillImage(gc, %s, %s, %s, %s, %s, %s, %s, %s, %s);' % (dim_str, width, height, depth, param.img_format, param.img_type, param.name, pcPtr, pixHeaderPtr)
                     print '} else {'
                     print '    (void) memcpy( %s, default_pixel_store_%uD, default_pixel_store_%uD_size );' % (pixHeaderPtr, dim, dim)
                     print '}'
@@ -612,6 +633,15 @@ generic_%u_byte( GLint rop, const void * ptr )
         self.emit_packet_size_calculation(f, 0)
         if name != None and name not in f.glx_vendorpriv_names:
             print '#endif'
+
+        if f.command_variable_length() != "":
+            print "    if (0%s < 0) {" % f.command_variable_length()
+            print "        __glXSetError(gc, GL_INVALID_VALUE);"
+            if f.return_type != 'void':
+                print "        return 0;"
+            else:
+                print "        return;"
+            print "    }"
 
         condition_list = []
         for p in f.parameterIterateCounters():
@@ -1083,7 +1113,7 @@ extern _X_HIDDEN NOINLINE FASTCALL GLubyte * __glXSetupVendorRequest(
                     break
 
         print ''
-        print '#ifdef GLX_SHARED_GLAPI'
+        print '#ifdef GLX_INDIRECT_RENDERING'
         print 'extern _X_HIDDEN void (*__indirect_get_proc_address(const char *name))(void);'
         print '#endif'
 

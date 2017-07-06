@@ -83,8 +83,7 @@ st_bufferobj_free(struct gl_context *ctx, struct gl_buffer_object *obj)
    if (st_obj->buffer)
       pipe_resource_reference(&st_obj->buffer, NULL);
 
-   free(st_obj->Base.Label);
-   free(st_obj);
+   _mesa_delete_buffer_object(ctx, obj);
 }
 
 
@@ -99,7 +98,7 @@ static void
 st_bufferobj_subdata(struct gl_context *ctx,
 		     GLintptrARB offset,
 		     GLsizeiptrARB size,
-		     const GLvoid * data, struct gl_buffer_object *obj)
+		     const void * data, struct gl_buffer_object *obj)
 {
    struct st_buffer_object *st_obj = st_buffer_object(obj);
 
@@ -143,7 +142,7 @@ static void
 st_bufferobj_get_subdata(struct gl_context *ctx,
                          GLintptrARB offset,
                          GLsizeiptrARB size,
-                         GLvoid * data, struct gl_buffer_object *obj)
+                         void * data, struct gl_buffer_object *obj)
 {
    struct st_buffer_object *st_obj = st_buffer_object(obj);
 
@@ -176,32 +175,35 @@ static GLboolean
 st_bufferobj_data(struct gl_context *ctx,
 		  GLenum target,
 		  GLsizeiptrARB size,
-		  const GLvoid * data,
+		  const void * data,
 		  GLenum usage,
                   GLbitfield storageFlags,
 		  struct gl_buffer_object *obj)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
+   struct pipe_screen *screen = pipe->screen;
    struct st_buffer_object *st_obj = st_buffer_object(obj);
    unsigned bind, pipe_usage, pipe_flags = 0;
 
    if (target != GL_EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD &&
-       size && data && st_obj->buffer &&
+       size && st_obj->buffer &&
        st_obj->Base.Size == size &&
        st_obj->Base.Usage == usage &&
        st_obj->Base.StorageFlags == storageFlags) {
-      /* Just discard the old contents and write new data.
-       * This should be the same as creating a new buffer, but we avoid
-       * a lot of validation in Mesa.
-       */
-      struct pipe_box box;
-
-      u_box_1d(0, size, &box);
-      pipe->transfer_inline_write(pipe, st_obj->buffer, 0,
-                                  PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE,
-                                  &box, data, 0, 0);
-      return GL_TRUE;
+      if (data) {
+         /* Just discard the old contents and write new data.
+          * This should be the same as creating a new buffer, but we avoid
+          * a lot of validation in Mesa.
+          */
+         pipe->buffer_subdata(pipe, st_obj->buffer,
+                              PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE,
+                              0, size, data);
+         return GL_TRUE;
+      } else if (screen->get_param(screen, PIPE_CAP_INVALIDATE_BUFFER)) {
+         pipe->invalidate_resource(pipe, st_obj->buffer);
+         return GL_TRUE;
+      }
    }
 
    st_obj->Base.Size = size;
@@ -229,7 +231,15 @@ st_bufferobj_data(struct gl_context *ctx,
       bind = PIPE_BIND_CONSTANT_BUFFER;
       break;
    case GL_DRAW_INDIRECT_BUFFER:
+   case GL_PARAMETER_BUFFER_ARB:
       bind = PIPE_BIND_COMMAND_ARGS_BUFFER;
+      break;
+   case GL_ATOMIC_COUNTER_BUFFER:
+   case GL_SHADER_STORAGE_BUFFER:
+      bind = PIPE_BIND_SHADER_BUFFER;
+      break;
+   case GL_QUERY_BUFFER:
+      bind = PIPE_BIND_QUERY_BUFFER;
       break;
    default:
       bind = 0;
@@ -238,10 +248,14 @@ st_bufferobj_data(struct gl_context *ctx,
    /* Set usage. */
    if (st_obj->Base.Immutable) {
       /* BufferStorage */
-      if (storageFlags & GL_CLIENT_STORAGE_BIT)
-         pipe_usage = PIPE_USAGE_STAGING;
-      else
+      if (storageFlags & GL_CLIENT_STORAGE_BIT) {
+         if (storageFlags & GL_MAP_READ_BIT)
+            pipe_usage = PIPE_USAGE_STAGING;
+         else
+            pipe_usage = PIPE_USAGE_STREAM;
+      } else {
          pipe_usage = PIPE_USAGE_DEFAULT;
+      }
    }
    else {
       /* BufferData */
@@ -279,6 +293,8 @@ st_bufferobj_data(struct gl_context *ctx,
       pipe_flags |= PIPE_RESOURCE_FLAG_MAP_PERSISTENT;
    if (storageFlags & GL_MAP_COHERENT_BIT)
       pipe_flags |= PIPE_RESOURCE_FLAG_MAP_COHERENT;
+   if (storageFlags & GL_SPARSE_STORAGE_BIT_ARB)
+      pipe_flags |= PIPE_RESOURCE_FLAG_SPARSE;
 
    pipe_resource_reference( &st_obj->buffer, NULL );
 
@@ -288,7 +304,6 @@ st_bufferobj_data(struct gl_context *ctx,
    }
 
    if (size != 0) {
-      struct pipe_screen *screen = pipe->screen;
       struct pipe_resource buffer;
 
       memset(&buffer, 0, sizeof buffer);
@@ -320,10 +335,46 @@ st_bufferobj_data(struct gl_context *ctx,
       }
    }
 
-   /* BufferData may change an array or uniform buffer, need to update it */
-   st->dirty.st |= ST_NEW_VERTEX_ARRAYS | ST_NEW_UNIFORM_BUFFER;
+   /* The current buffer may be bound, so we have to revalidate all atoms that
+    * might be using it.
+    */
+   /* TODO: Add arrays to usage history */
+   ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+   if (st_obj->Base.UsageHistory & USAGE_UNIFORM_BUFFER)
+      ctx->NewDriverState |= ST_NEW_UNIFORM_BUFFER;
+   if (st_obj->Base.UsageHistory & USAGE_SHADER_STORAGE_BUFFER)
+      ctx->NewDriverState |= ST_NEW_STORAGE_BUFFER;
+   if (st_obj->Base.UsageHistory & USAGE_TEXTURE_BUFFER)
+      ctx->NewDriverState |= ST_NEW_SAMPLER_VIEWS | ST_NEW_IMAGE_UNITS;
+   if (st_obj->Base.UsageHistory & USAGE_ATOMIC_COUNTER_BUFFER)
+      ctx->NewDriverState |= ST_NEW_ATOMIC_BUFFER;
 
    return GL_TRUE;
+}
+
+
+/**
+ * Called via glInvalidateBuffer(Sub)Data.
+ */
+static void
+st_bufferobj_invalidate(struct gl_context *ctx,
+                        struct gl_buffer_object *obj,
+                        GLintptr offset,
+                        GLsizeiptr size)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_context *pipe = st->pipe;
+   struct st_buffer_object *st_obj = st_buffer_object(obj);
+
+   /* We ignore partial invalidates. */
+   if (offset != 0 || size != obj->Size)
+      return;
+
+   /* Nothing to invalidate. */
+   if (!st_obj->buffer)
+      return;
+
+   pipe->invalidate_resource(pipe, st_obj->buffer);
 }
 
 
@@ -476,7 +527,7 @@ st_copy_buffer_subdata(struct gl_context *ctx,
 static void
 st_clear_buffer_subdata(struct gl_context *ctx,
                         GLintptr offset, GLsizeiptr size,
-                        const GLvoid *clearValue,
+                        const void *clearValue,
                         GLsizeiptr clearValueSize,
                         struct gl_buffer_object *bufObj)
 {
@@ -510,13 +561,28 @@ st_bufferobj_validate_usage(struct st_context *st,
 {
 }
 
+static void
+st_bufferobj_page_commitment(struct gl_context *ctx,
+                             struct gl_buffer_object *bufferObj,
+                             GLintptr offset, GLsizeiptr size,
+                             GLboolean commit)
+{
+   struct pipe_context *pipe = st_context(ctx)->pipe;
+   struct st_buffer_object *buf = st_buffer_object(bufferObj);
+   struct pipe_box box;
+
+   u_box_1d(offset, size, &box);
+
+   if (!pipe->resource_commit(pipe, buf->buffer, 0, &box, commit)) {
+      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glBufferPageCommitmentARB(out of memory)");
+      return;
+   }
+}
 
 void
-st_init_bufferobject_functions(struct dd_function_table *functions)
+st_init_bufferobject_functions(struct pipe_screen *screen,
+                               struct dd_function_table *functions)
 {
-   /* plug in default driver fallbacks (such as for ClearBufferSubData) */
-   _mesa_init_buffer_object_functions(functions);
-
    functions->NewBufferObject = st_bufferobj_alloc;
    functions->DeleteBuffer = st_bufferobj_free;
    functions->BufferData = st_bufferobj_data;
@@ -527,8 +593,8 @@ st_init_bufferobject_functions(struct dd_function_table *functions)
    functions->UnmapBuffer = st_bufferobj_unmap;
    functions->CopyBufferSubData = st_copy_buffer_subdata;
    functions->ClearBufferSubData = st_clear_buffer_subdata;
+   functions->BufferPageCommitment = st_bufferobj_page_commitment;
 
-   /* For GL_APPLE_vertex_array_object */
-   functions->NewArrayObject = _mesa_new_vao;
-   functions->DeleteArrayObject = _mesa_delete_vao;
+   if (screen->get_param(screen, PIPE_CAP_INVALIDATE_BUFFER))
+      functions->InvalidateBufferSubData = st_bufferobj_invalidate;
 }

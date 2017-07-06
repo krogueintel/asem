@@ -88,13 +88,13 @@ emulate_point_sprite(struct svga_context *svga,
 
    key.gs.aa_point = svga->curr.rast->templ.point_smooth;
 
-   if (orig_gs != NULL) {
+   if (orig_gs) {
 
       /* Check if the original geometry shader has stream output and
        * if position is one of the outputs.
        */
       streamout = orig_gs->base.stream_output;
-      if (streamout != NULL) {
+      if (streamout) {
          pos_out_index = streamout->pos_out_index;
          key.gs.point_pos_stream_out = pos_out_index != -1;
       }
@@ -119,7 +119,7 @@ emulate_point_sprite(struct svga_context *svga,
                                          key.gs.aa_point ?
                                             &aa_point_coord_index : NULL);
 
-      if (new_tokens == NULL) {
+      if (!new_tokens) {
          /* if no new tokens are generated for whatever reason, just return */
          return NULL;
       }
@@ -134,7 +134,7 @@ emulate_point_sprite(struct svga_context *svga,
       templ.tokens = new_tokens;
       templ.stream_output.num_outputs = 0;
 
-      if (streamout != NULL) {
+      if (streamout) {
          templ.stream_output = streamout->info;
          /* The tgsi_add_point_sprite utility adds an extra output
           * for the original point position for stream output purpose.
@@ -169,7 +169,7 @@ emulate_point_sprite(struct svga_context *svga,
       /* Add the new geometry shader to the head of the shader list
        * pointed to by the original geometry shader.
        */
-      if (orig_gs != NULL) {
+      if (orig_gs) {
          gs->base.next = orig_gs->base.next;
          orig_gs->base.next = &gs->base;
       }
@@ -207,7 +207,7 @@ add_point_sprite_shader(struct svga_context *svga)
                       vs->base.info.output_semantic_name,
                       vs->base.info.output_semantic_index);
 
-      if (orig_gs == NULL)
+      if (!orig_gs)
          return NULL;
    }
    else {
@@ -249,9 +249,11 @@ update_tgsi_transform(struct svga_context *svga, unsigned dirty)
    if (svga->curr.reduced_prim == PIPE_PRIM_POINTS) {
       /* If the current prim type is POINTS and the current geometry shader
        * emits wide points, transform the shader to emulate wide points using
-       * quads.
+       * quads. NOTE: we don't do emulation of wide points in GS when
+       * transform feedback is enabled.
        */
-      if (gs != NULL && (gs->base.info.writes_psize || gs->wide_point)) {
+      if (gs != NULL && !gs->base.stream_output &&
+          (gs->base.info.writes_psize || gs->wide_point)) {
          orig_gs = gs->base.parent ? gs->base.parent : &gs->base;
          new_gs = emulate_point_sprite(svga, orig_gs, orig_gs->tokens);
       }
@@ -260,7 +262,7 @@ update_tgsi_transform(struct svga_context *svga, unsigned dirty)
        * shader emits wide point then create a new geometry shader to emulate
        * wide point.
        */
-      else if (gs == NULL &&
+      else if (gs == NULL && !vs->base.stream_output &&
                (svga->curr.rast->pointsize > 1.0 ||
                 vs->base.info.writes_psize)) {
          new_gs = add_point_sprite_shader(svga);

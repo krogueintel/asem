@@ -46,6 +46,7 @@
 
 enum adreno_rb_depth_format fd_pipe2depth(enum pipe_format format);
 enum pc_di_index_size fd_pipe2index(enum pipe_format format);
+enum pipe_format fd_gmem_restore_format(enum pipe_format format);
 enum adreno_rb_blend_factor fd_blend_factor(unsigned factor);
 enum adreno_pa_su_sc_draw fd_polygon_mode(unsigned mode);
 enum adreno_stencil_op fd_stencil_op(unsigned op);
@@ -57,13 +58,14 @@ enum adreno_stencil_op fd_stencil_op(unsigned op);
 #define A2XX_MAX_RENDER_TARGETS 1
 #define A3XX_MAX_RENDER_TARGETS 4
 #define A4XX_MAX_RENDER_TARGETS 8
+#define A5XX_MAX_RENDER_TARGETS 8
 
-#define MAX_RENDER_TARGETS A4XX_MAX_RENDER_TARGETS
+#define MAX_RENDER_TARGETS A5XX_MAX_RENDER_TARGETS
 
 #define FD_DBG_MSGS     0x0001
 #define FD_DBG_DISASM   0x0002
 #define FD_DBG_DCLEAR   0x0004
-#define FD_DBG_FLUSH    0x0008
+#define FD_DBG_DDRAW    0x0008
 #define FD_DBG_NOSCIS   0x0010
 #define FD_DBG_DIRECT   0x0020
 #define FD_DBG_NOBYPASS 0x0040
@@ -72,6 +74,12 @@ enum adreno_stencil_op fd_stencil_op(unsigned op);
 #define FD_DBG_OPTMSGS  0x0200
 #define FD_DBG_GLSL120  0x0400
 #define FD_DBG_SHADERDB 0x0800
+#define FD_DBG_FLUSH    0x1000
+#define FD_DBG_DEQP     0x2000
+#define FD_DBG_INORDER  0x4000
+#define FD_DBG_BSTAT    0x8000
+#define FD_DBG_NOGROW  0x10000
+#define FD_DBG_LRZ     0x20000
 
 extern int fd_mesa_debug;
 extern bool fd_binning_enabled;
@@ -171,6 +179,7 @@ fd_half_precision(struct pipe_framebuffer_state *pfb)
 #define LOG_DWORDS 0
 
 static inline void emit_marker(struct fd_ringbuffer *ring, int scratch_idx);
+static inline void emit_marker5(struct fd_ringbuffer *ring, int scratch_idx);
 
 static inline void
 OUT_RING(struct fd_ringbuffer *ring, uint32_t data)
@@ -179,7 +188,7 @@ OUT_RING(struct fd_ringbuffer *ring, uint32_t data)
 		DBG("ring[%p]: OUT_RING   %04x:  %08x", ring,
 				(uint32_t)(ring->cur - ring->last_start), data);
 	}
-	*(ring->cur++) = data;
+	fd_ringbuffer_emit(ring, data);
 }
 
 /* like OUT_RING() but appends a cmdstream patch point to 'buf' */
@@ -197,63 +206,121 @@ OUT_RINGP(struct fd_ringbuffer *ring, uint32_t data,
 	}));
 }
 
+/*
+ * NOTE: OUT_RELOC*() is 2 dwords (64b) on a5xx+
+ */
+
 static inline void
 OUT_RELOC(struct fd_ringbuffer *ring, struct fd_bo *bo,
-		uint32_t offset, uint32_t or, int32_t shift)
+		uint32_t offset, uint64_t or, int32_t shift)
 {
 	if (LOG_DWORDS) {
 		DBG("ring[%p]: OUT_RELOC   %04x:  %p+%u << %d", ring,
 				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
 	}
-	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
+	debug_assert(offset < fd_bo_size(bo));
+	fd_ringbuffer_reloc2(ring, &(struct fd_reloc){
 		.bo = bo,
 		.flags = FD_RELOC_READ,
 		.offset = offset,
 		.or = or,
 		.shift = shift,
+		.orhi = or >> 32,
 	});
 }
 
 static inline void
 OUT_RELOCW(struct fd_ringbuffer *ring, struct fd_bo *bo,
-		uint32_t offset, uint32_t or, int32_t shift)
+		uint32_t offset, uint64_t or, int32_t shift)
 {
 	if (LOG_DWORDS) {
 		DBG("ring[%p]: OUT_RELOCW  %04x:  %p+%u << %d", ring,
 				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
 	}
-	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
+	debug_assert(offset < fd_bo_size(bo));
+	fd_ringbuffer_reloc2(ring, &(struct fd_reloc){
 		.bo = bo,
 		.flags = FD_RELOC_READ | FD_RELOC_WRITE,
 		.offset = offset,
 		.or = or,
 		.shift = shift,
+		.orhi = or >> 32,
 	});
 }
 
 static inline void BEGIN_RING(struct fd_ringbuffer *ring, uint32_t ndwords)
 {
-	if ((ring->cur + ndwords) >= ring->end) {
-		/* this probably won't really work if we have multiple tiles..
-		 * but it is ok for 2d..  we might need different behavior
-		 * depending on 2d or 3d pipe.
-		 */
-		DBG("uh oh..");
-	}
+	if (ring->cur + ndwords >= ring->end)
+		fd_ringbuffer_grow(ring, ndwords);
+}
+
+static inline uint32_t
+__gpu_id(struct fd_ringbuffer *ring)
+{
+	uint64_t val;
+	fd_pipe_get_param(ring->pipe, FD_GPU_ID, &val);
+	return val;
 }
 
 static inline void
 OUT_PKT0(struct fd_ringbuffer *ring, uint16_t regindx, uint16_t cnt)
 {
+	debug_assert(__gpu_id(ring) < 500);
 	BEGIN_RING(ring, cnt+1);
 	OUT_RING(ring, CP_TYPE0_PKT | ((cnt-1) << 16) | (regindx & 0x7FFF));
 }
 
 static inline void
+OUT_PKT2(struct fd_ringbuffer *ring)
+{
+	debug_assert(__gpu_id(ring) < 500);
+	BEGIN_RING(ring, 1);
+	OUT_RING(ring, CP_TYPE2_PKT);
+}
+
+static inline void
 OUT_PKT3(struct fd_ringbuffer *ring, uint8_t opcode, uint16_t cnt)
 {
+	debug_assert(__gpu_id(ring) < 500);
 	BEGIN_RING(ring, cnt+1);
 	OUT_RING(ring, CP_TYPE3_PKT | ((cnt-1) << 16) | ((opcode & 0xFF) << 8));
+}
+
+/*
+ * Starting with a5xx, pkt4/pkt7 are used instead of pkt0/pkt3
+ */
+
+static inline unsigned
+_odd_parity_bit(unsigned val)
+{
+	/* See: http://graphics.stanford.edu/~seander/bithacks.html#ParityParallel
+	 * note that we want odd parity so 0x6996 is inverted.
+	 */
+	val ^= val >> 16;
+	val ^= val >> 8;
+	val ^= val >> 4;
+	val &= 0xf;
+	return (~0x6996 >> val) & 1;
+}
+
+static inline void
+OUT_PKT4(struct fd_ringbuffer *ring, uint16_t regindx, uint16_t cnt)
+{
+	BEGIN_RING(ring, cnt+1);
+	OUT_RING(ring, CP_TYPE4_PKT | cnt |
+			(_odd_parity_bit(cnt) << 7) |
+			((regindx & 0x3ffff) << 8) |
+			((_odd_parity_bit(regindx) << 27)));
+}
+
+static inline void
+OUT_PKT7(struct fd_ringbuffer *ring, uint8_t opcode, uint16_t cnt)
+{
+	BEGIN_RING(ring, cnt+1);
+	OUT_RING(ring, CP_TYPE7_PKT | cnt |
+			(_odd_parity_bit(cnt) << 15) |
+			((opcode & 0x7f) << 16) |
+			((_odd_parity_bit(opcode) << 23)));
 }
 
 static inline void
@@ -264,12 +331,17 @@ OUT_WFI(struct fd_ringbuffer *ring)
 }
 
 static inline void
-OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
-		struct fd_ringmarker *end)
+OUT_WFI5(struct fd_ringbuffer *ring)
 {
-	uint32_t dwords = fd_ringmarker_dwords(start, end);
+	OUT_PKT7(ring, CP_WAIT_FOR_IDLE, 0);
+}
 
-	assert(dwords > 0);
+static inline void
+__OUT_IB(struct fd_ringbuffer *ring, bool prefetch, struct fd_ringbuffer *target)
+{
+	unsigned count = fd_ringbuffer_cmd_count(target);
+
+	debug_assert(__gpu_id(ring) < 500);
 
 	/* for debug after a lock up, write a unique counter value
 	 * to scratch6 for each IB, to make it easier to match up
@@ -279,14 +351,46 @@ OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
 	 */
 	emit_marker(ring, 6);
 
-	OUT_PKT3(ring, CP_INDIRECT_BUFFER_PFD, 2);
-	fd_ringbuffer_emit_reloc_ring(ring, start, end);
-	OUT_RING(ring, dwords);
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t dwords;
+		OUT_PKT3(ring, prefetch ? CP_INDIRECT_BUFFER_PFE : CP_INDIRECT_BUFFER_PFD, 2);
+		dwords = fd_ringbuffer_emit_reloc_ring_full(ring, target, i) / 4;
+		assert(dwords > 0);
+		OUT_RING(ring, dwords);
+		OUT_PKT2(ring);
+	}
 
 	emit_marker(ring, 6);
 }
 
+static inline void
+__OUT_IB5(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+{
+	unsigned count = fd_ringbuffer_cmd_count(target);
+
+	/* for debug after a lock up, write a unique counter value
+	 * to scratch6 for each IB, to make it easier to match up
+	 * register dumps to cmdstream.  The combination of IB and
+	 * DRAW (scratch7) is enough to "triangulate" the particular
+	 * draw that caused lockup.
+	 */
+	emit_marker5(ring, 6);
+
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t dwords;
+		OUT_PKT7(ring, CP_INDIRECT_BUFFER, 3);
+		dwords = fd_ringbuffer_emit_reloc_ring_full(ring, target, i) / 4;
+		assert(dwords > 0);
+		OUT_RING(ring, dwords);
+	}
+
+	emit_marker5(ring, 6);
+}
+
 /* CP_SCRATCH_REG4 is used to hold base address for query results: */
+// XXX annoyingly scratch regs move on a5xx.. and additionally different
+// packet types.. so freedreno_query_hw is going to need a bit of
+// rework..
 #define HW_QUERY_BASE_REG REG_AXXX_CP_SCRATCH_REG4
 
 static inline void
@@ -298,6 +402,16 @@ emit_marker(struct fd_ringbuffer *ring, int scratch_idx)
 	if (reg == HW_QUERY_BASE_REG)
 		return;
 	OUT_PKT0(ring, reg, 1);
+	OUT_RING(ring, ++marker_cnt);
+}
+
+static inline void
+emit_marker5(struct fd_ringbuffer *ring, int scratch_idx)
+{
+	extern unsigned marker_cnt;
+//XXX	unsigned reg = REG_A5XX_CP_SCRATCH_REG(scratch_idx);
+	unsigned reg = 0x00000b78 + scratch_idx;
+	OUT_PKT4(ring, reg, 1);
 	OUT_RING(ring, ++marker_cnt);
 }
 
@@ -319,6 +433,38 @@ pack_rgba(enum pipe_format format, const float *rgba)
 	union util_color uc;
 	util_pack_color(rgba, format, &uc);
 	return uc.ui[0];
+}
+
+/*
+ * swap - swap value of @a and @b
+ */
+#define swap(a, b) \
+	do { __typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
+
+#define foreach_bit(b, mask) \
+	for (uint32_t _m = (mask); _m && ({(b) = u_bit_scan(&_m); 1;});)
+
+
+#define BIT(bit) (1u << bit)
+
+/*
+ * a4xx+ helpers:
+ */
+
+static inline enum a4xx_state_block
+fd4_stage2shadersb(enum shader_t type)
+{
+	switch (type) {
+	case SHADER_VERTEX:
+		return SB4_VS_SHADER;
+	case SHADER_FRAGMENT:
+		return SB4_FS_SHADER;
+	case SHADER_COMPUTE:
+		return SB4_CS_SHADER;
+	default:
+		unreachable("bad shader type");
+		return ~0;
+	}
 }
 
 #endif /* FREEDRENO_UTIL_H_ */

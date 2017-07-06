@@ -35,6 +35,7 @@
 #include "util/u_memory.h"
 #include "util/u_video.h"
 #include "vl/vl_rbsp.h"
+#include "vl/vl_zscan.h"
 
 #include "entrypoint.h"
 #include "vid_dec.h"
@@ -44,44 +45,45 @@
 struct dpb_list {
    struct list_head list;
    struct pipe_video_buffer *buffer;
-   unsigned poc;
+   OMX_TICKS timestamp;
+   int poc;
 };
 
 static const uint8_t Default_4x4_Intra[16] = {
-    6, 13, 13, 20, 20, 20, 28, 28,
-   28, 28, 32, 32, 32, 37, 37, 42
+    6, 13, 20, 28, 13, 20, 28, 32,
+   20, 28, 32, 37, 28, 32, 37, 42
 };
 
 static const uint8_t Default_4x4_Inter[16] = {
-   10, 14, 14, 20, 20, 20, 24, 24,
-   24, 24, 27, 27, 27, 30, 30, 34
+   10, 14, 20, 24, 14, 20, 24, 27,
+   20, 24, 27, 30, 24, 27, 30, 34
 };
 
 static const uint8_t Default_8x8_Intra[64] = {
-    6, 10, 10, 13, 11, 13, 16, 16,
-   16, 16, 18, 18, 18, 18, 18, 23,
-   23, 23, 23, 23, 23, 25, 25, 25,
-   25, 25, 25, 25, 27, 27, 27, 27,
-   27, 27, 27, 27, 29, 29, 29, 29,
-   29, 29, 29, 31, 31, 31, 31, 31,
-   31, 33, 33, 33, 33, 33, 36, 36,
-   36, 36, 38, 38, 38, 40, 40, 42
+    6, 10, 13, 16, 18, 23, 25, 27,
+   10, 11, 16, 18, 23, 25, 27, 29,
+   13, 16, 18, 23, 25, 27, 29, 31,
+   16, 18, 23, 25, 27, 29, 31, 33,
+   18, 23, 25, 27, 29, 31, 33, 36,
+   23, 25, 27, 29, 31, 33, 36, 38,
+   25, 27, 29, 31, 33, 36, 38, 40,
+   27, 29, 31, 33, 36, 38, 40, 42
 };
 
 static const uint8_t Default_8x8_Inter[64] = {
-    9, 13, 13, 15, 13, 15, 17, 17,
-   17, 17, 19, 19, 19, 19, 19, 21,
-   21, 21, 21, 21, 21, 22, 22, 22,
-   22, 22, 22, 22, 24, 24, 24, 24,
-   24, 24, 24, 24, 25, 25, 25, 25,
-   25, 25, 25, 27, 27, 27, 27, 27,
-   27, 28, 28, 28, 28, 28, 30, 30,
-   30, 30, 32, 32, 32, 33, 33, 35
+    9, 13, 15, 17, 19, 21, 22, 24,
+   13, 13, 17, 19, 21, 22, 24, 25,
+   15, 17, 19, 21, 22, 24, 25, 27,
+   17, 19, 21, 22, 24, 25, 27, 28,
+   19, 21, 22, 24, 25, 27, 28, 30,
+   21, 22, 24, 25, 27, 28, 30, 32,
+   22, 24, 25, 27, 28, 30, 32, 33,
+   24, 25, 27, 28, 30, 32, 33, 35
 };
 
 static void vid_dec_h264_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, unsigned min_bits_left);
 static void vid_dec_h264_EndFrame(vid_dec_PrivateType *priv);
-static struct pipe_video_buffer *vid_dec_h264_Flush(vid_dec_PrivateType *priv);
+static struct pipe_video_buffer *vid_dec_h264_Flush(vid_dec_PrivateType *priv, OMX_TICKS *timestamp);
 
 void vid_dec_h264_Init(vid_dec_PrivateType *priv)
 {
@@ -90,9 +92,10 @@ void vid_dec_h264_Init(vid_dec_PrivateType *priv)
    priv->Decode = vid_dec_h264_Decode;
    priv->EndFrame = vid_dec_h264_EndFrame;
    priv->Flush = vid_dec_h264_Flush;
-   
+
    LIST_INITHEAD(&priv->codec_data.h264.dpb_list);
    priv->picture.h264.field_order_cnt[0] = priv->picture.h264.field_order_cnt[1] = INT_MAX;
+   priv->first_buf_in_frame = true;
 }
 
 static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
@@ -101,10 +104,6 @@ static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
 
    if (priv->frame_started)
       return;
-
-   vid_dec_NeedTarget(priv);
-
-   priv->picture.h264.num_ref_frames = priv->picture.h264.pps->sps->max_num_ref_frames;
 
    if (!priv->codec) {
       struct pipe_video_codec templat = {};
@@ -122,11 +121,22 @@ static void vid_dec_h264_BeginFrame(vid_dec_PrivateType *priv)
 
       priv->codec = priv->pipe->create_video_codec(priv->pipe, &templat);
    }
+
+   vid_dec_NeedTarget(priv);
+
+   if (priv->first_buf_in_frame)
+      priv->timestamp = priv->timestamps[0];
+   priv->first_buf_in_frame = false;
+
+   priv->picture.h264.num_ref_frames = priv->picture.h264.pps->sps->max_num_ref_frames;
+
+   priv->picture.h264.slice_count = 0;
    priv->codec->begin_frame(priv->codec, priv->target, &priv->picture.base);
    priv->frame_started = true;
 }
 
-static struct pipe_video_buffer *vid_dec_h264_Flush(vid_dec_PrivateType *priv)
+static struct pipe_video_buffer *vid_dec_h264_Flush(vid_dec_PrivateType *priv,
+                                                    OMX_TICKS *timestamp)
 {
    struct dpb_list *entry, *result = NULL;
    struct pipe_video_buffer *buf;
@@ -145,6 +155,8 @@ static struct pipe_video_buffer *vid_dec_h264_Flush(vid_dec_PrivateType *priv)
       return NULL;
 
    buf = result->buffer;
+   if (timestamp)
+      *timestamp = result->timestamp;
 
    --priv->codec_data.h264.dpb_num;
    LIST_DEL(&result->list);
@@ -158,6 +170,7 @@ static void vid_dec_h264_EndFrame(vid_dec_PrivateType *priv)
    struct dpb_list *entry;
    struct pipe_video_buffer *tmp;
    bool top_field_first;
+   OMX_TICKS timestamp;
 
    if (!priv->frame_started)
       return;
@@ -180,7 +193,9 @@ static void vid_dec_h264_EndFrame(vid_dec_PrivateType *priv)
    if (!entry)
       return;
 
+   priv->first_buf_in_frame = true;
    entry->buffer = priv->target;
+   entry->timestamp = priv->timestamp;
    entry->poc = MIN2(priv->picture.h264.field_order_cnt[0], priv->picture.h264.field_order_cnt[1]);
    LIST_ADDTAIL(&entry->list, &priv->codec_data.h264.dpb_list);
    ++priv->codec_data.h264.dpb_num;
@@ -191,7 +206,8 @@ static void vid_dec_h264_EndFrame(vid_dec_PrivateType *priv)
       return;
 
    tmp = priv->in_buffers[0]->pInputPortPrivate;
-   priv->in_buffers[0]->pInputPortPrivate = vid_dec_h264_Flush(priv);
+   priv->in_buffers[0]->pInputPortPrivate = vid_dec_h264_Flush(priv, &timestamp);
+   priv->in_buffers[0]->nTimeStamp = timestamp;
    priv->target = tmp;
    priv->frame_finished = priv->in_buffers[0]->pInputPortPrivate != NULL;
 }
@@ -205,6 +221,7 @@ static void scaling_list(struct vl_rbsp *rbsp, uint8_t *scalingList, unsigned si
                          const uint8_t *defaultList, const uint8_t *fallbackList)
 {
    unsigned lastScale = 8, nextScale = 8;
+   const int *list;
    unsigned i;
 
    /* (pic|seq)_scaling_list_present_flag[i] */
@@ -214,6 +231,7 @@ static void scaling_list(struct vl_rbsp *rbsp, uint8_t *scalingList, unsigned si
       return;
    }
 
+   list = (sizeOfScalingList == 16) ? vl_zscan_normal_16 : vl_zscan_normal;
    for (i = 0; i < sizeOfScalingList; ++i ) {
 
       if (nextScale != 0) {
@@ -224,15 +242,15 @@ static void scaling_list(struct vl_rbsp *rbsp, uint8_t *scalingList, unsigned si
             return;
          }
       }
-      scalingList[i] = nextScale == 0 ? lastScale : nextScale;
-      lastScale = scalingList[i];
+      scalingList[list[i]] = nextScale == 0 ? lastScale : nextScale;
+      lastScale = scalingList[list[i]];
    }
 }
 
 static struct pipe_h264_sps *seq_parameter_set_id(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 {
    unsigned id = vl_rbsp_ue(rbsp);
-   if (id >= Elements(priv->codec_data.h264.sps))
+   if (id >= ARRAY_SIZE(priv->codec_data.h264.sps))
       return NULL; /* invalid seq_parameter_set_id */
 
    return &priv->codec_data.h264.sps[id];
@@ -380,7 +398,7 @@ static void seq_parameter_set(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 static struct pipe_h264_pps *pic_parameter_set_id(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp)
 {
    unsigned id = vl_rbsp_ue(rbsp);
-   if (id >= Elements(priv->codec_data.h264.pps))
+   if (id >= ARRAY_SIZE(priv->codec_data.h264.pps))
       return NULL; /* invalid pic_parameter_set_id */
 
    return &priv->codec_data.h264.pps[id];
@@ -719,8 +737,8 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
    if (sps->pic_order_cnt_type == 0) {
       unsigned log2_max_pic_order_cnt_lsb = sps->log2_max_pic_order_cnt_lsb_minus4 + 4;
       unsigned max_pic_order_cnt_lsb = 1 << log2_max_pic_order_cnt_lsb;
-      unsigned pic_order_cnt_lsb = vl_rbsp_u(rbsp, log2_max_pic_order_cnt_lsb);
-      unsigned pic_order_cnt_msb;
+      int pic_order_cnt_lsb = vl_rbsp_u(rbsp, log2_max_pic_order_cnt_lsb);
+      int pic_order_cnt_msb;
 
       if (pic_order_cnt_lsb != priv->codec_data.h264.pic_order_cnt_lsb)
          vid_dec_h264_EndFrame(priv);
@@ -753,10 +771,14 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
          priv->codec_data.h264.delta_pic_order_cnt_bottom = delta_pic_order_cnt_bottom;
       }
 
-      priv->picture.h264.field_order_cnt[0] = pic_order_cnt_msb + pic_order_cnt_lsb;
-      priv->picture.h264.field_order_cnt[1] = pic_order_cnt_msb + pic_order_cnt_lsb;
-      if (!priv->picture.h264.field_pic_flag)
-         priv->picture.h264.field_order_cnt[1] += priv->codec_data.h264.delta_pic_order_cnt_bottom;
+      if (!priv->picture.h264.field_pic_flag) {
+         priv->picture.h264.field_order_cnt[0] = pic_order_cnt_msb + pic_order_cnt_lsb;
+         priv->picture.h264.field_order_cnt[1] = priv->picture.h264.field_order_cnt [0] +
+                                          priv->codec_data.h264.delta_pic_order_cnt_bottom;
+      } else if (!priv->picture.h264.bottom_field_flag)
+         priv->picture.h264.field_order_cnt[0] = pic_order_cnt_msb + pic_order_cnt_lsb;
+      else
+         priv->picture.h264.field_order_cnt[1] = pic_order_cnt_msb + pic_order_cnt_lsb;
 
    } else if (sps->pic_order_cnt_type == 1) {
       unsigned MaxFrameNum = 1 << (sps->log2_max_frame_num_minus4 + 4);
@@ -822,7 +844,7 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
          priv->picture.h264.field_order_cnt[0] = expectedPicOrderCnt + priv->codec_data.h264.delta_pic_order_cnt[0];
          priv->picture.h264.field_order_cnt[1] = priv->picture.h264.field_order_cnt[0] +
             sps->offset_for_top_to_bottom_field + priv->codec_data.h264.delta_pic_order_cnt[1];
-         
+
       } else if (!priv->picture.h264.bottom_field_flag)
          priv->picture.h264.field_order_cnt[0] = expectedPicOrderCnt + priv->codec_data.h264.delta_pic_order_cnt[0];
       else
@@ -852,7 +874,7 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
       if (!priv->picture.h264.field_pic_flag) {
          priv->picture.h264.field_order_cnt[0] = tempPicOrderCnt;
          priv->picture.h264.field_order_cnt[1] = tempPicOrderCnt;
-         
+
       } else if (!priv->picture.h264.bottom_field_flag)
          priv->picture.h264.field_order_cnt[0] = tempPicOrderCnt;
       else
@@ -869,7 +891,7 @@ static void slice_header(vid_dec_PrivateType *priv, struct vl_rbsp *rbsp,
 
    priv->picture.h264.num_ref_idx_l0_active_minus1 = pps->num_ref_idx_l0_default_active_minus1;
    priv->picture.h264.num_ref_idx_l1_active_minus1 = pps->num_ref_idx_l1_default_active_minus1;
- 
+
    if (slice_type == PIPE_H264_SLICE_TYPE_P ||
        slice_type == PIPE_H264_SLICE_TYPE_SP ||
        slice_type == PIPE_H264_SLICE_TYPE_B) {
@@ -942,6 +964,7 @@ static void vid_dec_h264_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, u
 
    if (priv->slice) {
       unsigned bytes = priv->bytes_left - (vl_vlc_bits_left(vlc) / 8);
+      ++priv->picture.h264.slice_count;
       priv->codec->decode_bitstream(priv->codec, priv->target, &priv->picture.base,
                                     1, &priv->slice, &bytes);
       priv->slice = NULL;
@@ -999,6 +1022,7 @@ static void vid_dec_h264_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, u
 
       vid_dec_h264_BeginFrame(priv);
 
+      ++priv->picture.h264.slice_count;
       priv->codec->decode_bitstream(priv->codec, priv->target, &priv->picture.base,
                                     1, &ptr, &bytes);
    }

@@ -52,13 +52,11 @@ gen8_emit_3dstate_sample_pattern(struct brw_context *brw)
    BEGIN_BATCH(9);
    OUT_BATCH(_3DSTATE_SAMPLE_PATTERN << 16 | (9 - 2));
 
-   /* 16x MSAA
-    * XXX: Need to program these.
-    */
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
+   /* 16x MSAA */
+   OUT_BATCH(brw_multisample_positions_16x[0]); /* positions  3,  2,  1,  0 */
+   OUT_BATCH(brw_multisample_positions_16x[1]); /* positions  7,  6,  5,  4 */
+   OUT_BATCH(brw_multisample_positions_16x[2]); /* positions 11, 10,  9,  8 */
+   OUT_BATCH(brw_multisample_positions_16x[3]); /* positions 15, 14, 13, 12 */
 
    /* 8x MSAA */
    OUT_BATCH(brw_multisample_positions_8x[1]); /* sample positions 7654 */
@@ -71,20 +69,3 @@ gen8_emit_3dstate_sample_pattern(struct brw_context *brw)
    OUT_BATCH(brw_multisample_positions_1x_2x);
    ADVANCE_BATCH();
 }
-
-
-static void
-upload_multisample_state(struct brw_context *brw)
-{
-   gen8_emit_3dstate_multisample(brw, brw->num_samples);
-   gen6_emit_3dstate_sample_mask(brw, gen6_determine_sample_mask(brw));
-}
-
-const struct brw_tracked_state gen8_multisample_state = {
-   .dirty = {
-      .mesa = _NEW_MULTISAMPLE,
-      .brw = BRW_NEW_CONTEXT |
-             BRW_NEW_NUM_SAMPLES,
-   },
-   .emit = upload_multisample_state
-};

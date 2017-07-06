@@ -74,6 +74,8 @@ _mesa_choose_tex_format(struct gl_context *ctx, GLenum target,
          RETURN_IF_SUPPORTED(MESA_FORMAT_B4G4R4A4_UNORM);
       } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
          RETURN_IF_SUPPORTED(MESA_FORMAT_B5G5R5A1_UNORM);
+      } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
+         RETURN_IF_SUPPORTED(MESA_FORMAT_B5G5R5A1_UNORM);
       } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
          RETURN_IF_SUPPORTED(MESA_FORMAT_B10G10R10A2_UNORM);
       }
@@ -765,6 +767,11 @@ _mesa_choose_tex_format(struct gl_context *ctx, GLenum target,
       RETURN_IF_SUPPORTED(MESA_FORMAT_B8G8R8A8_UNORM);
       break;
 
+   case GL_STENCIL_INDEX:
+   case GL_STENCIL_INDEX8:
+      RETURN_IF_SUPPORTED(MESA_FORMAT_S_UINT8);
+      break;
+
    default:
       /* For non-generic compressed format we assert two things:
        *
@@ -781,18 +788,4 @@ _mesa_choose_tex_format(struct gl_context *ctx, GLenum target,
    _mesa_problem(ctx, "unexpected format %s in _mesa_choose_tex_format()",
                  _mesa_enum_to_string(internalFormat));
    return MESA_FORMAT_NONE;
-}
-
-GLboolean
-_mesa_tex_target_is_array(GLenum target)
-{
-   switch (target) {
-   case GL_TEXTURE_1D_ARRAY_EXT:
-   case GL_TEXTURE_2D_ARRAY_EXT:
-   case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-   case GL_TEXTURE_CUBE_MAP_ARRAY:
-      return GL_TRUE;
-   default:
-      return GL_FALSE;
-   }
 }

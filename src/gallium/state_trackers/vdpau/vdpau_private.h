@@ -37,12 +37,15 @@
 #include "pipe/p_video_codec.h"
 
 #include "state_tracker/vdpau_interop.h"
+#include "state_tracker/vdpau_dmabuf.h"
+#include "state_tracker/vdpau_funcs.h"
 
 #include "util/u_debug.h"
 #include "util/u_rect.h"
 #include "os/os_thread.h"
 
 #include "vl/vl_video_buffer.h"
+#include "vl/vl_bicubic_filter.h"
 #include "vl/vl_compositor.h"
 #include "vl/vl_csc.h"
 #include "vl/vl_deint_filter.h"
@@ -161,27 +164,6 @@ PipeToFormatYCBCR(enum pipe_format p_format)
    return -1;
 }
 
-static inline enum pipe_format
-FormatRGBAToPipe(VdpRGBAFormat vdpau_format)
-{
-   switch (vdpau_format) {
-      case VDP_RGBA_FORMAT_A8:
-         return PIPE_FORMAT_A8_UNORM;
-      case VDP_RGBA_FORMAT_B10G10R10A2:
-         return PIPE_FORMAT_B10G10R10A2_UNORM;
-      case VDP_RGBA_FORMAT_B8G8R8A8:
-         return PIPE_FORMAT_B8G8R8A8_UNORM;
-      case VDP_RGBA_FORMAT_R10G10B10A2:
-         return PIPE_FORMAT_R10G10B10A2_UNORM;
-      case VDP_RGBA_FORMAT_R8G8B8A8:
-         return PIPE_FORMAT_R8G8B8A8_UNORM;
-      default:
-         assert(0);
-   }
-
-   return PIPE_FORMAT_NONE;
-}
-
 static inline VdpRGBAFormat
 PipeToFormatRGBA(enum pipe_format p_format)
 {
@@ -247,6 +229,8 @@ ProfileToPipe(VdpDecoderProfile vdpau_profile)
          return PIPE_VIDEO_PROFILE_MPEG2_MAIN;
       case VDP_DECODER_PROFILE_H264_BASELINE:
          return PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE;
+      case VDP_DECODER_PROFILE_H264_CONSTRAINED_BASELINE:
+         return PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE;
       case VDP_DECODER_PROFILE_H264_MAIN:
          return PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN;
       case VDP_DECODER_PROFILE_H264_HIGH:
@@ -288,6 +272,8 @@ PipeToProfile(enum pipe_video_profile p_profile)
          return VDP_DECODER_PROFILE_MPEG2_MAIN;
       case PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE:
          return VDP_DECODER_PROFILE_H264_BASELINE;
+      case PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE:
+         return VDP_DECODER_PROFILE_H264_CONSTRAINED_BASELINE;
       case PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN:
          return VDP_DECODER_PROFILE_H264_MAIN;
       case PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH:
@@ -368,12 +354,7 @@ typedef struct
    struct pipe_context *context;
    struct vl_compositor compositor;
    struct pipe_sampler_view *dummy_sv;
-   pipe_mutex mutex;
-
-   struct {
-      struct vl_compositor_state *cstate;
-      VdpOutputSurface surface;
-   } delayed_rendering;
+   mtx_t mutex;
 } vlVdpDevice;
 
 typedef struct
@@ -382,9 +363,19 @@ typedef struct
    struct vl_compositor_state cstate;
 
    struct {
+       bool supported, enabled;
+       float luma_min, luma_max;
+   } luma_key;
+
+   struct {
 	  bool supported, enabled, spatial;
 	  struct vl_deint_filter *filter;
    } deint;
+
+   struct {
+	  bool supported, enabled;
+	  struct vl_bicubic_filter *filter;
+   } bicubic;
 
    struct {
       bool supported, enabled;
@@ -401,7 +392,6 @@ typedef struct
    unsigned video_width, video_height;
    enum pipe_video_chroma_format chroma_format;
    unsigned max_layers, skip_chroma_deint;
-   float luma_key_min, luma_key_max;
 
    bool custom_csc;
    vl_csc_matrix csc;
@@ -429,6 +419,7 @@ typedef struct
    struct pipe_fence_handle *fence;
    struct vl_compositor_state cstate;
    struct u_rect dirty_area;
+   bool send_to_X;
 } vlVdpOutputSurface;
 
 typedef struct
@@ -448,7 +439,7 @@ typedef struct
 typedef struct
 {
    vlVdpDevice *device;
-   pipe_mutex mutex;
+   mtx_t mutex;
    struct pipe_video_codec *decoder;
 } vlVdpDecoder;
 
@@ -466,10 +457,6 @@ boolean vlGetFuncFTAB(VdpFuncId function_id, void **func);
 VdpDeviceCreateX11 vdp_imp_device_create_x11;
 
 void vlVdpDefaultSamplerViewTemplate(struct pipe_sampler_view *templ, struct pipe_resource *res);
-
-/* Delayed rendering funtionality */
-void vlVdpResolveDelayedRendering(vlVdpDevice *dev, struct pipe_surface *surface, struct u_rect *dirty_area);
-void vlVdpSave4DelayedRendering(vlVdpDevice *dev, VdpOutputSurface surface, struct vl_compositor_state *cstate);
 
 /* Internal function pointers */
 VdpGetErrorString vlVdpGetErrorString;
@@ -542,6 +529,8 @@ VdpPresentationQueueTargetCreateX11 vlVdpPresentationQueueTargetCreateX11;
 /* interop to mesa state tracker */
 VdpVideoSurfaceGallium vlVdpVideoSurfaceGallium;
 VdpOutputSurfaceGallium vlVdpOutputSurfaceGallium;
+VdpVideoSurfaceDMABuf vlVdpVideoSurfaceDMABuf;
+VdpOutputSurfaceDMABuf vlVdpOutputSurfaceDMABuf;
 
 #define VDPAU_OUT   0
 #define VDPAU_ERR   1

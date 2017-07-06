@@ -42,7 +42,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "main/macros.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "r200_reg.h"
 #include "r200_vertprog.h"
 
@@ -60,7 +59,7 @@ typedef struct r200_context *r200ContextPtr;
 #include "main/mm.h"
 
 struct r200_vertex_program {
-        struct gl_vertex_program mesa_program; /* Must be first */
+        struct gl_program mesa_program; /* Must be first */
         int translated;
         /* need excess instr: 1 for late loop checking, 2 for 
            additional instr due to instr/attr, 3 for fog */

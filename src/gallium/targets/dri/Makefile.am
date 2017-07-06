@@ -10,7 +10,6 @@ AM_CFLAGS = \
 
 AM_CPPFLAGS = \
 	$(DEFINES) \
-	-DDRI_TARGET \
         -DGALLIUM_DDEBUG \
 	-DGALLIUM_NOOP \
 	-DGALLIUM_RBUG \
@@ -26,8 +25,10 @@ gallium_dri_la_LDFLAGS = \
 	-shared \
 	-shrext .so \
 	-module \
+	-no-undefined \
 	-avoid-version \
-	$(GC_SECTIONS)
+	$(GC_SECTIONS) \
+	$(LD_NO_UNDEFINED)
 
 if HAVE_LD_VERSION_SCRIPT
 gallium_dri_la_LDFLAGS += \
@@ -50,6 +51,7 @@ gallium_dri_la_LIBADD = \
 	$(top_builddir)/src/gallium/drivers/noop/libnoop.la \
 	$(top_builddir)/src/gallium/drivers/rbug/librbug.la \
 	$(top_builddir)/src/gallium/drivers/trace/libtrace.la \
+	$(top_builddir)/src/mapi/shared-glapi/libglapi.la \
 	$(SELINUX_LIBS) \
 	$(EXPAT_LIBS) \
 	$(LIBDRM_LIBS) \
@@ -65,11 +67,9 @@ EXTRA_DIST = \
 
 TARGET_DRIVERS =
 TARGET_CPPFLAGS =
-TARGET_LIB_DEPS = $(top_builddir)/src/loader/libloader.la
+TARGET_LIB_DEPS =
 
 include $(top_srcdir)/src/gallium/drivers/i915/Automake.inc
-
-include $(top_srcdir)/src/gallium/drivers/ilo/Automake.inc
 
 include $(top_srcdir)/src/gallium/drivers/nouveau/Automake.inc
 
@@ -82,26 +82,35 @@ include $(top_srcdir)/src/gallium/drivers/svga/Automake.inc
 include $(top_srcdir)/src/gallium/drivers/freedreno/Automake.inc
 
 include $(top_srcdir)/src/gallium/drivers/vc4/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/pl111/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/virgl/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/etnaviv/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/imx/Automake.inc
 
 include $(top_srcdir)/src/gallium/drivers/softpipe/Automake.inc
 include $(top_srcdir)/src/gallium/drivers/llvmpipe/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/swr/Automake.inc
 
 if HAVE_GALLIUM_STATIC_TARGETS
 
 gallium_dri_la_SOURCES += target.c
 gallium_dri_la_CPPFLAGS = $(AM_CPPFLAGS) $(TARGET_CPPFLAGS)
-gallium_dri_la_LIBADD += $(TARGET_LIB_DEPS) \
+gallium_dri_la_LIBADD += \
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_static.la \
+	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
+	$(TARGET_LIB_DEPS) \
 	$(TARGET_RADEON_WINSYS) $(TARGET_RADEON_COMMON)
 
 else # HAVE_GALLIUM_STATIC_TARGETS
 
 gallium_dri_la_LIBADD += \
-	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader.la \
-	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS)
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_dynamic.la
 
 endif # HAVE_GALLIUM_STATIC_TARGETS
 
-if HAVE_MESA_LLVM
+if HAVE_GALLIUM_LLVM
 gallium_dri_la_LIBADD += $(LLVM_LIBS)
 gallium_dri_la_LDFLAGS += $(LLVM_LDFLAGS)
 endif
@@ -130,7 +139,8 @@ install-data-hook:
 		ln -f $(DESTDIR)$(dridir)/gallium_dri.so                \
 		      $(DESTDIR)$(dridir)/$${i}_dri.so;                 \
 	done;                                                           \
-	$(RM) $(DESTDIR)$(dridir)/gallium_dri.*
+	$(RM) $(DESTDIR)$(dridir)/gallium_dri.*;                        \
+	$(RM) -d $(DESTDIR)$(dridir) &>/dev/null || true
 
 uninstall-hook:
 	for i in $(TARGET_DRIVERS); do                                  \

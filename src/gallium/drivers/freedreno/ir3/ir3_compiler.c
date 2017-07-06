@@ -30,15 +30,11 @@
 
 #include "ir3_compiler.h"
 
-struct ir3_compiler * ir3_compiler_create(uint32_t gpu_id)
+struct ir3_compiler * ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id)
 {
 	struct ir3_compiler *compiler = rzalloc(NULL, struct ir3_compiler);
+	compiler->dev = dev;
 	compiler->gpu_id = gpu_id;
 	compiler->set = ir3_ra_alloc_reg_set(compiler);
 	return compiler;
-}
-
-void ir3_compiler_destroy(struct ir3_compiler *compiler)
-{
-	ralloc_free(compiler);
 }

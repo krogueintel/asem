@@ -38,49 +38,6 @@
 #include "main/stencil.h"
 #include "intel_batchbuffer.h"
 
-static void
-brw_upload_cc_vp(struct brw_context *brw)
-{
-   struct gl_context *ctx = &brw->ctx;
-   struct brw_cc_viewport *ccv;
-
-   ccv = brw_state_batch(brw, AUB_TRACE_CC_VP_STATE,
-			 sizeof(*ccv) * ctx->Const.MaxViewports, 32,
-                         &brw->cc.vp_offset);
-
-   /* _NEW_TRANSFORM */
-   for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
-      if (ctx->Transform.DepthClamp) {
-         /* _NEW_VIEWPORT */
-         ccv[i].min_depth = MIN2(ctx->ViewportArray[i].Near,
-                                 ctx->ViewportArray[i].Far);
-         ccv[i].max_depth = MAX2(ctx->ViewportArray[i].Near,
-                                 ctx->ViewportArray[i].Far);
-      } else {
-         ccv[i].min_depth = 0.0;
-         ccv[i].max_depth = 1.0;
-      }
-   }
-
-   if (brw->gen >= 7) {
-      BEGIN_BATCH(2);
-      OUT_BATCH(_3DSTATE_VIEWPORT_STATE_POINTERS_CC << 16 | (2 - 2));
-      OUT_BATCH(brw->cc.vp_offset);
-      ADVANCE_BATCH();
-   } else {
-      brw->ctx.NewDriverState |= BRW_NEW_CC_VP;
-   }
-}
-
-const struct brw_tracked_state brw_cc_vp = {
-   .dirty = {
-      .mesa = _NEW_TRANSFORM |
-              _NEW_VIEWPORT,
-      .brw = BRW_NEW_BATCH,
-   },
-   .emit = brw_upload_cc_vp
-};
-
 /**
  * Modify blend function to force destination alpha to 1.0
  *
@@ -111,12 +68,11 @@ static void upload_cc_unit(struct brw_context *brw)
    struct gl_context *ctx = &brw->ctx;
    struct brw_cc_unit_state *cc;
 
-   cc = brw_state_batch(brw, AUB_TRACE_CC_STATE,
-			sizeof(*cc), 64, &brw->cc.state_offset);
+   cc = brw_state_batch(brw, sizeof(*cc), 64, &brw->cc.state_offset);
    memset(cc, 0, sizeof(*cc));
 
    /* _NEW_STENCIL | _NEW_BUFFERS */
-   if (ctx->Stencil._Enabled) {
+   if (brw->stencil_enabled) {
       const unsigned back = ctx->Stencil._BackFace;
 
       cc->cc0.stencil_enable = 1;
@@ -132,7 +88,7 @@ static void upload_cc_unit(struct brw_context *brw)
       cc->cc1.stencil_write_mask = ctx->Stencil.WriteMask[0];
       cc->cc1.stencil_test_mask = ctx->Stencil.ValueMask[0];
 
-      if (ctx->Stencil._TestTwoSide) {
+      if (brw->stencil_two_sided) {
 	 cc->cc0.bf_stencil_enable = 1;
 	 cc->cc0.bf_stencil_func =
 	    intel_translate_compare_func(ctx->Stencil.Function[back]);
@@ -150,7 +106,7 @@ static void upload_cc_unit(struct brw_context *brw)
       /* Not really sure about this:
        */
       if (ctx->Stencil.WriteMask[0] ||
-	  (ctx->Stencil._TestTwoSide && ctx->Stencil.WriteMask[back]))
+	  (brw->stencil_two_sided && ctx->Stencil.WriteMask[back]))
 	 cc->cc0.stencil_write_enable = 1;
    }
 
@@ -158,7 +114,7 @@ static void upload_cc_unit(struct brw_context *brw)
    if (ctx->Color.ColorLogicOpEnabled && ctx->Color.LogicOp != GL_COPY) {
       cc->cc2.logicop_enable = 1;
       cc->cc5.logicop_func = intel_translate_logic_op(ctx->Color.LogicOp);
-   } else if (ctx->Color.BlendEnabled) {
+   } else if (ctx->Color.BlendEnabled && !ctx->Color._AdvancedBlendMode) {
       GLenum eqRGB = ctx->Color.Blend[0].EquationRGB;
       GLenum eqA = ctx->Color.Blend[0].EquationA;
       GLenum srcRGB = ctx->Color.Blend[0].SrcRGB;
@@ -220,10 +176,10 @@ static void upload_cc_unit(struct brw_context *brw)
       cc->cc2.depth_test = 1;
       cc->cc2.depth_test_function =
 	 intel_translate_compare_func(ctx->Depth.Func);
-      cc->cc2.depth_write_enable = ctx->Depth.Mask;
+      cc->cc2.depth_write_enable = brw_depth_writes_enabled(brw);
    }
 
-   if (brw->stats_wm || unlikely(INTEL_DEBUG & DEBUG_STATS))
+   if (brw->stats_wm)
       cc->cc5.statistics_enable = 1;
 
    /* BRW_NEW_CC_VP */
@@ -233,11 +189,11 @@ static void upload_cc_unit(struct brw_context *brw)
    brw->ctx.NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
 
    /* Emit CC viewport relocation */
-   drm_intel_bo_emit_reloc(brw->batch.bo,
-			   (brw->cc.state_offset +
-			    offsetof(struct brw_cc_unit_state, cc4)),
-			   brw->batch.bo, brw->cc.vp_offset,
-			   I915_GEM_DOMAIN_INSTRUCTION, 0);
+   brw_emit_reloc(&brw->batch,
+                  (brw->cc.state_offset +
+                   offsetof(struct brw_cc_unit_state, cc4)),
+                  brw->batch.bo, brw->cc.vp_offset,
+                  I915_GEM_DOMAIN_INSTRUCTION, 0);
 }
 
 const struct brw_tracked_state brw_cc_unit = {
@@ -247,6 +203,7 @@ const struct brw_tracked_state brw_cc_unit = {
               _NEW_DEPTH |
               _NEW_STENCIL,
       .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
              BRW_NEW_CC_VP |
              BRW_NEW_STATS_WM,
    },
@@ -269,7 +226,8 @@ static void upload_blend_constant_color(struct brw_context *brw)
 const struct brw_tracked_state brw_blend_constant_color = {
    .dirty = {
       .mesa = _NEW_COLOR,
-      .brw = BRW_NEW_CONTEXT,
+      .brw = BRW_NEW_CONTEXT |
+             BRW_NEW_BLORP,
    },
    .emit = upload_blend_constant_color
 };

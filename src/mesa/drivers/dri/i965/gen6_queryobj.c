@@ -37,79 +37,125 @@
 #include "brw_defines.h"
 #include "brw_state.h"
 #include "intel_batchbuffer.h"
-#include "intel_reg.h"
+#include "intel_buffer_objects.h"
 
-/*
- * Write an arbitrary 64-bit register to a buffer via MI_STORE_REGISTER_MEM.
- *
- * Only TIMESTAMP and PS_DEPTH_COUNT have special PIPE_CONTROL support; other
- * counters have to be read via the generic MI_STORE_REGISTER_MEM.
- *
- * Callers must explicitly flush the pipeline to ensure the desired value is
- * available.
- */
-void
-brw_store_register_mem64(struct brw_context *brw,
-                         drm_intel_bo *bo, uint32_t reg, int idx)
+static inline void
+set_query_availability(struct brw_context *brw, struct brw_query_object *query,
+                       bool available)
 {
-   assert(brw->gen >= 6);
-
-   /* MI_STORE_REGISTER_MEM only stores a single 32-bit value, so to
-    * read a full 64-bit register, we need to do two of them.
+   /* For platforms that support ARB_query_buffer_object, we write the
+    * query availability for "pipelined" queries.
+    *
+    * Most counter snapshots are written by the command streamer, by
+    * doing a CS stall and then MI_STORE_REGISTER_MEM.  For these
+    * counters, the CS stall guarantees that the results will be
+    * available when subsequent CS commands run.  So we don't need to
+    * do any additional tracking.
+    *
+    * Other counters (occlusion queries and timestamp) are written by
+    * PIPE_CONTROL, without a CS stall.  This means that we can't be
+    * sure whether the writes have landed yet or not.  Performing a
+    * PIPE_CONTROL with an immediate write will synchronize with
+    * those earlier writes, so we write 1 when the value has landed.
     */
-   if (brw->gen >= 8) {
-      BEGIN_BATCH(8);
-      OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
-      OUT_BATCH(reg);
-      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                  idx * sizeof(uint64_t));
-      OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
-      OUT_BATCH(reg + sizeof(uint32_t));
-      OUT_RELOC64(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                  sizeof(uint32_t) + idx * sizeof(uint64_t));
-      ADVANCE_BATCH();
-   } else {
-      BEGIN_BATCH(6);
-      OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
-      OUT_BATCH(reg);
-      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                idx * sizeof(uint64_t));
-      OUT_BATCH(MI_STORE_REGISTER_MEM | (3 - 2));
-      OUT_BATCH(reg + sizeof(uint32_t));
-      OUT_RELOC(bo, I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION,
-                sizeof(uint32_t) + idx * sizeof(uint64_t));
-      ADVANCE_BATCH();
+   if (brw->ctx.Extensions.ARB_query_buffer_object &&
+       brw_is_query_pipelined(query)) {
+      unsigned flags = PIPE_CONTROL_WRITE_IMMEDIATE;
+
+      if (available) {
+         /* Order available *after* the query results. */
+         flags |= PIPE_CONTROL_FLUSH_ENABLE;
+      } else {
+         /* Make it unavailable *before* any pipelined reads. */
+         flags |= PIPE_CONTROL_CS_STALL;
+      }
+
+      brw_emit_pipe_control_write(brw, flags,
+                                  query->bo, 2 * sizeof(uint64_t),
+                                  available);
    }
 }
 
 static void
 write_primitives_generated(struct brw_context *brw,
-                           drm_intel_bo *query_bo, int stream, int idx)
+                           struct brw_bo *query_bo, int stream, int idx)
 {
    brw_emit_mi_flush(brw);
 
    if (brw->gen >= 7 && stream > 0) {
       brw_store_register_mem64(brw, query_bo,
-                               GEN7_SO_PRIM_STORAGE_NEEDED(stream), idx);
+                               GEN7_SO_PRIM_STORAGE_NEEDED(stream),
+                               idx * sizeof(uint64_t));
    } else {
-      brw_store_register_mem64(brw, query_bo, CL_INVOCATION_COUNT, idx);
+      brw_store_register_mem64(brw, query_bo, CL_INVOCATION_COUNT,
+                               idx * sizeof(uint64_t));
    }
 }
 
 static void
 write_xfb_primitives_written(struct brw_context *brw,
-                             drm_intel_bo *bo, int stream, int idx)
+                             struct brw_bo *bo, int stream, int idx)
 {
    brw_emit_mi_flush(brw);
 
    if (brw->gen >= 7) {
-      brw_store_register_mem64(brw, bo, GEN7_SO_NUM_PRIMS_WRITTEN(stream), idx);
+      brw_store_register_mem64(brw, bo, GEN7_SO_NUM_PRIMS_WRITTEN(stream),
+                               idx * sizeof(uint64_t));
    } else {
-      brw_store_register_mem64(brw, bo, GEN6_SO_NUM_PRIMS_WRITTEN, idx);
+      brw_store_register_mem64(brw, bo, GEN6_SO_NUM_PRIMS_WRITTEN,
+                               idx * sizeof(uint64_t));
    }
 }
 
-static inline const int
+static void
+write_xfb_overflow_streams(struct gl_context *ctx,
+                           struct brw_bo *bo, int stream, int count,
+                           int idx)
+{
+   struct brw_context *brw = brw_context(ctx);
+
+   brw_emit_mi_flush(brw);
+
+   for (int i = 0; i < count; i++) {
+      int w_idx = 4 * i + idx;
+      int g_idx = 4 * i + idx + 2;
+
+      if (brw->gen >= 7) {
+         brw_store_register_mem64(brw, bo,
+                                  GEN7_SO_NUM_PRIMS_WRITTEN(stream + i),
+                                  g_idx * sizeof(uint64_t));
+         brw_store_register_mem64(brw, bo,
+                                  GEN7_SO_PRIM_STORAGE_NEEDED(stream + i),
+                                  w_idx * sizeof(uint64_t));
+      } else {
+         brw_store_register_mem64(brw, bo,
+                                  GEN6_SO_NUM_PRIMS_WRITTEN,
+                                  g_idx * sizeof(uint64_t));
+         brw_store_register_mem64(brw, bo,
+                                  GEN6_SO_PRIM_STORAGE_NEEDED,
+                                  w_idx * sizeof(uint64_t));
+      }
+   }
+}
+
+static bool
+check_xfb_overflow_streams(uint64_t *results, int count)
+{
+   bool overflow = false;
+
+   for (int i = 0; i < count; i++) {
+      uint64_t *result_i = &results[4 * i];
+
+      if ((result_i[3] - result_i[2]) != (result_i[1] - result_i[0])) {
+         overflow = true;
+         break;
+      }
+   }
+
+   return overflow;
+}
+
+static inline int
 pipeline_target_to_index(int target)
 {
    if (target == GL_GEOMETRY_SHADER_INVOCATIONS)
@@ -119,7 +165,7 @@ pipeline_target_to_index(int target)
 }
 
 static void
-emit_pipeline_stat(struct brw_context *brw, drm_intel_bo *bo,
+emit_pipeline_stat(struct brw_context *brw, struct brw_bo *bo,
                    int stream, int target, int idx)
 {
    /* One source of confusion is the tessellation shader statistics. The
@@ -136,8 +182,8 @@ emit_pipeline_stat(struct brw_context *brw, drm_intel_bo *bo,
       IA_VERTICES_COUNT,   /* VERTICES_SUBMITTED */
       IA_PRIMITIVES_COUNT, /* PRIMITIVES_SUBMITTED */
       VS_INVOCATION_COUNT, /* VERTEX_SHADER_INVOCATIONS */
-      0, /* HS_INVOCATION_COUNT,*/  /* TESS_CONTROL_SHADER_PATCHES */
-      0, /* DS_INVOCATION_COUNT,*/  /* TESS_EVALUATION_SHADER_INVOCATIONS */
+      HS_INVOCATION_COUNT, /* TESS_CONTROL_SHADER_PATCHES */
+      DS_INVOCATION_COUNT, /* TESS_EVALUATION_SHADER_INVOCATIONS */
       GS_PRIMITIVES_COUNT, /* GEOMETRY_SHADER_PRIMITIVES_EMITTED */
       PS_INVOCATION_COUNT, /* FRAGMENT_SHADER_INVOCATIONS */
       CS_INVOCATION_COUNT, /* COMPUTE_SHADER_INVOCATIONS */
@@ -159,7 +205,7 @@ emit_pipeline_stat(struct brw_context *brw, drm_intel_bo *bo,
     */
    brw_emit_mi_flush(brw);
 
-   brw_store_register_mem64(brw, bo, reg, idx);
+   brw_store_register_mem64(brw, bo, reg, idx * sizeof(uint64_t));
 }
 
 
@@ -175,37 +221,24 @@ gen6_queryobj_get_results(struct gl_context *ctx,
    if (query->bo == NULL)
       return;
 
-   brw_bo_map(brw, query->bo, false, "query object");
-   uint64_t *results = query->bo->virtual;
+   uint64_t *results = brw_bo_map(brw, query->bo, MAP_READ);
    switch (query->Base.Target) {
    case GL_TIME_ELAPSED:
       /* The query BO contains the starting and ending timestamps.
        * Subtract the two and convert to nanoseconds.
        */
-      query->Base.Result += 80 * (results[1] - results[0]);
+      query->Base.Result = brw_raw_timestamp_delta(brw, results[0], results[1]);
+      query->Base.Result = brw_timebase_scale(brw, query->Base.Result);
       break;
 
    case GL_TIMESTAMP:
-      /* Our timer is a clock that increments every 80ns (regardless of
-       * other clock scaling in the system).  The timestamp register we can
-       * read for glGetTimestamp() masks out the top 32 bits, so we do that
-       * here too to let the two counters be compared against each other.
-       *
-       * If we just multiplied that 32 bits of data by 80, it would roll
-       * over at a non-power-of-two, so an application couldn't use
-       * GL_QUERY_COUNTER_BITS to handle rollover correctly.  Instead, we
-       * report 36 bits and truncate at that (rolling over 5 times as often
-       * as the HW counter), and when the 32-bit counter rolls over, it
-       * happens to also be at a rollover in the reported value from near
-       * (1<<36) to 0.
-       *
-       * The low 32 bits rolls over in ~343 seconds.  Our 36-bit result
-       * rolls over every ~69 seconds.
-       *
-       * The query BO contains a single timestamp value in results[0].
+      /* The query BO contains a single timestamp value in results[0]. */
+      query->Base.Result = brw_timebase_scale(brw, results[0]);
+
+      /* Ensure the scaled timestamp overflows according to
+       * GL_QUERY_COUNTER_BITS
        */
-      query->Base.Result = 80 * (results[0] & 0xffffffff);
-      query->Base.Result &= (1ull << 36) - 1;
+      query->Base.Result &= (1ull << ctx->Const.QueryCounterBits.Timestamp) - 1;
       break;
 
    case GL_SAMPLES_PASSED_ARB:
@@ -231,7 +264,17 @@ gen6_queryobj_get_results(struct gl_context *ctx,
    case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
    case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
    case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
+   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
+   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
       query->Base.Result = results[1] - results[0];
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      query->Base.Result = check_xfb_overflow_streams(results, 1);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      query->Base.Result = check_xfb_overflow_streams(results, MAX_VERTEX_STREAMS);
       break;
 
    case GL_FRAGMENT_SHADER_INVOCATIONS_ARB:
@@ -250,17 +293,15 @@ gen6_queryobj_get_results(struct gl_context *ctx,
          query->Base.Result /= 4;
       break;
 
-   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
-   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
    default:
       unreachable("Unrecognized query target in brw_queryobj_get_results()");
    }
-   drm_intel_bo_unmap(query->bo);
+   brw_bo_unmap(query->bo);
 
    /* Now that we've processed the data stored in the query's buffer object,
     * we can release it.
     */
-   drm_intel_bo_unreference(query->bo);
+   brw_bo_unreference(query->bo);
    query->bo = NULL;
 
    query->Base.Ready = true;
@@ -279,8 +320,11 @@ gen6_begin_query(struct gl_context *ctx, struct gl_query_object *q)
    struct brw_query_object *query = (struct brw_query_object *)q;
 
    /* Since we're starting a new query, we need to throw away old results. */
-   drm_intel_bo_unreference(query->bo);
-   query->bo = drm_intel_bo_alloc(brw->bufmgr, "query results", 4096, 4096);
+   brw_bo_unreference(query->bo);
+   query->bo = brw_bo_alloc(brw->bufmgr, "query results", 4096, 4096);
+
+   /* For ARB_query_buffer_object: The result is not available */
+   set_query_availability(brw, query, false);
 
    switch (query->Base.Target) {
    case GL_TIME_ELAPSED:
@@ -314,10 +358,20 @@ gen6_begin_query(struct gl_context *ctx, struct gl_query_object *q)
 
    case GL_PRIMITIVES_GENERATED:
       write_primitives_generated(brw, query->bo, query->Base.Stream, 0);
+      if (query->Base.Stream == 0)
+         ctx->NewDriverState |= BRW_NEW_RASTERIZER_DISCARD;
       break;
 
    case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
       write_xfb_primitives_written(brw, query->bo, query->Base.Stream, 0);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, query->Base.Stream, 1, 0);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, 0, MAX_VERTEX_STREAMS, 0);
       break;
 
    case GL_VERTICES_SUBMITTED_ARB:
@@ -329,11 +383,11 @@ gen6_begin_query(struct gl_context *ctx, struct gl_query_object *q)
    case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
    case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
    case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
+   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
+   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
       emit_pipeline_stat(brw, query->bo, query->Base.Stream, query->Base.Target, 0);
       break;
 
-   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
-   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
    default:
       unreachable("Unrecognized query target in brw_begin_query()");
    }
@@ -366,12 +420,23 @@ gen6_end_query(struct gl_context *ctx, struct gl_query_object *q)
 
    case GL_PRIMITIVES_GENERATED:
       write_primitives_generated(brw, query->bo, query->Base.Stream, 1);
+      if (query->Base.Stream == 0)
+         ctx->NewDriverState |= BRW_NEW_RASTERIZER_DISCARD;
       break;
 
    case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
       write_xfb_primitives_written(brw, query->bo, query->Base.Stream, 1);
       break;
 
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, query->Base.Stream, 1, 1);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, 0, MAX_VERTEX_STREAMS, 1);
+      break;
+
+      /* calculate overflow here */
    case GL_VERTICES_SUBMITTED_ARB:
    case GL_PRIMITIVES_SUBMITTED_ARB:
    case GL_VERTEX_SHADER_INVOCATIONS_ARB:
@@ -381,12 +446,12 @@ gen6_end_query(struct gl_context *ctx, struct gl_query_object *q)
    case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
    case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
    case GL_GEOMETRY_SHADER_INVOCATIONS:
+   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
+   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
       emit_pipeline_stat(brw, query->bo,
                          query->Base.Stream, query->Base.Target, 1);
       break;
 
-   case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
-   case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
    default:
       unreachable("Unrecognized query target in brw_end_query()");
    }
@@ -395,6 +460,9 @@ gen6_end_query(struct gl_context *ctx, struct gl_query_object *q)
     * but they won't actually execute until it is flushed.
     */
    query->flushed = false;
+
+   /* For ARB_query_buffer_object: The result is now available */
+   set_query_availability(brw, query, true);
 }
 
 /**
@@ -407,7 +475,7 @@ flush_batch_if_needed(struct brw_context *brw, struct brw_query_object *query)
     * (for example, due to being full).  Record that it's been flushed.
     */
    query->flushed = query->flushed ||
-      !drm_intel_bo_references(brw->batch.bo, query->bo);
+                    !brw_batch_references(&brw->batch, query->bo);
 
    if (!query->flushed)
       intel_batchbuffer_flush(brw);
@@ -459,9 +527,18 @@ static void gen6_check_query(struct gl_context *ctx, struct gl_query_object *q)
     */
    flush_batch_if_needed(brw, query);
 
-   if (!drm_intel_bo_busy(query->bo)) {
+   if (!brw_bo_busy(query->bo)) {
       gen6_queryobj_get_results(ctx, query);
    }
+}
+
+static void
+gen6_query_counter(struct gl_context *ctx, struct gl_query_object *q)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_query_object *query = (struct brw_query_object *)q;
+   brw_query_counter(ctx, q);
+   set_query_availability(brw, query, true);
 }
 
 /* Initialize Gen6+-specific query object functions. */
@@ -471,4 +548,5 @@ void gen6_init_queryobj_functions(struct dd_function_table *functions)
    functions->EndQuery = gen6_end_query;
    functions->CheckQuery = gen6_check_query;
    functions->WaitQuery = gen6_wait_query;
+   functions->QueryCounter = gen6_query_counter;
 }

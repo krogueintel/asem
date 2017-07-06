@@ -120,6 +120,7 @@ nv30_query_create(struct pipe_context *pipe, unsigned type, unsigned index)
       q->report = 1;
       break;
    case PIPE_QUERY_OCCLUSION_COUNTER:
+   case PIPE_QUERY_OCCLUSION_PREDICATE:
       q->enable = NV30_3D_QUERY_ENABLE;
       q->report = 1;
       break;
@@ -174,7 +175,7 @@ nv30_query_begin(struct pipe_context *pipe, struct pipe_query *pq)
    return true;
 }
 
-static void
+static bool
 nv30_query_end(struct pipe_context *pipe, struct pipe_query *pq)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
@@ -193,6 +194,7 @@ nv30_query_end(struct pipe_context *pipe, struct pipe_query *pq)
       PUSH_DATA (push, 0);
    }
    PUSH_KICK (push);
+   return true;
 }
 
 static boolean
@@ -203,7 +205,6 @@ nv30_query_result(struct pipe_context *pipe, struct pipe_query *pq,
    struct nv30_query *q = nv30_query(pq);
    volatile uint32_t *ntfy0 = nv30_ntfy(screen, q->qo[0]);
    volatile uint32_t *ntfy1 = nv30_ntfy(screen, q->qo[1]);
-   uint64_t *res64 = &result->u64;
 
    if (ntfy1) {
       while (ntfy1[3] & 0xff000000) {
@@ -227,14 +228,17 @@ nv30_query_result(struct pipe_context *pipe, struct pipe_query *pq,
       nv30_query_object_del(screen, &q->qo[1]);
    }
 
-   *res64 = q->result;
+   if (q->type == PIPE_QUERY_OCCLUSION_PREDICATE)
+      result->b = !!q->result;
+   else
+      result->u64 = q->result;
    return true;
 }
 
 static void
 nv40_query_render_condition(struct pipe_context *pipe,
                             struct pipe_query *pq,
-                            boolean condition, uint mode)
+                            boolean condition, enum pipe_render_cond_flag mode)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
    struct nv30_query *q = nv30_query(pq);
@@ -260,6 +264,11 @@ nv40_query_render_condition(struct pipe_context *pipe,
    PUSH_DATA (push, 0x02000000 | q->qo[1]->hw->start);
 }
 
+static void
+nv30_set_active_query_state(struct pipe_context *pipe, boolean enable)
+{
+}
+
 void
 nv30_query_init(struct pipe_context *pipe)
 {
@@ -270,6 +279,7 @@ nv30_query_init(struct pipe_context *pipe)
    pipe->begin_query = nv30_query_begin;
    pipe->end_query = nv30_query_end;
    pipe->get_query_result = nv30_query_result;
+   pipe->set_active_query_state = nv30_set_active_query_state;
    if (eng3d->oclass >= NV40_3D_CLASS)
       pipe->render_condition = nv40_query_render_condition;
 }

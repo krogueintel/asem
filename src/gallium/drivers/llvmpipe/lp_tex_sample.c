@@ -112,7 +112,7 @@ lp_llvm_texture_member(const struct lp_sampler_dynamic_state *base,
    /* context[0].textures[unit].member */
    indices[3] = lp_build_const_int32(gallivm, member_index);
 
-   ptr = LLVMBuildGEP(builder, context_ptr, indices, Elements(indices), "");
+   ptr = LLVMBuildGEP(builder, context_ptr, indices, ARRAY_SIZE(indices), "");
 
    if (emit_load)
       res = LLVMBuildLoad(builder, ptr, "");
@@ -190,7 +190,7 @@ lp_llvm_sampler_member(const struct lp_sampler_dynamic_state *base,
    /* context[0].samplers[unit].member */
    indices[3] = lp_build_const_int32(gallivm, member_index);
 
-   ptr = LLVMBuildGEP(builder, context_ptr, indices, Elements(indices), "");
+   ptr = LLVMBuildGEP(builder, context_ptr, indices, ARRAY_SIZE(indices), "");
 
    if (emit_load)
       res = LLVMBuildLoad(builder, ptr, "");
@@ -219,6 +219,21 @@ LP_LLVM_SAMPLER_MEMBER(min_lod,    LP_JIT_SAMPLER_MIN_LOD, TRUE)
 LP_LLVM_SAMPLER_MEMBER(max_lod,    LP_JIT_SAMPLER_MAX_LOD, TRUE)
 LP_LLVM_SAMPLER_MEMBER(lod_bias,   LP_JIT_SAMPLER_LOD_BIAS, TRUE)
 LP_LLVM_SAMPLER_MEMBER(border_color, LP_JIT_SAMPLER_BORDER_COLOR, FALSE)
+
+
+#if LP_USE_TEXTURE_CACHE
+static LLVMValueRef
+lp_llvm_texture_cache_ptr(const struct lp_sampler_dynamic_state *base,
+                          struct gallivm_state *gallivm,
+                          LLVMValueRef thread_data_ptr,
+                          unsigned unit)
+{
+   /* We use the same cache for all units */
+   (void)unit;
+
+   return lp_jit_thread_data_cache(gallivm, thread_data_ptr);
+}
+#endif
 
 
 static void
@@ -261,30 +276,16 @@ lp_llvm_sampler_soa_emit_fetch_texel(const struct lp_build_sampler_soa *base,
 static void
 lp_llvm_sampler_soa_emit_size_query(const struct lp_build_sampler_soa *base,
                                     struct gallivm_state *gallivm,
-                                    struct lp_type type,
-                                    unsigned texture_unit,
-                                    unsigned target,
-                                    LLVMValueRef context_ptr,
-                                    boolean is_sviewinfo,
-                                    enum lp_sampler_lod_property lod_property,
-                                    LLVMValueRef explicit_lod, /* optional */
-                                    LLVMValueRef *sizes_out)
+                                    const struct lp_sampler_size_query_params *params)
 {
    struct lp_llvm_sampler_soa *sampler = (struct lp_llvm_sampler_soa *)base;
 
-   assert(texture_unit < PIPE_MAX_SHADER_SAMPLER_VIEWS);
+   assert(params->texture_unit < PIPE_MAX_SHADER_SAMPLER_VIEWS);
 
    lp_build_size_query_soa(gallivm,
-                           &sampler->dynamic_state.static_state[texture_unit].texture_state,
+                           &sampler->dynamic_state.static_state[params->texture_unit].texture_state,
                            &sampler->dynamic_state.base,
-                           type,
-                           texture_unit,
-                           target,
-                           context_ptr,
-                           is_sviewinfo,
-                           lod_property,
-                           explicit_lod,
-                           sizes_out);
+                           params);
 }
 
 
@@ -294,7 +295,7 @@ lp_llvm_sampler_soa_create(const struct lp_sampler_static_state *static_state)
    struct lp_llvm_sampler_soa *sampler;
 
    sampler = CALLOC_STRUCT(lp_llvm_sampler_soa);
-   if(!sampler)
+   if (!sampler)
       return NULL;
 
    sampler->base.destroy = lp_llvm_sampler_soa_destroy;
@@ -313,6 +314,10 @@ lp_llvm_sampler_soa_create(const struct lp_sampler_static_state *static_state)
    sampler->dynamic_state.base.max_lod = lp_llvm_sampler_max_lod;
    sampler->dynamic_state.base.lod_bias = lp_llvm_sampler_lod_bias;
    sampler->dynamic_state.base.border_color = lp_llvm_sampler_border_color;
+
+#if LP_USE_TEXTURE_CACHE
+   sampler->dynamic_state.base.cache_ptr = lp_llvm_texture_cache_ptr;
+#endif
 
    sampler->dynamic_state.static_state = static_state;
 

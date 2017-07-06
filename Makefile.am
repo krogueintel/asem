@@ -22,19 +22,29 @@
 SUBDIRS = src
 
 AM_DISTCHECK_CONFIGURE_FLAGS = \
+	--enable-dri \
 	--enable-dri3 \
+	--enable-egl \
 	--enable-gallium-tests \
+	--enable-gallium-osmesa \
+	--enable-llvm \
 	--enable-gbm \
 	--enable-gles1 \
 	--enable-gles2 \
+	--enable-glx \
 	--enable-glx-tls \
+	--enable-nine \
+	--enable-opencl \
+	--enable-opengl \
 	--enable-va \
 	--enable-vdpau \
 	--enable-xa \
 	--enable-xvmc \
-	--with-egl-platforms=x11,wayland,drm \
+	--enable-llvm-shared-libs \
+	--with-platforms=x11,wayland,drm,surfaceless \
 	--with-dri-drivers=i915,i965,nouveau,radeon,r200,swrast \
-	--with-gallium-drivers=i915,ilo,nouveau,r300,r600,radeonsi,freedreno,svga,swrast
+	--with-gallium-drivers=i915,nouveau,r300,pl111,r600,radeonsi,freedreno,svga,swrast,vc4,virgl,swr,etnaviv,imx \
+	--with-vulkan-drivers=intel,radeon
 
 ACLOCAL_AMFLAGS = -I m4
 
@@ -50,9 +60,9 @@ noinst_HEADERS = \
 	include/c99_alloca.h \
 	include/c99_compat.h \
 	include/c99_math.h \
-	include/c99 \
 	include/c11 \
 	include/D3D9 \
+	include/GL/wglext.h \
 	include/HaikuGL \
 	include/no_extern_c.h \
 	include/pci_ids

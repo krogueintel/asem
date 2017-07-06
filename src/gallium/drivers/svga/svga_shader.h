@@ -98,14 +98,12 @@ struct svga_compile_key
       unsigned compare_func:3;
       unsigned unnormalized:1;
       unsigned width_height_idx:5; /**< texture unit */
-      unsigned texture_target:4;   /**< PIPE_TEXTURE_x */
-      unsigned texture_msaa:1;    /**< A multisample texture? */
+      unsigned is_array:1;
       unsigned sprite_texgen:1;
       unsigned swizzle_r:3;
       unsigned swizzle_g:3;
       unsigned swizzle_b:3;
       unsigned swizzle_a:3;
-      unsigned return_type:3;  /**< TGSI_RETURN_TYPE_x */
    } tex[PIPE_MAX_SAMPLERS];
    /* Note: svga_compile_keys_equal() depends on the variable-size
     * tex[] array being at the end of this structure.
@@ -154,6 +152,9 @@ struct svga_shader_variant
    boolean uses_flat_interp;   /** TRUE if flat interpolation qualifier is
                                 *  applied to any of the varyings.
                                 */
+
+   /** Is the color output just a constant value? (fragment shader only) */
+   boolean constant_color_output;
 
    /** For FS-based polygon stipple */
    unsigned pstipple_sampler_unit;
@@ -252,7 +253,8 @@ svga_remap_generic_index(int8_t remap_table[MAX_GENERIC_VARYING],
                          int generic_index);
 
 void
-svga_init_shader_key_common(const struct svga_context *svga, unsigned shader,
+svga_init_shader_key_common(const struct svga_context *svga,
+                            enum pipe_shader_type shader,
                             struct svga_compile_key *key);
 
 struct svga_shader_variant *
@@ -272,6 +274,9 @@ enum pipe_error
 svga_set_shader(struct svga_context *svga,
                 SVGA3dShaderType type,
                 struct svga_shader_variant *variant);
+
+struct svga_shader_variant *
+svga_new_shader_variant(struct svga_context *svga);
 
 enum pipe_error
 svga_destroy_shader_variant(struct svga_context *svga,
@@ -306,7 +311,7 @@ svga_shader_too_large(const struct svga_context *svga,
  * Convert from PIPE_SHADER_* to SVGA3D_SHADERTYPE_*
  */
 static inline SVGA3dShaderType
-svga_shader_type(unsigned shader)
+svga_shader_type(enum pipe_shader_type shader)
 {
    switch (shader) {
    case PIPE_SHADER_VERTEX:

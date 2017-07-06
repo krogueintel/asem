@@ -99,7 +99,6 @@ struct vl_compositor_state
 struct vl_compositor
 {
    struct pipe_context *pipe;
-   struct u_upload_mgr *upload;
 
    struct pipe_framebuffer_state fb_state;
    struct pipe_vertex_buffer vertex_buf;
@@ -113,8 +112,13 @@ struct vl_compositor
 
    void *vs;
    void *fs_video_buffer;
-   void *fs_weave;
+   void *fs_weave_rgb;
    void *fs_rgba;
+
+   struct {
+      void *y;
+      void *uv;
+   } fs_weave_yuv;
 
    struct {
       void *rgb;
@@ -137,8 +141,10 @@ vl_compositor_init_state(struct vl_compositor_state *state, struct pipe_context 
 /**
  * set yuv -> rgba conversion matrix
  */
-void
-vl_compositor_set_csc_matrix(struct vl_compositor_state *settings, const vl_csc_matrix *matrix);
+bool
+vl_compositor_set_csc_matrix(struct vl_compositor_state *settings,
+                             const vl_csc_matrix *matrix,
+                             float luma_min, float luma_max);
 
 /**
  * reset dirty area, so it's cleared with the clear colour
@@ -233,6 +239,18 @@ void
 vl_compositor_set_layer_rotation(struct vl_compositor_state *state,
                                  unsigned layer,
                                  enum vl_compositor_rotation rotate);
+
+/**
+ * set a layer of y or uv to render
+ */
+void
+vl_compositor_set_yuv_layer(struct vl_compositor_state *s,
+                            struct vl_compositor *c,
+                            unsigned layer,
+                            struct pipe_video_buffer *buffer,
+                            struct u_rect *src_rect,
+                            struct u_rect *dst_rect,
+                            bool y);
 
 /*@}*/
 

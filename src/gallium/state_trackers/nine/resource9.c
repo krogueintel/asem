@@ -25,15 +25,12 @@
 #include "nine_helpers.h"
 #include "nine_defines.h"
 
+#include "util/u_inlines.h"
+#include "util/u_resource.h"
+
 #include "pipe/p_screen.h"
 
-#include "util/u_hash_table.h"
-#include "util/u_inlines.h"
-
-#include "nine_pdata.h"
-
 #define DBG_CHANNEL DBG_RESOURCE
-
 
 HRESULT
 NineResource9_ctor( struct NineResource9 *This,
@@ -62,6 +59,33 @@ NineResource9_ctor( struct NineResource9 *This,
 
     if (Allocate) {
         assert(!initResource);
+
+        /* On Windows it is possible allocation fails when
+         * IDirect3DDevice9::GetAvailableTextureMem() still reports
+         * enough free space.
+         *
+         * Some games allocate surfaces
+         * in a loop until they receive D3DERR_OUTOFVIDEOMEMORY to measure
+         * the available texture memory size.
+         *
+         * We are not using the drivers VRAM statistics because:
+         *  * This would add overhead to each resource allocation.
+         *  * Freeing memory is lazy and takes some time, but applications
+         *    expects the memory counter to change immediately after allocating
+         *    or freeing memory.
+         *
+         * Vertexbuffers and indexbuffers are not accounted !
+         */
+        if (This->info.target != PIPE_BUFFER) {
+            This->size = util_resource_size(&This->info);
+
+            p_atomic_add(&This->base.device->available_texture_mem, -This->size);
+            if (This->base.device->available_texture_mem <=
+                    This->base.device->available_texture_limit) {
+                return D3DERR_OUTOFVIDEOMEMORY;
+            }
+        }
+
         DBG("(%p) Creating pipe_resource.\n", This);
         This->resource = screen->resource_create(screen, &This->info);
         if (!This->resource)
@@ -73,24 +97,21 @@ NineResource9_ctor( struct NineResource9 *This,
     This->usage = Usage;
     This->priority = 0;
 
-    This->pdata = util_hash_table_create(ht_guid_hash, ht_guid_compare);
-    if (!This->pdata)
-        return E_OUTOFMEMORY;
-
     return D3D_OK;
 }
 
 void
 NineResource9_dtor( struct NineResource9 *This )
 {
-    if (This->pdata) {
-        util_hash_table_foreach(This->pdata, ht_guid_delete, NULL);
-        util_hash_table_destroy(This->pdata);
-    }
+    DBG("This=%p\n", This);
 
     /* NOTE: We do have to use refcounting, the driver might
      * still hold a reference. */
     pipe_resource_reference(&This->resource, NULL);
+
+    /* NOTE: size is 0, unless something has actually been allocated */
+    if (This->base.device)
+        p_atomic_add(&This->base.device->available_texture_mem, This->size);
 
     NineUnknown_dtor(&This->base);
 }
@@ -107,104 +128,7 @@ NineResource9_GetPool( struct NineResource9 *This )
     return This->pool;
 }
 
-HRESULT WINAPI
-NineResource9_SetPrivateData( struct NineResource9 *This,
-                              REFGUID refguid,
-                              const void *pData,
-                              DWORD SizeOfData,
-                              DWORD Flags )
-{
-    enum pipe_error err;
-    struct pheader *header;
-    const void *user_data = pData;
-
-    DBG("This=%p refguid=%p pData=%p SizeOfData=%u Flags=%x\n",
-        This, refguid, pData, SizeOfData, Flags);
-
-    if (Flags & D3DSPD_IUNKNOWN)
-        user_assert(SizeOfData == sizeof(IUnknown *), D3DERR_INVALIDCALL);
-
-    /* data consists of a header and the actual data. avoiding 2 mallocs */
-    header = CALLOC_VARIANT_LENGTH_STRUCT(pheader, SizeOfData-1);
-    if (!header) { return E_OUTOFMEMORY; }
-    header->unknown = (Flags & D3DSPD_IUNKNOWN) ? TRUE : FALSE;
-
-    /* if the refguid already exists, delete it */
-    NineResource9_FreePrivateData(This, refguid);
-
-    /* IUnknown special case */
-    if (header->unknown) {
-        /* here the pointer doesn't point to the data we want, so point at the
-         * pointer making what we eventually copy is the pointer itself */
-        user_data = &pData;
-    }
-
-    header->size = SizeOfData;
-    memcpy(header->data, user_data, header->size);
-
-    err = util_hash_table_set(This->pdata, refguid, header);
-    if (err == PIPE_OK) {
-        if (header->unknown) { IUnknown_AddRef(*(IUnknown **)header->data); }
-        return D3D_OK;
-    }
-
-    FREE(header);
-    if (err == PIPE_ERROR_OUT_OF_MEMORY) { return E_OUTOFMEMORY; }
-
-    return D3DERR_DRIVERINTERNALERROR;
-}
-
-HRESULT WINAPI
-NineResource9_GetPrivateData( struct NineResource9 *This,
-                              REFGUID refguid,
-                              void *pData,
-                              DWORD *pSizeOfData )
-{
-    struct pheader *header;
-    DWORD sizeofdata;
-
-    DBG("This=%p refguid=%p pData=%p pSizeOfData=%p\n",
-        This, refguid, pData, pSizeOfData);
-
-    header = util_hash_table_get(This->pdata, refguid);
-    if (!header) { return D3DERR_NOTFOUND; }
-
-    user_assert(pSizeOfData, E_POINTER);
-    sizeofdata = *pSizeOfData;
-    *pSizeOfData = header->size;
-
-    if (!pData) {
-        return D3D_OK;
-    }
-    if (sizeofdata < header->size) {
-        return D3DERR_MOREDATA;
-    }
-
-    if (header->unknown) { IUnknown_AddRef(*(IUnknown **)header->data); }
-    memcpy(pData, header->data, header->size);
-
-    return D3D_OK;
-}
-
-HRESULT WINAPI
-NineResource9_FreePrivateData( struct NineResource9 *This,
-                               REFGUID refguid )
-{
-    struct pheader *header;
-
-    DBG("This=%p refguid=%p\n", This, refguid);
-
-    header = util_hash_table_get(This->pdata, refguid);
-    if (!header)
-        return D3DERR_NOTFOUND;
-
-    ht_guid_delete(NULL, header, NULL);
-    util_hash_table_remove(This->pdata, refguid);
-
-    return D3D_OK;
-}
-
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineResource9_SetPriority( struct NineResource9 *This,
                            DWORD PriorityNew )
 {
@@ -219,7 +143,7 @@ NineResource9_SetPriority( struct NineResource9 *This,
     return prev;
 }
 
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineResource9_GetPriority( struct NineResource9 *This )
 {
     if (This->pool != D3DPOOL_MANAGED || This->type == D3DRTYPE_SURFACE)
@@ -229,7 +153,7 @@ NineResource9_GetPriority( struct NineResource9 *This )
 }
 
 /* NOTE: Don't forget to adjust locked vtable if you change this ! */
-void WINAPI
+void NINE_WINAPI
 NineResource9_PreLoad( struct NineResource9 *This )
 {
     if (This->pool != D3DPOOL_MANAGED)
@@ -240,7 +164,7 @@ NineResource9_PreLoad( struct NineResource9 *This )
      */
 }
 
-D3DRESOURCETYPE WINAPI
+D3DRESOURCETYPE NINE_WINAPI
 NineResource9_GetType( struct NineResource9 *This )
 {
     return This->type;

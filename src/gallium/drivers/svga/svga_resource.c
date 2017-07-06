@@ -33,21 +33,35 @@
 #include "svga_format.h"
 
 
+/**
+ * This is the primary driver entrypoint for allocating graphics memory
+ * (vertex/index/constant buffers, textures, etc)
+ */
 static struct pipe_resource *
 svga_resource_create(struct pipe_screen *screen,
                      const struct pipe_resource *template)
 {
+   struct pipe_resource *r;
+
    if (template->target == PIPE_BUFFER)
-      return svga_buffer_create(screen, template);
+      r = svga_buffer_create(screen, template);
    else
-      return svga_texture_create(screen, template);
+      r = svga_texture_create(screen, template);
+
+   if (!r) {
+      struct svga_screen *svgascreen = svga_screen(screen);
+      svgascreen->hud.num_failed_allocations++;
+   }
+
+   return r;
 }
 
 
 static struct pipe_resource *
 svga_resource_from_handle(struct pipe_screen * screen,
                           const struct pipe_resource *template,
-                          struct winsys_handle *whandle)
+                          struct winsys_handle *whandle,
+                          unsigned usage)
 {
    if (template->target == PIPE_BUFFER)
       return NULL;
@@ -106,7 +120,14 @@ svga_init_resource_functions(struct svga_context *svga)
    svga->pipe.transfer_map = u_transfer_map_vtbl;
    svga->pipe.transfer_flush_region = u_transfer_flush_region_vtbl;
    svga->pipe.transfer_unmap = u_transfer_unmap_vtbl;
-   svga->pipe.transfer_inline_write = u_transfer_inline_write_vtbl;
+   svga->pipe.buffer_subdata = u_default_buffer_subdata;
+   svga->pipe.texture_subdata = u_default_texture_subdata;
+
+   if (svga_have_vgpu10(svga)) {
+      svga->pipe.generate_mipmap = svga_texture_generate_mipmap;
+   } else {
+      svga->pipe.generate_mipmap = NULL;
+   }
 }
 
 void

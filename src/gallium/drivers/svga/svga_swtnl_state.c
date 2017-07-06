@@ -84,6 +84,9 @@ static void set_draw_viewport( struct svga_context *svga )
          adjx += SVGA_TRIANGLE_ADJ_X;
          adjy += SVGA_TRIANGLE_ADJ_Y;
          break;
+      default:
+         /* nothing */
+         break;
       }
    }
 
@@ -97,6 +100,8 @@ static enum pipe_error
 update_swtnl_draw( struct svga_context *svga,
                    unsigned dirty )
 {
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_SWTNLUPDATEDRAW);
+
    draw_flush( svga->swtnl.draw );
 
    if (dirty & SVGA_NEW_VS) 
@@ -141,6 +146,7 @@ update_swtnl_draw( struct svga_context *svga,
          (svga->curr.framebuffer.zsbuf) ?
              svga->curr.framebuffer.zsbuf->format : PIPE_FORMAT_NONE);
 
+   SVGA_STATS_TIME_POP(svga_sws(svga));
    return PIPE_OK;
 }
 
@@ -220,14 +226,14 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
    struct draw_context *draw = svga->swtnl.draw;
    struct vertex_info *vinfo = &svga_render->vertex_info;
    SVGA3dVertexDecl vdecl[PIPE_MAX_ATTRIBS];
-   const enum interp_mode colorInterp =
-      svga->curr.rast->templ.flatshade ? INTERP_CONSTANT : INTERP_LINEAR;
    struct svga_fragment_shader *fs = svga->curr.fs;
    int offset = 0;
    int nr_decls = 0;
    int src;
    unsigned i;
    int any_change;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_SWTNLUPDATEVDECL);
 
    memset(vinfo, 0, sizeof(*vinfo));
    memset(vdecl, 0, sizeof(vdecl));
@@ -236,7 +242,7 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
 
    /* always add position */
    src = draw_find_shader_output(draw, TGSI_SEMANTIC_POSITION, 0);
-   draw_emit_vertex_attr(vinfo, EMIT_4F, INTERP_LINEAR, src);
+   draw_emit_vertex_attr(vinfo, EMIT_4F, src);
    vinfo->attrib[0].emit = EMIT_4F;
    vdecl[0].array.offset = offset;
    vdecl[0].identity.method = SVGA3D_DECLMETHOD_DEFAULT;
@@ -257,14 +263,14 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
 
       switch (sem_name) {
       case TGSI_SEMANTIC_COLOR:
-         draw_emit_vertex_attr(vinfo, EMIT_4F, colorInterp, src);
+         draw_emit_vertex_attr(vinfo, EMIT_4F, src);
          vdecl[nr_decls].identity.usage = SVGA3D_DECLUSAGE_COLOR;
          vdecl[nr_decls].identity.type = SVGA3D_DECLTYPE_FLOAT4;
          offset += 16;
          nr_decls++;
          break;
       case TGSI_SEMANTIC_GENERIC:
-         draw_emit_vertex_attr(vinfo, EMIT_4F, INTERP_PERSPECTIVE, src);
+         draw_emit_vertex_attr(vinfo, EMIT_4F, src);
          vdecl[nr_decls].identity.usage = SVGA3D_DECLUSAGE_TEXCOORD;
          vdecl[nr_decls].identity.type = SVGA3D_DECLTYPE_FLOAT4;
          vdecl[nr_decls].identity.usageIndex =
@@ -273,7 +279,7 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
          nr_decls++;
          break;
       case TGSI_SEMANTIC_FOG:
-         draw_emit_vertex_attr(vinfo, EMIT_1F, INTERP_PERSPECTIVE, src);
+         draw_emit_vertex_attr(vinfo, EMIT_1F, src);
          vdecl[nr_decls].identity.usage = SVGA3D_DECLUSAGE_TEXCOORD;
          vdecl[nr_decls].identity.type = SVGA3D_DECLTYPE_FLOAT1;
          assert(vdecl[nr_decls].identity.usageIndex == 0);
@@ -301,7 +307,7 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
       enum pipe_error ret;
 
       if (!any_change && svga_render->layout_id != SVGA3D_INVALID_ID) {
-         return PIPE_OK;
+         goto done;
       }
 
       if (svga_render->layout_id != SVGA3D_INVALID_ID) {
@@ -345,13 +351,15 @@ svga_swtnl_update_vdecl( struct svga_context *svga )
    }
    else {
       if (!any_change)
-         return PIPE_OK;
+         goto done;
    }
 
    memcpy(svga_render->vdecl, vdecl, sizeof(vdecl));
    svga->swtnl.new_vdecl = TRUE;
 
-   return 0;
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
+   return PIPE_OK;
 }
 
 

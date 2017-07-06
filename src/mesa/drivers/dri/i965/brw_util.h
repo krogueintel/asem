@@ -33,15 +33,14 @@
 #ifndef BRW_UTIL_H
 #define BRW_UTIL_H
 
-#include "main/mtypes.h"
-#include "main/imports.h"
 #include "brw_context.h"
+#include "main/framebuffer.h"
 
 extern GLuint brw_translate_blend_factor( GLenum factor );
 extern GLuint brw_translate_blend_equation( GLenum mode );
 extern GLenum brw_fix_xRGB_alpha(GLenum function);
 
-static inline uint32_t
+static inline float
 brw_get_line_width(struct brw_context *brw)
 {
    /* From the OpenGL 4.4 spec:
@@ -51,16 +50,11 @@ brw_get_line_width(struct brw_context *brw)
     * implementation-dependent maximum non-antialiased line width."
     */
    float line_width =
-      CLAMP(!brw->ctx.Multisample._Enabled && !brw->ctx.Line.SmoothFlag
+      CLAMP(!_mesa_is_multisample_enabled(&brw->ctx) && !brw->ctx.Line.SmoothFlag
             ? roundf(brw->ctx.Line.Width) : brw->ctx.Line.Width,
-            0.0f, brw->ctx.Const.MaxLineWidth);
-   uint32_t line_width_u3_7 = U_FIXED(line_width, 7);
+            0.125f, brw->ctx.Const.MaxLineWidth);
 
-   /* Line width of 0 is not allowed when MSAA enabled */
-   if (brw->ctx.Multisample._Enabled) {
-      if (line_width_u3_7 == 0)
-         line_width_u3_7 = 1;
-   } else if (brw->ctx.Line.SmoothFlag && line_width < 1.5f) {
+   if (!_mesa_is_multisample_enabled(&brw->ctx) && brw->ctx.Line.SmoothFlag && line_width < 1.5f) {
       /* For 1 pixel line thickness or less, the general
        * anti-aliasing algorithm gives up, and a garbage line is
        * generated.  Setting a Line Width of 0.0 specifies the
@@ -72,10 +66,10 @@ brw_get_line_width(struct brw_context *brw)
        * bspec section 6.3.12.1 Zero-Width (Cosmetic) Line
        * Rasterization.
        */
-      line_width_u3_7 = 0;
+      line_width = 0.0f;
    }
 
-   return line_width_u3_7;
+   return line_width;
 }
 
 #endif

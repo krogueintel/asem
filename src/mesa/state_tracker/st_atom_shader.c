@@ -37,69 +37,120 @@
 
 #include "main/imports.h"
 #include "main/mtypes.h"
+#include "main/framebuffer.h"
+#include "main/texobj.h"
+#include "main/texstate.h"
 #include "program/program.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_shader_tokens.h"
 #include "util/u_simple_shaders.h"
 #include "cso_cache/cso_context.h"
+#include "util/u_debug.h"
 
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_program.h"
+#include "st_texture.h"
+
+
+static unsigned
+get_texture_target(struct gl_context *ctx, const unsigned unit)
+{
+   struct gl_texture_object *texObj = _mesa_get_tex_unit(ctx, unit)->_Current;
+   gl_texture_index index;
+
+   if (texObj) {
+      index = _mesa_tex_target_to_index(ctx, texObj->Target);
+   } else {
+      /* fallback for missing texture */
+      index = TEXTURE_2D_INDEX;
+   }
+
+   /* Map mesa texture target to TGSI texture target.
+    * Copied from st_mesa_to_tgsi.c, the shadow part is omitted */
+   switch(index) {
+   case TEXTURE_2D_MULTISAMPLE_INDEX: return TGSI_TEXTURE_2D_MSAA;
+   case TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX: return TGSI_TEXTURE_2D_ARRAY_MSAA;
+   case TEXTURE_BUFFER_INDEX: return TGSI_TEXTURE_BUFFER;
+   case TEXTURE_1D_INDEX:   return TGSI_TEXTURE_1D;
+   case TEXTURE_2D_INDEX:   return TGSI_TEXTURE_2D;
+   case TEXTURE_3D_INDEX:   return TGSI_TEXTURE_3D;
+   case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_CUBE;
+   case TEXTURE_CUBE_ARRAY_INDEX: return TGSI_TEXTURE_CUBE_ARRAY;
+   case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_RECT;
+   case TEXTURE_1D_ARRAY_INDEX:   return TGSI_TEXTURE_1D_ARRAY;
+   case TEXTURE_2D_ARRAY_INDEX:   return TGSI_TEXTURE_2D_ARRAY;
+   case TEXTURE_EXTERNAL_INDEX:   return TGSI_TEXTURE_2D;
+   default:
+      debug_assert(0);
+      return TGSI_TEXTURE_1D;
+   }
+}
 
 
 /**
  * Update fragment program state/atom.  This involves translating the
  * Mesa fragment program into a gallium fragment program and binding it.
  */
-static void
-update_fp( struct st_context *st )
+void
+st_update_fp( struct st_context *st )
 {
    struct st_fragment_program *stfp;
    struct st_fp_variant_key key;
 
    assert(st->ctx->FragmentProgram._Current);
    stfp = st_fragment_program(st->ctx->FragmentProgram._Current);
-   assert(stfp->Base.Base.Target == GL_FRAGMENT_PROGRAM_ARB);
+   assert(stfp->Base.Target == GL_FRAGMENT_PROGRAM_ARB);
 
-   memset(&key, 0, sizeof(key));
-   key.st = st;
+   void *shader;
 
-   /* _NEW_FRAG_CLAMP */
-   key.clamp_color = st->clamp_frag_color_in_shader &&
-                     st->ctx->Color._ClampFragmentColor;
+   if (st->shader_has_one_variant[MESA_SHADER_FRAGMENT] &&
+       !stfp->ati_fs && /* ATI_fragment_shader always has multiple variants */
+       !stfp->Base.ExternalSamplersUsed && /* external samplers need variants */
+       stfp->variants) {
+      shader = stfp->variants->driver_shader;
+   } else {
+      memset(&key, 0, sizeof(key));
+      key.st = st->has_shareable_shaders ? NULL : st;
 
-   /* Ignore sample qualifier while computing this flag. */
-   key.persample_shading =
-      _mesa_get_min_invocations_per_fragment(st->ctx, &stfp->Base, true) > 1;
+      /* _NEW_FRAG_CLAMP */
+      key.clamp_color = st->clamp_frag_color_in_shader &&
+                        st->ctx->Color._ClampFragmentColor;
 
-   st->fp_variant = st_get_fp_variant(st, stfp, &key);
+      /* _NEW_MULTISAMPLE | _NEW_BUFFERS */
+      key.persample_shading =
+         st->force_persample_in_shader &&
+         _mesa_is_multisample_enabled(st->ctx) &&
+         st->ctx->Multisample.SampleShading &&
+         st->ctx->Multisample.MinSampleShadingValue *
+         _mesa_geometric_samples(st->ctx->DrawBuffer) > 1;
+
+      if (stfp->ati_fs) {
+         key.fog = st->ctx->Fog._PackedEnabledMode;
+
+         for (unsigned u = 0; u < MAX_NUM_FRAGMENT_REGISTERS_ATI; u++) {
+            key.texture_targets[u] = get_texture_target(st->ctx, u);
+         }
+      }
+
+      key.external = st_get_external_sampler_key(st, &stfp->Base);
+
+      shader = st_get_fp_variant(st, stfp, &key)->driver_shader;
+   }
 
    st_reference_fragprog(st, &st->fp, stfp);
 
-   cso_set_fragment_shader_handle(st->cso_context,
-                                  st->fp_variant->driver_shader);
+   cso_set_fragment_shader_handle(st->cso_context, shader);
 }
-
-
-const struct st_tracked_state st_update_fp = {
-   "st_update_fp",					/* name */
-   {							/* dirty */
-      _NEW_BUFFERS | _NEW_MULTISAMPLE,			/* mesa */
-      ST_NEW_FRAGMENT_PROGRAM                           /* st */
-   },
-   update_fp  					/* update */
-};
-
 
 
 /**
  * Update vertex program state/atom.  This involves translating the
  * Mesa vertex program into a gallium fragment program and binding it.
  */
-static void
-update_vp( struct st_context *st )
+void
+st_update_vp( struct st_context *st )
 {
    struct st_vertex_program *stvp;
    struct st_vp_variant_key key;
@@ -109,151 +160,118 @@ update_vp( struct st_context *st )
     */
    assert(st->ctx->VertexProgram._Current);
    stvp = st_vertex_program(st->ctx->VertexProgram._Current);
-   assert(stvp->Base.Base.Target == GL_VERTEX_PROGRAM_ARB);
+   assert(stvp->Base.Target == GL_VERTEX_PROGRAM_ARB);
 
-   memset(&key, 0, sizeof key);
-   key.st = st;  /* variants are per-context */
+   if (st->shader_has_one_variant[MESA_SHADER_VERTEX] &&
+       stvp->variants &&
+       stvp->variants->key.passthrough_edgeflags == st->vertdata_edgeflags) {
+      st->vp_variant = stvp->variants;
+   } else {
+      memset(&key, 0, sizeof key);
+      key.st = st->has_shareable_shaders ? NULL : st;
 
-   /* When this is true, we will add an extra input to the vertex
-    * shader translation (for edgeflags), an extra output with
-    * edgeflag semantics, and extend the vertex shader to pass through
-    * the input to the output.  We'll need to use similar logic to set
-    * up the extra vertex_element input for edgeflags.
-    */
-   key.passthrough_edgeflags = st->vertdata_edgeflags;
+      /* When this is true, we will add an extra input to the vertex
+       * shader translation (for edgeflags), an extra output with
+       * edgeflag semantics, and extend the vertex shader to pass through
+       * the input to the output.  We'll need to use similar logic to set
+       * up the extra vertex_element input for edgeflags.
+       */
+      key.passthrough_edgeflags = st->vertdata_edgeflags;
 
-   key.clamp_color = st->clamp_vert_color_in_shader &&
-                     st->ctx->Light._ClampVertexColor &&
-                     (stvp->Base.Base.OutputsWritten &
-                      (VARYING_SLOT_COL0 |
-                       VARYING_SLOT_COL1 |
-                       VARYING_SLOT_BFC0 |
-                       VARYING_SLOT_BFC1));
+      key.clamp_color = st->clamp_vert_color_in_shader &&
+                        st->ctx->Light._ClampVertexColor &&
+                        (stvp->Base.info.outputs_written &
+                         (VARYING_SLOT_COL0 |
+                          VARYING_SLOT_COL1 |
+                          VARYING_SLOT_BFC0 |
+                          VARYING_SLOT_BFC1));
 
-   st->vp_variant = st_get_vp_variant(st, stvp, &key);
+      st->vp_variant = st_get_vp_variant(st, stvp, &key);
+   }
 
    st_reference_vertprog(st, &st->vp, stvp);
 
    cso_set_vertex_shader_handle(st->cso_context, 
                                 st->vp_variant->driver_shader);
-
-   st->vertex_result_to_slot = stvp->result_to_output;
 }
 
 
-const struct st_tracked_state st_update_vp = {
-   "st_update_vp",					/* name */
-   {							/* dirty */
-      0,                                                /* mesa */
-      ST_NEW_VERTEX_PROGRAM                             /* st */
-   },
-   update_vp						/* update */
-};
-
-
-
-static void
-update_gp( struct st_context *st )
+static void *
+st_update_common_program(struct st_context *st, struct gl_program *prog,
+                         unsigned pipe_shader, struct st_common_program **dst)
 {
-   struct st_geometry_program *stgp;
-   struct st_gp_variant_key key;
+   struct st_common_program *stp;
 
-   if (!st->ctx->GeometryProgram._Current) {
-      cso_set_geometry_shader_handle(st->cso_context, NULL);
+   if (!prog) {
+      st_reference_prog(st, dst, NULL);
+      return NULL;
+   }
+
+   stp = st_common_program(prog);
+   st_reference_prog(st, dst, stp);
+
+   if (st->shader_has_one_variant[prog->info.stage] && stp->variants)
+      return stp->variants->driver_shader;
+
+   return st_get_basic_variant(st, pipe_shader, &stp->tgsi,
+                               &stp->variants)->driver_shader;
+}
+
+
+void
+st_update_gp(struct st_context *st)
+{
+   void *shader = st_update_common_program(st,
+                                           st->ctx->GeometryProgram._Current,
+                                           PIPE_SHADER_GEOMETRY, &st->gp);
+   cso_set_geometry_shader_handle(st->cso_context, shader);
+}
+
+
+void
+st_update_tcp(struct st_context *st)
+{
+   void *shader = st_update_common_program(st,
+                                           st->ctx->TessCtrlProgram._Current,
+                                           MESA_SHADER_TESS_CTRL, &st->tcp);
+   cso_set_tessctrl_shader_handle(st->cso_context, shader);
+}
+
+
+void
+st_update_tep(struct st_context *st)
+{
+   void *shader = st_update_common_program(st,
+                                           st->ctx->TessEvalProgram._Current,
+                                           MESA_SHADER_TESS_EVAL, &st->tep);
+   cso_set_tesseval_shader_handle(st->cso_context, shader);
+}
+
+
+void
+st_update_cp( struct st_context *st )
+{
+   struct st_compute_program *stcp;
+
+   if (!st->ctx->ComputeProgram._Current) {
+      cso_set_compute_shader_handle(st->cso_context, NULL);
+      st_reference_compprog(st, &st->cp, NULL);
       return;
    }
 
-   stgp = st_geometry_program(st->ctx->GeometryProgram._Current);
-   assert(stgp->Base.Base.Target == GL_GEOMETRY_PROGRAM_NV);
+   stcp = st_compute_program(st->ctx->ComputeProgram._Current);
+   assert(stcp->Base.Target == GL_COMPUTE_PROGRAM_NV);
 
-   memset(&key, 0, sizeof(key));
-   key.st = st;
+   void *shader;
 
-   st->gp_variant = st_get_gp_variant(st, stgp, &key);
-
-   st_reference_geomprog(st, &st->gp, stgp);
-
-   cso_set_geometry_shader_handle(st->cso_context,
-                                  st->gp_variant->driver_shader);
-}
-
-const struct st_tracked_state st_update_gp = {
-   "st_update_gp",			/* name */
-   {					/* dirty */
-      0,				/* mesa */
-      ST_NEW_GEOMETRY_PROGRAM           /* st */
-   },
-   update_gp  				/* update */
-};
-
-
-
-static void
-update_tcp( struct st_context *st )
-{
-   struct st_tessctrl_program *sttcp;
-   struct st_tcp_variant_key key;
-
-   if (!st->ctx->TessCtrlProgram._Current) {
-      cso_set_tessctrl_shader_handle(st->cso_context, NULL);
-      return;
+   if (st->shader_has_one_variant[MESA_SHADER_COMPUTE] && stcp->variants) {
+      shader = stcp->variants->driver_shader;
+   } else {
+      shader = st_get_cp_variant(st, &stcp->tgsi,
+                                 &stcp->variants)->driver_shader;
    }
 
-   sttcp = st_tessctrl_program(st->ctx->TessCtrlProgram._Current);
-   assert(sttcp->Base.Base.Target == GL_TESS_CONTROL_PROGRAM_NV);
+   st_reference_compprog(st, &st->cp, stcp);
 
-   memset(&key, 0, sizeof(key));
-   key.st = st;
-
-   st->tcp_variant = st_get_tcp_variant(st, sttcp, &key);
-
-   st_reference_tesscprog(st, &st->tcp, sttcp);
-
-   cso_set_tessctrl_shader_handle(st->cso_context,
-                                  st->tcp_variant->driver_shader);
+   cso_set_compute_shader_handle(st->cso_context, shader);
 }
-
-const struct st_tracked_state st_update_tcp = {
-   "st_update_tcp",			/* name */
-   {					/* dirty */
-      0,				/* mesa */
-      ST_NEW_TESSCTRL_PROGRAM           /* st */
-   },
-   update_tcp  				/* update */
-};
-
-
-
-static void
-update_tep( struct st_context *st )
-{
-   struct st_tesseval_program *sttep;
-   struct st_tep_variant_key key;
-
-   if (!st->ctx->TessEvalProgram._Current) {
-      cso_set_tesseval_shader_handle(st->cso_context, NULL);
-      return;
-   }
-
-   sttep = st_tesseval_program(st->ctx->TessEvalProgram._Current);
-   assert(sttep->Base.Base.Target == GL_TESS_EVALUATION_PROGRAM_NV);
-
-   memset(&key, 0, sizeof(key));
-   key.st = st;
-
-   st->tep_variant = st_get_tep_variant(st, sttep, &key);
-
-   st_reference_tesseprog(st, &st->tep, sttep);
-
-   cso_set_tesseval_shader_handle(st->cso_context,
-                                  st->tep_variant->driver_shader);
-}
-
-const struct st_tracked_state st_update_tep = {
-   "st_update_tep",			/* name */
-   {					/* dirty */
-      0,				/* mesa */
-      ST_NEW_TESSEVAL_PROGRAM           /* st */
-   },
-   update_tep  				/* update */
-};

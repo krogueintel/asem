@@ -11,6 +11,8 @@
 #define NOUVEAU_FENCE_STATE_FLUSHED   3
 #define NOUVEAU_FENCE_STATE_SIGNALLED 4
 
+struct pipe_debug_callback;
+
 struct nouveau_fence_work {
    struct list_head list;
    void (*func)(void *);
@@ -23,18 +25,18 @@ struct nouveau_fence {
    int state;
    int ref;
    uint32_t sequence;
+   uint32_t work_count;
    struct list_head work;
 };
 
 void nouveau_fence_emit(struct nouveau_fence *);
 void nouveau_fence_del(struct nouveau_fence *);
 
-bool nouveau_fence_new(struct nouveau_screen *, struct nouveau_fence **,
-                       bool emit);
+bool nouveau_fence_new(struct nouveau_screen *, struct nouveau_fence **);
 bool nouveau_fence_work(struct nouveau_fence *, void (*)(void *), void *);
 void nouveau_fence_update(struct nouveau_screen *, bool flushed);
 void nouveau_fence_next(struct nouveau_screen *);
-bool nouveau_fence_wait(struct nouveau_fence *);
+bool nouveau_fence_wait(struct nouveau_fence *, struct pipe_debug_callback *);
 bool nouveau_fence_signalled(struct nouveau_fence *);
 
 void nouveau_fence_unref_bo(void *data); /* generic unref bo callback */

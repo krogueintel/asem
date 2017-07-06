@@ -35,6 +35,8 @@
 #include "stw_device.h"
 #include "stw_ext_context.h"
 
+#include "util/u_debug.h"
+
 
 wglCreateContext_t wglCreateContext_func = 0;
 wglDeleteContext_t wglDeleteContext_func = 0;
@@ -192,4 +194,19 @@ wglCreateContextAttribsARB(HDC hDC, HGLRC hShareContext, const int *attribList)
    }
 
    return context;
+}
+
+
+/** Defined by WGL_ARB_make_current_read */
+BOOL APIENTRY
+wglMakeContextCurrentARB(HDC hDrawDC, HDC hReadDC, HGLRC hglrc)
+{
+   DHGLRC dhglrc = 0;
+
+   if (stw_dev && stw_dev->callbacks.wglCbGetDhglrc) {
+      /* Convert HGLRC to DHGLRC */
+      dhglrc = stw_dev->callbacks.wglCbGetDhglrc(hglrc);
+   }
+
+   return stw_make_current(hDrawDC, hReadDC, dhglrc);
 }

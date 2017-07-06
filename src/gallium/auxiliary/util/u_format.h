@@ -84,9 +84,14 @@ enum util_format_layout {
    UTIL_FORMAT_LAYOUT_BPTC = 7,
 
    /**
+    * ASTC
+    */
+   UTIL_FORMAT_LAYOUT_ASTC = 8,
+
+   /**
     * Everything else that doesn't fit in any of the above layouts.
     */
-   UTIL_FORMAT_LAYOUT_OTHER = 8
+   UTIL_FORMAT_LAYOUT_OTHER = 9
 };
 
 
@@ -109,18 +114,6 @@ enum util_format_type {
    UTIL_FORMAT_TYPE_SIGNED = 2,
    UTIL_FORMAT_TYPE_FIXED = 3,
    UTIL_FORMAT_TYPE_FLOAT = 4
-};
-
-
-enum util_format_swizzle {
-   UTIL_FORMAT_SWIZZLE_X = 0,
-   UTIL_FORMAT_SWIZZLE_Y = 1,
-   UTIL_FORMAT_SWIZZLE_Z = 2,
-   UTIL_FORMAT_SWIZZLE_W = 3,
-   UTIL_FORMAT_SWIZZLE_0 = 4,
-   UTIL_FORMAT_SWIZZLE_1 = 5,
-   UTIL_FORMAT_SWIZZLE_NONE = 6,
-   UTIL_FORMAT_SWIZZLE_MAX = 7  /**< Number of enums counter (must be last) */
 };
 
 
@@ -481,6 +474,7 @@ util_format_is_compressed(enum pipe_format format)
    case UTIL_FORMAT_LAYOUT_RGTC:
    case UTIL_FORMAT_LAYOUT_ETC:
    case UTIL_FORMAT_LAYOUT_BPTC:
+   case UTIL_FORMAT_LAYOUT_ASTC:
       /* XXX add other formats in the future */
       return TRUE;
    default:
@@ -512,14 +506,14 @@ static inline boolean
 util_format_has_depth(const struct util_format_description *desc)
 {
    return desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS &&
-          desc->swizzle[0] != UTIL_FORMAT_SWIZZLE_NONE;
+          desc->swizzle[0] != PIPE_SWIZZLE_NONE;
 }
 
 static inline boolean
 util_format_has_stencil(const struct util_format_description *desc)
 {
    return desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS &&
-          desc->swizzle[1] != UTIL_FORMAT_SWIZZLE_NONE;
+          desc->swizzle[1] != PIPE_SWIZZLE_NONE;
 }
 
 static inline boolean
@@ -559,7 +553,7 @@ util_get_depth_format_type(const struct util_format_description *desc)
 {
    unsigned depth_channel = desc->swizzle[0];
    if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS &&
-       depth_channel != UTIL_FORMAT_SWIZZLE_NONE) {
+       depth_channel != PIPE_SWIZZLE_NONE) {
       return desc->channel[depth_channel].type;
    } else {
       return UTIL_FORMAT_TYPE_VOID;
@@ -685,6 +679,9 @@ util_format_is_pure_uint(enum pipe_format format);
 
 boolean
 util_format_is_snorm(enum pipe_format format);
+
+boolean
+util_format_is_snorm8(enum pipe_format format);
 
 /**
  * Check if the src format can be blitted to the destination format with
@@ -863,13 +860,13 @@ util_format_get_component_bits(enum pipe_format format,
    }
 
    switch (desc->swizzle[component]) {
-   case UTIL_FORMAT_SWIZZLE_X:
+   case PIPE_SWIZZLE_X:
       return desc->channel[0].size;
-   case UTIL_FORMAT_SWIZZLE_Y:
+   case PIPE_SWIZZLE_Y:
       return desc->channel[1].size;
-   case UTIL_FORMAT_SWIZZLE_Z:
+   case PIPE_SWIZZLE_Z:
       return desc->channel[2].size;
-   case UTIL_FORMAT_SWIZZLE_W:
+   case PIPE_SWIZZLE_W:
       return desc->channel[3].size;
    default:
       return 0;
@@ -921,6 +918,35 @@ util_format_srgb(enum pipe_format format)
       return PIPE_FORMAT_B5G6R5_SRGB;
    case PIPE_FORMAT_BPTC_RGBA_UNORM:
       return PIPE_FORMAT_BPTC_SRGBA;
+   case PIPE_FORMAT_ASTC_4x4:
+      return PIPE_FORMAT_ASTC_4x4_SRGB;
+   case PIPE_FORMAT_ASTC_5x4:
+      return PIPE_FORMAT_ASTC_5x4_SRGB;
+   case PIPE_FORMAT_ASTC_5x5:
+      return PIPE_FORMAT_ASTC_5x5_SRGB;
+   case PIPE_FORMAT_ASTC_6x5:
+      return PIPE_FORMAT_ASTC_6x5_SRGB;
+   case PIPE_FORMAT_ASTC_6x6:
+      return PIPE_FORMAT_ASTC_6x6_SRGB;
+   case PIPE_FORMAT_ASTC_8x5:
+      return PIPE_FORMAT_ASTC_8x5_SRGB;
+   case PIPE_FORMAT_ASTC_8x6:
+      return PIPE_FORMAT_ASTC_8x6_SRGB;
+   case PIPE_FORMAT_ASTC_8x8:
+      return PIPE_FORMAT_ASTC_8x8_SRGB;
+   case PIPE_FORMAT_ASTC_10x5:
+      return PIPE_FORMAT_ASTC_10x5_SRGB;
+   case PIPE_FORMAT_ASTC_10x6:
+      return PIPE_FORMAT_ASTC_10x6_SRGB;
+   case PIPE_FORMAT_ASTC_10x8:
+      return PIPE_FORMAT_ASTC_10x8_SRGB;
+   case PIPE_FORMAT_ASTC_10x10:
+      return PIPE_FORMAT_ASTC_10x10_SRGB;
+   case PIPE_FORMAT_ASTC_12x10:
+      return PIPE_FORMAT_ASTC_12x10_SRGB;
+   case PIPE_FORMAT_ASTC_12x12:
+      return PIPE_FORMAT_ASTC_12x12_SRGB;
+
    default:
       return PIPE_FORMAT_NONE;
    }
@@ -968,6 +994,34 @@ util_format_linear(enum pipe_format format)
       return PIPE_FORMAT_B5G6R5_UNORM;
    case PIPE_FORMAT_BPTC_SRGBA:
       return PIPE_FORMAT_BPTC_RGBA_UNORM;
+   case PIPE_FORMAT_ASTC_4x4_SRGB:
+      return PIPE_FORMAT_ASTC_4x4;
+   case PIPE_FORMAT_ASTC_5x4_SRGB:
+      return PIPE_FORMAT_ASTC_5x4;
+   case PIPE_FORMAT_ASTC_5x5_SRGB:
+      return PIPE_FORMAT_ASTC_5x5;
+   case PIPE_FORMAT_ASTC_6x5_SRGB:
+      return PIPE_FORMAT_ASTC_6x5;
+   case PIPE_FORMAT_ASTC_6x6_SRGB:
+      return PIPE_FORMAT_ASTC_6x6;
+   case PIPE_FORMAT_ASTC_8x5_SRGB:
+      return PIPE_FORMAT_ASTC_8x5;
+   case PIPE_FORMAT_ASTC_8x6_SRGB:
+      return PIPE_FORMAT_ASTC_8x6;
+   case PIPE_FORMAT_ASTC_8x8_SRGB:
+      return PIPE_FORMAT_ASTC_8x8;
+   case PIPE_FORMAT_ASTC_10x5_SRGB:
+      return PIPE_FORMAT_ASTC_10x5;
+   case PIPE_FORMAT_ASTC_10x6_SRGB:
+      return PIPE_FORMAT_ASTC_10x6;
+   case PIPE_FORMAT_ASTC_10x8_SRGB:
+      return PIPE_FORMAT_ASTC_10x8;
+   case PIPE_FORMAT_ASTC_10x10_SRGB:
+      return PIPE_FORMAT_ASTC_10x10;
+   case PIPE_FORMAT_ASTC_12x10_SRGB:
+      return PIPE_FORMAT_ASTC_12x10;
+   case PIPE_FORMAT_ASTC_12x12_SRGB:
+      return PIPE_FORMAT_ASTC_12x12;
    default:
       return format;
    }
@@ -1217,6 +1271,19 @@ util_format_translate(enum pipe_format dst_format,
                       unsigned src_x, unsigned src_y,
                       unsigned width, unsigned height);
 
+boolean
+util_format_translate_3d(enum pipe_format dst_format,
+                         void *dst, unsigned dst_stride,
+                         unsigned dst_slice_stride,
+                         unsigned dst_x, unsigned dst_y,
+                         unsigned dst_z,
+                         enum pipe_format src_format,
+                         const void *src, unsigned src_stride,
+                         unsigned src_slice_stride,
+                         unsigned src_x, unsigned src_y,
+                         unsigned src_z, unsigned width,
+                         unsigned height, unsigned depth);
+
 /*
  * Swizzle operations.
  */
@@ -1232,14 +1299,14 @@ void util_format_compose_swizzles(const unsigned char swz1[4],
 
 /* Apply the swizzle provided in \param swz (which is one of PIPE_SWIZZLE_x)
  * to \param src and store the result in \param dst.
- * \param is_integer determines the value written for PIPE_SWIZZLE_ONE.
+ * \param is_integer determines the value written for PIPE_SWIZZLE_1.
  */
 void util_format_apply_color_swizzle(union pipe_color_union *dst,
                                      const union pipe_color_union *src,
                                      const unsigned char swz[4],
                                      const boolean is_integer);
 
-void util_format_swizzle_4f(float *dst, const float *src,
+void pipe_swizzle_4f(float *dst, const float *src,
                             const unsigned char swz[4]);
 
 void util_format_unswizzle_4f(float *dst, const float *src,

@@ -76,7 +76,7 @@ typedef struct xmesa_visual *XMesaVisual;
 
 
 struct xmesa_display {
-   pipe_mutex mutex;
+   mtx_t mutex;
 
    Display *display;
    struct pipe_screen *screen;
@@ -377,6 +377,9 @@ xmesa_check_buffer_size(XMesaBuffer b);
 
 extern void
 xmesa_destroy_buffers_on_display(Display *dpy);
+
+extern void
+xmesa_close_display(Display *dpy);
 
 static inline GLuint
 xmesa_buffer_width(XMesaBuffer b)

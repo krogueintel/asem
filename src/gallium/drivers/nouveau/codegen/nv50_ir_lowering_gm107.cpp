@@ -41,6 +41,57 @@ namespace nv50_ir {
    ((QOP_##q << 6) | (QOP_##r << 4) |           \
     (QOP_##s << 2) | (QOP_##t << 0))
 
+#define SHFL_BOUND_QUAD 0x1c03
+
+void
+GM107LegalizeSSA::handlePFETCH(Instruction *i)
+{
+   Value *src0;
+
+   if (i->src(0).getFile() == FILE_GPR && !i->srcExists(1))
+      return;
+
+   bld.setPosition(i, false);
+   src0 = bld.getSSA();
+
+   if (i->srcExists(1))
+      bld.mkOp2(OP_ADD , TYPE_U32, src0, i->getSrc(0), i->getSrc(1));
+   else
+      bld.mkOp1(OP_MOV , TYPE_U32, src0, i->getSrc(0));
+
+   i->setSrc(0, src0);
+   i->setSrc(1, NULL);
+}
+
+void
+GM107LegalizeSSA::handleLOAD(Instruction *i)
+{
+   if (i->src(0).getFile() != FILE_MEMORY_CONST)
+      return;
+   if (i->src(0).isIndirect(0))
+      return;
+   if (typeSizeof(i->dType) != 4)
+      return;
+
+   i->op = OP_MOV;
+}
+
+bool
+GM107LegalizeSSA::visit(Instruction *i)
+{
+   switch (i->op) {
+   case OP_PFETCH:
+      handlePFETCH(i);
+      break;
+   case OP_LOAD:
+      handleLOAD(i);
+      break;
+   default:
+      break;
+   }
+   return true;
+}
+
 bool
 GM107LoweringPass::handleManualTXD(TexInstruction *i)
 {
@@ -57,7 +108,7 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
    Instruction *tex, *add;
    Value *zero = bld.loadImm(bld.getSSA(), 0);
    int l, c;
-   const int dim = i->tex.target.getDim();
+   const int dim = i->tex.target.getDim() + i->tex.target.isCube();
    const int array = i->tex.target.isArray();
 
    i->op = OP_TEX; // no need to clone dPdx/dPdy later
@@ -67,10 +118,12 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
    tmp = bld.getScratch();
 
    for (l = 0; l < 4; ++l) {
+      Value *src[3], *val;
       // mov coordinates from lane l to all lanes
       bld.mkOp(OP_QUADON, TYPE_NONE, NULL);
       for (c = 0; c < dim; ++c) {
-         bld.mkOp2(OP_SHFL, TYPE_F32, crd[c], i->getSrc(c + array), bld.mkImm(l));
+         bld.mkOp3(OP_SHFL, TYPE_F32, crd[c], i->getSrc(c + array),
+                   bld.mkImm(l), bld.mkImm(SHFL_BOUND_QUAD));
          add = bld.mkOp2(OP_QUADOP, TYPE_F32, crd[c], crd[c], zero);
          add->subOp = 0x00;
          add->lanes = 1; /* abused for .ndv */
@@ -78,7 +131,8 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
 
       // add dPdx from lane l to lanes dx
       for (c = 0; c < dim; ++c) {
-         bld.mkOp2(OP_SHFL, TYPE_F32, tmp, i->dPdx[c].get(), bld.mkImm(l));
+         bld.mkOp3(OP_SHFL, TYPE_F32, tmp, i->dPdx[c].get(), bld.mkImm(l),
+                   bld.mkImm(SHFL_BOUND_QUAD));
          add = bld.mkOp2(OP_QUADOP, TYPE_F32, crd[c], tmp, crd[c]);
          add->subOp = qOps[l][0];
          add->lanes = 1; /* abused for .ndv */
@@ -86,16 +140,32 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
 
       // add dPdy from lane l to lanes dy
       for (c = 0; c < dim; ++c) {
-         bld.mkOp2(OP_SHFL, TYPE_F32, tmp, i->dPdy[c].get(), bld.mkImm(l));
+         bld.mkOp3(OP_SHFL, TYPE_F32, tmp, i->dPdy[c].get(), bld.mkImm(l),
+                   bld.mkImm(SHFL_BOUND_QUAD));
          add = bld.mkOp2(OP_QUADOP, TYPE_F32, crd[c], tmp, crd[c]);
          add->subOp = qOps[l][1];
          add->lanes = 1; /* abused for .ndv */
       }
 
+      // normalize cube coordinates if necessary
+      if (i->tex.target.isCube()) {
+         for (c = 0; c < 3; ++c)
+            src[c] = bld.mkOp1v(OP_ABS, TYPE_F32, bld.getSSA(), crd[c]);
+         val = bld.getScratch();
+         bld.mkOp2(OP_MAX, TYPE_F32, val, src[0], src[1]);
+         bld.mkOp2(OP_MAX, TYPE_F32, val, src[2], val);
+         bld.mkOp1(OP_RCP, TYPE_F32, val, val);
+         for (c = 0; c < 3; ++c)
+            src[c] = bld.mkOp2v(OP_MUL, TYPE_F32, bld.getSSA(), crd[c], val);
+      } else {
+         for (c = 0; c < dim; ++c)
+            src[c] = crd[c];
+      }
+
       // texture
       bld.insert(tex = cloneForward(func, i));
       for (c = 0; c < dim; ++c)
-         tex->setSrc(c + array, crd[c]);
+         tex->setSrc(c + array, src[c]);
       bld.mkOp(OP_QUADPOP, TYPE_NONE, NULL);
 
       // save results
@@ -138,8 +208,8 @@ GM107LoweringPass::handleDFDX(Instruction *insn)
       break;
    }
 
-   shfl = bld.mkOp2(OP_SHFL, TYPE_F32, bld.getScratch(),
-                    insn->getSrc(0), bld.mkImm(xid));
+   shfl = bld.mkOp3(OP_SHFL, TYPE_F32, bld.getScratch(), insn->getSrc(0),
+                    bld.mkImm(xid), bld.mkImm(SHFL_BOUND_QUAD));
    shfl->subOp = NV50_IR_SUBOP_SHFL_BFLY;
    insn->op = OP_QUADOP;
    insn->subOp = qop;

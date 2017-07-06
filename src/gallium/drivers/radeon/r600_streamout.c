@@ -46,7 +46,7 @@ r600_create_so_target(struct pipe_context *ctx,
 		return NULL;
 	}
 
-	u_suballocator_alloc(rctx->allocator_so_filled_size, 4,
+	u_suballocator_alloc(rctx->allocator_zeroed_memory, 4, 4,
 			     &t->buf_filled_size_offset,
 			     (struct pipe_resource**)&t->buf_filled_size);
 	if (!t->buf_filled_size) {
@@ -70,7 +70,7 @@ static void r600_so_target_destroy(struct pipe_context *ctx,
 {
 	struct r600_so_target *t = (struct r600_so_target*)target;
 	pipe_resource_reference(&t->b.buffer, NULL);
-	pipe_resource_reference((struct pipe_resource**)&t->buf_filled_size, NULL);
+	r600_resource_reference(&t->buf_filled_size, NULL);
 	FREE(t);
 }
 
@@ -116,7 +116,7 @@ void r600_set_streamout_targets(struct pipe_context *ctx,
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
 	unsigned i;
-        unsigned append_bitmask = 0;
+        unsigned enabled_mask = 0, append_bitmask = 0;
 
 	/* Stop streamout. */
 	if (rctx->streamout.num_targets && rctx->streamout.begin_emitted) {
@@ -126,18 +126,19 @@ void r600_set_streamout_targets(struct pipe_context *ctx,
 	/* Set the new targets. */
 	for (i = 0; i < num_targets; i++) {
 		pipe_so_target_reference((struct pipe_stream_output_target**)&rctx->streamout.targets[i], targets[i]);
+		if (!targets[i])
+			continue;
+
 		r600_context_add_resource_size(ctx, targets[i]->buffer);
+		enabled_mask |= 1 << i;
 		if (offsets[i] == ((unsigned)-1))
-			append_bitmask |=  1 << i;
+			append_bitmask |= 1 << i;
 	}
 	for (; i < rctx->streamout.num_targets; i++) {
 		pipe_so_target_reference((struct pipe_stream_output_target**)&rctx->streamout.targets[i], NULL);
 	}
 
-	rctx->streamout.enabled_mask = (num_targets >= 1 && targets[0] ? 1 : 0) |
-				       (num_targets >= 2 && targets[1] ? 2 : 0) |
-				       (num_targets >= 3 && targets[2] ? 4 : 0) |
-				       (num_targets >= 4 && targets[3] ? 8 : 0);
+	rctx->streamout.enabled_mask = enabled_mask;
 
 	rctx->streamout.num_targets = num_targets;
 	rctx->streamout.append_bitmask = append_bitmask;
@@ -152,7 +153,7 @@ void r600_set_streamout_targets(struct pipe_context *ctx,
 
 static void r600_flush_vgt_streamout(struct r600_common_context *rctx)
 {
-	struct radeon_winsys_cs *cs = rctx->rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->gfx.cs;
 	unsigned reg_strmout_cntl;
 
 	/* The register is at different places on different ASICs. */
@@ -184,9 +185,9 @@ static void r600_flush_vgt_streamout(struct r600_common_context *rctx)
 
 static void r600_emit_streamout_begin(struct r600_common_context *rctx, struct r600_atom *atom)
 {
-	struct radeon_winsys_cs *cs = rctx->rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->gfx.cs;
 	struct r600_so_target **t = rctx->streamout.targets;
-	unsigned *stride_in_dw = rctx->streamout.stride_in_dw;
+	uint16_t *stride_in_dw = rctx->streamout.stride_in_dw;
 	unsigned i, update_flags = 0;
 
 	r600_flush_vgt_streamout(rctx);
@@ -216,8 +217,8 @@ static void r600_emit_streamout_begin(struct r600_common_context *rctx, struct r
 			radeon_emit(cs, stride_in_dw[i]);		/* VTX_STRIDE (in DW) */
 			radeon_emit(cs, va >> 8);			/* BUFFER_BASE */
 
-			r600_emit_reloc(rctx, &rctx->rings.gfx, r600_resource(t[i]->b.buffer),
-					RADEON_USAGE_WRITE, RADEON_PRIO_SHADER_RESOURCE_RW);
+			r600_emit_reloc(rctx, &rctx->gfx, r600_resource(t[i]->b.buffer),
+					RADEON_USAGE_WRITE, RADEON_PRIO_SHADER_RW_BUFFER);
 
 			/* R7xx requires this packet after updating BUFFER_BASE.
 			 * Without this, R7xx locks up. */
@@ -226,8 +227,8 @@ static void r600_emit_streamout_begin(struct r600_common_context *rctx, struct r
 				radeon_emit(cs, i);
 				radeon_emit(cs, va >> 8);
 
-				r600_emit_reloc(rctx, &rctx->rings.gfx, r600_resource(t[i]->b.buffer),
-						RADEON_USAGE_WRITE, RADEON_PRIO_SHADER_RESOURCE_RW);
+				r600_emit_reloc(rctx, &rctx->gfx, r600_resource(t[i]->b.buffer),
+						RADEON_USAGE_WRITE, RADEON_PRIO_SHADER_RW_BUFFER);
 			}
 		}
 
@@ -244,8 +245,8 @@ static void r600_emit_streamout_begin(struct r600_common_context *rctx, struct r
 			radeon_emit(cs, va); /* src address lo */
 			radeon_emit(cs, va >> 32); /* src address hi */
 
-			r600_emit_reloc(rctx,  &rctx->rings.gfx, t[i]->buf_filled_size,
-					RADEON_USAGE_READ, RADEON_PRIO_MIN);
+			r600_emit_reloc(rctx,  &rctx->gfx, t[i]->buf_filled_size,
+					RADEON_USAGE_READ, RADEON_PRIO_SO_FILLED_SIZE);
 		} else {
 			/* Start from the beginning. */
 			radeon_emit(cs, PKT3(PKT3_STRMOUT_BUFFER_UPDATE, 4, 0));
@@ -267,7 +268,7 @@ static void r600_emit_streamout_begin(struct r600_common_context *rctx, struct r
 
 void r600_emit_streamout_end(struct r600_common_context *rctx)
 {
-	struct radeon_winsys_cs *cs = rctx->rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->gfx.cs;
 	struct r600_so_target **t = rctx->streamout.targets;
 	unsigned i;
 	uint64_t va;
@@ -288,8 +289,8 @@ void r600_emit_streamout_end(struct r600_common_context *rctx)
 		radeon_emit(cs, 0); /* unused */
 		radeon_emit(cs, 0); /* unused */
 
-		r600_emit_reloc(rctx,  &rctx->rings.gfx, t[i]->buf_filled_size,
-				RADEON_USAGE_WRITE, RADEON_PRIO_MIN);
+		r600_emit_reloc(rctx,  &rctx->gfx, t[i]->buf_filled_size,
+				RADEON_USAGE_WRITE, RADEON_PRIO_SO_FILLED_SIZE);
 
 		/* Zero the buffer size. The counters (primitives generated,
 		 * primitives emitted) may be enabled even if there is not
@@ -311,12 +312,6 @@ void r600_emit_streamout_end(struct r600_common_context *rctx)
  * are no buffers bound.
  */
 
-static bool r600_get_strmout_en(struct r600_common_context *rctx)
-{
-	return rctx->streamout.streamout_enabled ||
-	       rctx->streamout.prims_gen_query_enabled;
-}
-
 static void r600_emit_streamout_enable(struct r600_common_context *rctx,
 				       struct r600_atom *atom)
 {
@@ -336,8 +331,8 @@ static void r600_emit_streamout_enable(struct r600_common_context *rctx,
 			S_028B94_STREAMOUT_2_EN(r600_get_strmout_en(rctx)) |
 			S_028B94_STREAMOUT_3_EN(r600_get_strmout_en(rctx));
 	}
-	radeon_set_context_reg(rctx->rings.gfx.cs, strmout_buffer_reg, strmout_buffer_val);
-	radeon_set_context_reg(rctx->rings.gfx.cs, strmout_config_reg, strmout_config_val);
+	radeon_set_context_reg(rctx->gfx.cs, strmout_buffer_reg, strmout_buffer_val);
+	radeon_set_context_reg(rctx->gfx.cs, strmout_config_reg, strmout_config_val);
 }
 
 static void r600_set_streamout_enable(struct r600_common_context *rctx, bool enable)

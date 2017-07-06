@@ -43,6 +43,8 @@
 #include "radeon_video.h"
 #include "radeon_vce.h"
 
+#define UVD_FW_1_66_16 ((1 << 24) | (66 << 16) | (16 << 8))
+
 /* generate an stream handle */
 unsigned rvid_alloc_stream_handle()
 {
@@ -64,8 +66,14 @@ bool rvid_create_buffer(struct pipe_screen *screen, struct rvid_buffer *buffer,
 {
 	memset(buffer, 0, sizeof(*buffer));
 	buffer->usage = usage;
+
+	/* Hardware buffer placement restrictions require the kernel to be
+	 * able to move buffers around individually, so request a
+	 * non-sub-allocated buffer.
+	 */
 	buffer->res = (struct r600_resource *)
-		pipe_buffer_create(screen, PIPE_BIND_CUSTOM, usage, size);
+		pipe_buffer_create(screen, PIPE_BIND_SHARED,
+				   usage, size);
 
 	return buffer->res != NULL;
 }
@@ -73,7 +81,7 @@ bool rvid_create_buffer(struct pipe_screen *screen, struct rvid_buffer *buffer,
 /* destroy a buffer */
 void rvid_destroy_buffer(struct rvid_buffer *buffer)
 {
-	pipe_resource_reference((struct pipe_resource **)&buffer->res, NULL);
+	r600_resource_reference(&buffer->res, NULL);
 }
 
 /* reallocate a buffer, preserving its content */
@@ -89,11 +97,11 @@ bool rvid_resize_buffer(struct pipe_screen *screen, struct radeon_winsys_cs *cs,
 	if (!rvid_create_buffer(screen, new_buf, new_size, new_buf->usage))
 		goto error;
 
-	src = ws->buffer_map(old_buf.res->cs_buf, cs, PIPE_TRANSFER_READ);
+	src = ws->buffer_map(old_buf.res->buf, cs, PIPE_TRANSFER_READ);
 	if (!src)
 		goto error;
 
-	dst = ws->buffer_map(new_buf->res->cs_buf, cs, PIPE_TRANSFER_WRITE);
+	dst = ws->buffer_map(new_buf->res->buf, cs, PIPE_TRANSFER_WRITE);
 	if (!dst)
 		goto error;
 
@@ -103,14 +111,14 @@ bool rvid_resize_buffer(struct pipe_screen *screen, struct radeon_winsys_cs *cs,
 		dst += bytes;
 		memset(dst, 0, new_size);
 	}
-	ws->buffer_unmap(new_buf->res->cs_buf);
-	ws->buffer_unmap(old_buf.res->cs_buf);
+	ws->buffer_unmap(new_buf->res->buf);
+	ws->buffer_unmap(old_buf.res->buf);
 	rvid_destroy_buffer(&old_buf);
 	return true;
 
 error:
 	if (src)
-		ws->buffer_unmap(old_buf.res->cs_buf);
+		ws->buffer_unmap(old_buf.res->buf);
 	rvid_destroy_buffer(new_buf);
 	*new_buf = old_buf;
 	return false;
@@ -121,8 +129,8 @@ void rvid_clear_buffer(struct pipe_context *context, struct rvid_buffer* buffer)
 {
 	struct r600_common_context *rctx = (struct r600_common_context*)context;
 
-	rctx->clear_buffer(context, &buffer->res->b.b, 0, buffer->res->buf->size,
-			   0, false);
+	rctx->dma_clear_buffer(context, &buffer->res->b.b, 0,
+			       buffer->res->buf->size, 0);
 	context->flush(context, NULL, 0);
 }
 
@@ -130,14 +138,17 @@ void rvid_clear_buffer(struct pipe_context *context, struct rvid_buffer* buffer)
  * join surfaces into the same buffer with identical tiling params
  * sumup their sizes and replace the backend buffers with a single bo
  */
-void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
+void rvid_join_surfaces(struct r600_common_context *rctx,
 			struct pb_buffer** buffers[VL_NUM_COMPONENTS],
 			struct radeon_surf *surfaces[VL_NUM_COMPONENTS])
 {
+	struct radeon_winsys* ws;
 	unsigned best_tiling, best_wh, off;
 	unsigned size, alignment;
 	struct pb_buffer *pb;
 	unsigned i, j;
+
+	ws = rctx->ws;
 
 	for (i = 0, best_tiling = 0, best_wh = ~0; i < VL_NUM_COMPONENTS; ++i) {
 		unsigned wh;
@@ -145,11 +156,13 @@ void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
 		if (!surfaces[i])
 			continue;
 
-		/* choose the smallest bank w/h for now */
-		wh = surfaces[i]->bankw * surfaces[i]->bankh;
-		if (wh < best_wh) {
-			best_wh = wh;
-			best_tiling = i;
+		if (rctx->chip_class < GFX9) {
+			/* choose the smallest bank w/h for now */
+			wh = surfaces[i]->u.legacy.bankw * surfaces[i]->u.legacy.bankh;
+			if (wh < best_wh) {
+				best_wh = wh;
+				best_tiling = i;
+			}
 		}
 	}
 
@@ -157,17 +170,22 @@ void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
 		if (!surfaces[i])
 			continue;
 
-		/* copy the tiling parameters */
-		surfaces[i]->bankw = surfaces[best_tiling]->bankw;
-		surfaces[i]->bankh = surfaces[best_tiling]->bankh;
-		surfaces[i]->mtilea = surfaces[best_tiling]->mtilea;
-		surfaces[i]->tile_split = surfaces[best_tiling]->tile_split;
-
 		/* adjust the texture layer offsets */
-		off = align(off, surfaces[i]->bo_alignment);
-		for (j = 0; j < Elements(surfaces[i]->level); ++j)
-			surfaces[i]->level[j].offset += off;
-		off += surfaces[i]->bo_size;
+		off = align(off, surfaces[i]->surf_alignment);
+
+		if (rctx->chip_class < GFX9) {
+			/* copy the tiling parameters */
+			surfaces[i]->u.legacy.bankw = surfaces[best_tiling]->u.legacy.bankw;
+			surfaces[i]->u.legacy.bankh = surfaces[best_tiling]->u.legacy.bankh;
+			surfaces[i]->u.legacy.mtilea = surfaces[best_tiling]->u.legacy.mtilea;
+			surfaces[i]->u.legacy.tile_split = surfaces[best_tiling]->u.legacy.tile_split;
+
+			for (j = 0; j < ARRAY_SIZE(surfaces[i]->u.legacy.level); ++j)
+				surfaces[i]->u.legacy.level[j].offset += off;
+		} else
+			surfaces[i]->u.gfx9.surf_offset += off;
+
+		off += surfaces[i]->surf_size;
 	}
 
 	for (i = 0, size = 0, alignment = 0; i < VL_NUM_COMPONENTS; ++i) {
@@ -185,7 +203,7 @@ void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
 	/* TODO: 2D tiling workaround */
 	alignment *= 2;
 
-	pb = ws->buffer_create(ws, size, alignment, bind, RADEON_DOMAIN_VRAM, 0);
+	pb = ws->buffer_create(ws, size, alignment, RADEON_DOMAIN_VRAM, 0);
 	if (!pb)
 		return;
 
@@ -205,69 +223,62 @@ int rvid_get_video_param(struct pipe_screen *screen,
 			 enum pipe_video_cap param)
 {
 	struct r600_common_screen *rscreen = (struct r600_common_screen *)screen;
+	enum pipe_video_format codec = u_reduce_video_profile(profile);
+	struct radeon_info info;
+
+	rscreen->ws->query_info(rscreen->ws, &info);
 
 	if (entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
 		switch (param) {
 		case PIPE_VIDEO_CAP_SUPPORTED:
-			return u_reduce_video_profile(profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC &&
+			return codec == PIPE_VIDEO_FORMAT_MPEG4_AVC &&
 				rvce_is_fw_version_supported(rscreen);
-	        case PIPE_VIDEO_CAP_NPOT_TEXTURES:
-        	        return 1;
-	        case PIPE_VIDEO_CAP_MAX_WIDTH:
+		case PIPE_VIDEO_CAP_NPOT_TEXTURES:
+			return 1;
+		case PIPE_VIDEO_CAP_MAX_WIDTH:
 			return (rscreen->family < CHIP_TONGA) ? 2048 : 4096;
-	        case PIPE_VIDEO_CAP_MAX_HEIGHT:
+		case PIPE_VIDEO_CAP_MAX_HEIGHT:
 			return (rscreen->family < CHIP_TONGA) ? 1152 : 2304;
-	        case PIPE_VIDEO_CAP_PREFERED_FORMAT:
-        	        return PIPE_FORMAT_NV12;
-	        case PIPE_VIDEO_CAP_PREFERS_INTERLACED:
-        	        return false;
-	        case PIPE_VIDEO_CAP_SUPPORTS_INTERLACED:
-        	        return false;
-	        case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
-        	        return true;
-	        case PIPE_VIDEO_CAP_STACKED_FRAMES:
-			return (rscreen->family < CHIP_TONGA) ? 1 : 2;
-	        default:
-        	        return 0;
-		}
-	}
-
-	/* UVD 2.x limits */
-	if (rscreen->family < CHIP_PALM) {
-		enum pipe_video_format codec = u_reduce_video_profile(profile);
-		switch (param) {
-		case PIPE_VIDEO_CAP_SUPPORTED:
-			/* no support for MPEG4 */
-			return codec != PIPE_VIDEO_FORMAT_MPEG4 &&
-			       /* FIXME: VC-1 simple/main profile is broken */
-			       profile != PIPE_VIDEO_PROFILE_VC1_SIMPLE &&
-			       profile != PIPE_VIDEO_PROFILE_VC1_MAIN;
+		case PIPE_VIDEO_CAP_PREFERED_FORMAT:
+			return PIPE_FORMAT_NV12;
 		case PIPE_VIDEO_CAP_PREFERS_INTERLACED:
+			return false;
 		case PIPE_VIDEO_CAP_SUPPORTS_INTERLACED:
-			/* MPEG2 only with shaders and no support for
-			   interlacing on R6xx style UVD */
-			return codec != PIPE_VIDEO_FORMAT_MPEG12 &&
-			       rscreen->family > CHIP_RV770;
+			return false;
+		case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
+			return true;
+		case PIPE_VIDEO_CAP_STACKED_FRAMES:
+			return (rscreen->family < CHIP_TONGA) ? 1 : 2;
 		default:
-			break;
+			return 0;
 		}
 	}
 
 	switch (param) {
 	case PIPE_VIDEO_CAP_SUPPORTED:
-		switch (u_reduce_video_profile(profile)) {
+		switch (codec) {
 		case PIPE_VIDEO_FORMAT_MPEG12:
+			return profile != PIPE_VIDEO_PROFILE_MPEG1;
 		case PIPE_VIDEO_FORMAT_MPEG4:
+			/* no support for MPEG4 on older hw */
+			return rscreen->family >= CHIP_PALM;
 		case PIPE_VIDEO_FORMAT_MPEG4_AVC:
-			return entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE;
+			if ((rscreen->family == CHIP_POLARIS10 ||
+			     rscreen->family == CHIP_POLARIS11) &&
+			    info.uvd_fw_version < UVD_FW_1_66_16 ) {
+				RVID_ERR("POLARIS10/11 firmware version need to be updated.\n");
+				return false;
+			}
+			return true;
 		case PIPE_VIDEO_FORMAT_VC1:
-			/* FIXME: VC-1 simple/main profile is broken */
-			return profile == PIPE_VIDEO_PROFILE_VC1_ADVANCED &&
-			       entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE;
+			return true;
 		case PIPE_VIDEO_FORMAT_HEVC:
 			/* Carrizo only supports HEVC Main */
-			return rscreen->family >= CHIP_CARRIZO &&
-				   profile == PIPE_VIDEO_PROFILE_HEVC_MAIN;
+			if (rscreen->family >= CHIP_STONEY)
+				return (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN ||
+					profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10);
+			else if (rscreen->family >= CHIP_CARRIZO)
+				return profile == PIPE_VIDEO_PROFILE_HEVC_MAIN;
 		default:
 			return false;
 		}
@@ -276,17 +287,25 @@ int rvid_get_video_param(struct pipe_screen *screen,
 	case PIPE_VIDEO_CAP_MAX_WIDTH:
 		return (rscreen->family < CHIP_TONGA) ? 2048 : 4096;
 	case PIPE_VIDEO_CAP_MAX_HEIGHT:
-		return (rscreen->family < CHIP_TONGA) ? 1152 : 2304;
+		return (rscreen->family < CHIP_TONGA) ? 1152 : 4096;
 	case PIPE_VIDEO_CAP_PREFERED_FORMAT:
-		return PIPE_FORMAT_NV12;
+		if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
+			return PIPE_FORMAT_P016;
+		else
+			return PIPE_FORMAT_NV12;
+
 	case PIPE_VIDEO_CAP_PREFERS_INTERLACED:
-		if (u_reduce_video_profile(profile) == PIPE_VIDEO_FORMAT_HEVC)
-			return false; //The hardware doesn't support interlaced HEVC.
-		return true;
 	case PIPE_VIDEO_CAP_SUPPORTS_INTERLACED:
-		if (u_reduce_video_profile(profile) == PIPE_VIDEO_FORMAT_HEVC)
-			return false; //The hardware doesn't support interlaced HEVC.
-		return true;
+		if (rscreen->family < CHIP_PALM) {
+			/* MPEG2 only with shaders and no support for
+			   interlacing on R6xx style UVD */
+			return codec != PIPE_VIDEO_FORMAT_MPEG12 &&
+			       rscreen->family > CHIP_RV770;
+		} else {
+			if (u_reduce_video_profile(profile) == PIPE_VIDEO_FORMAT_HEVC)
+				return false; //The firmware doesn't support interlaced HEVC.
+			return true;
+		}
 	case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
 		return true;
 	case PIPE_VIDEO_CAP_MAX_LEVEL:
@@ -309,8 +328,9 @@ int rvid_get_video_param(struct pipe_screen *screen,
 		case PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE:
 		case PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN:
 		case PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH:
-			return 41;
+			return (rscreen->family < CHIP_TONGA) ? 41 : 52;
 		case PIPE_VIDEO_PROFILE_HEVC_MAIN:
+		case PIPE_VIDEO_PROFILE_HEVC_MAIN_10:
 			return 186;
 		default:
 			return 0;
@@ -325,6 +345,11 @@ boolean rvid_is_format_supported(struct pipe_screen *screen,
 				 enum pipe_video_profile profile,
 				 enum pipe_video_entrypoint entrypoint)
 {
+	/* HEVC 10 bit decoding should use P016 instead of NV12 if possible */
+	if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
+		return (format == PIPE_FORMAT_NV12) ||
+			(format == PIPE_FORMAT_P016);
+
 	/* we can only handle this one with UVD */
 	if (profile != PIPE_VIDEO_PROFILE_UNKNOWN)
 		return format == PIPE_FORMAT_NV12;

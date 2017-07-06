@@ -148,7 +148,7 @@ driGetDriverName(Display * dpy, int scrNum, char **driverName)
  * The returned char pointer points to a static array that will be
  * overwritten by subsequent calls.
  */
-_X_EXPORT const char *
+_GLX_PUBLIC const char *
 glXGetScreenDriver(Display * dpy, int scrNum)
 {
    static char ret[32];
@@ -178,7 +178,7 @@ glXGetScreenDriver(Display * dpy, int scrNum)
  *
  * Note: The driver remains opened after this function returns.
  */
-_X_EXPORT const char *
+_GLX_PUBLIC const char *
 glXGetDriverConfig(const char *driverName)
 {
    void *handle = driOpenDriver(driverName);
@@ -198,8 +198,6 @@ glXGetDriverConfig(const char *driverName)
    /* Fall back to the old method */
    return dlsym(handle, "__driConfigOptions");
 }
-
-#ifdef XDAMAGE_1_1_INTERFACE
 
 static GLboolean
 has_damage_post(Display * dpy)
@@ -273,8 +271,6 @@ static const __DRIdamageExtension damageExtension = {
 
    .reportDamage        = __glXReportDamage,
 };
-
-#endif
 
 static GLboolean
 __glXDRIGetDrawableInfo(__DRIdrawable * drawable,

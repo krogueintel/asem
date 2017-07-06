@@ -30,7 +30,6 @@
   */
 
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 
@@ -39,7 +38,6 @@
 
 #include "brw_defines.h"
 #include "brw_context.h"
-#include "brw_eu.h"
 #include "brw_ff_gs.h"
 
 /**
@@ -407,9 +405,13 @@ gen6_sol_program(struct brw_ff_gs_compile *c, struct brw_ff_gs_prog_key *key,
                                                 : 0x00020001)); /* (1, 0, 2) */
          brw_inst_set_pred_control(p->devinfo, inst, BRW_PREDICATE_NORMAL);
       }
+
+      assert(c->reg.destination_indices.width == BRW_EXECUTE_4);
+      brw_push_insn_state(p);
+      brw_set_default_exec_size(p, BRW_EXECUTE_4);
       brw_ADD(p, c->reg.destination_indices,
               c->reg.destination_indices, get_element_ud(c->reg.SVBI, 0));
-
+      brw_pop_insn_state(p);
       /* For each vertex, generate code to output each varying using the
        * appropriate binding table entry.
        */
@@ -436,17 +438,22 @@ gen6_sol_program(struct brw_ff_gs_compile *c, struct brw_ff_gs_prog_key *key,
             vertex_slot.nr += slot / 2;
             vertex_slot.subnr = (slot % 2) * 16;
             /* gl_PointSize is stored in VARYING_SLOT_PSIZ.w. */
-            vertex_slot.dw1.bits.swizzle = varying == VARYING_SLOT_PSIZ
+            vertex_slot.swizzle = varying == VARYING_SLOT_PSIZ
                ? BRW_SWIZZLE_WWWW : key->transform_feedback_swizzles[binding];
             brw_set_default_access_mode(p, BRW_ALIGN_16);
+            brw_push_insn_state(p);
+            brw_set_default_exec_size(p, BRW_EXECUTE_4);
+
             brw_MOV(p, stride(c->reg.header, 4, 4, 1),
                     retype(vertex_slot, BRW_REGISTER_TYPE_UD));
+            brw_pop_insn_state(p);
+
             brw_set_default_access_mode(p, BRW_ALIGN_1);
             brw_svb_write(p,
                           final_write ? c->reg.temp : brw_null_reg(), /* dest */
                           1, /* msg_reg_nr */
                           c->reg.header, /* src0 */
-                          SURF_INDEX_GEN6_SOL_BINDING(binding), /* binding_table_index */
+                          BRW_GEN6_SOL_BINDING_START + binding, /* binding_table_index */
                           final_write); /* send_commit_msg */
          }
       }

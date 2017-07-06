@@ -26,11 +26,11 @@ include $(top_srcdir)/src/gallium/Automake.inc
 AM_CFLAGS = \
 	$(GALLIUM_DRIVER_CFLAGS) \
 	$(LLVM_CFLAGS) \
-	$(MSVC2008_COMPAT_CFLAGS)
+	$(MSVC2013_COMPAT_CFLAGS)
 AM_CXXFLAGS= \
 	$(GALLIUM_DRIVER_CXXFLAGS) \
 	$(LLVM_CXXFLAGS) \
-	$(MSVC2008_COMPAT_CXXFLAGS)
+	$(MSVC2013_COMPAT_CXXFLAGS)
 
 noinst_LTLIBRARIES = libllvmpipe.la
 
@@ -54,7 +54,8 @@ TEST_LIBS = \
 	$(top_builddir)/src/util/libmesautil.la \
 	$(LLVM_LIBS) \
 	$(DLOPEN_LIBS) \
-	$(PTHREAD_LIBS)
+	$(PTHREAD_LIBS) \
+	$(CLOCK_LIB)
 
 lp_test_format_SOURCES = lp_test_format.c lp_test_main.c
 lp_test_format_LDADD = $(TEST_LIBS)

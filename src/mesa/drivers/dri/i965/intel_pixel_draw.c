@@ -23,7 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "main/glheader.h"
 #include "main/enums.h"
 #include "main/image.h"
 #include "main/glformats.h"
@@ -58,7 +57,7 @@ do_blit_drawpixels(struct gl_context * ctx,
    struct brw_context *brw = brw_context(ctx);
    struct intel_buffer_object *src = intel_buffer_object(unpack->BufferObj);
    GLuint src_offset;
-   drm_intel_bo *src_buffer;
+   struct brw_bo *src_buffer;
 
    DBG("%s\n", __func__);
 

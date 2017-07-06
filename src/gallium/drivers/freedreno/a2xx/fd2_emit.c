@@ -152,16 +152,18 @@ emit_texture(struct fd_ringbuffer *ring, struct fd_context *ctx,
 static void
 emit_textures(struct fd_ringbuffer *ring, struct fd_context *ctx)
 {
+	struct fd_texture_stateobj *fragtex = &ctx->tex[PIPE_SHADER_FRAGMENT];
+	struct fd_texture_stateobj *verttex = &ctx->tex[PIPE_SHADER_VERTEX];
 	texmask emitted = 0;
 	unsigned i;
 
-	for (i = 0; i < ctx->verttex.num_samplers; i++)
-		if (ctx->verttex.samplers[i])
-			emitted |= emit_texture(ring, ctx, &ctx->verttex, i, emitted);
+	for (i = 0; i < verttex->num_samplers; i++)
+		if (verttex->samplers[i])
+			emitted |= emit_texture(ring, ctx, verttex, i, emitted);
 
-	for (i = 0; i < ctx->fragtex.num_samplers; i++)
-		if (ctx->fragtex.samplers[i])
-			emitted |= emit_texture(ring, ctx, &ctx->fragtex, i, emitted);
+	for (i = 0; i < fragtex->num_samplers; i++)
+		if (fragtex->samplers[i])
+			emitted |= emit_texture(ring, ctx, fragtex, i, emitted);
 }
 
 void
@@ -180,11 +182,11 @@ fd2_emit_vertex_bufs(struct fd_ringbuffer *ring, uint32_t val,
 }
 
 void
-fd2_emit_state(struct fd_context *ctx, uint32_t dirty)
+fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty)
 {
 	struct fd2_blend_stateobj *blend = fd2_blend_stateobj(ctx->blend);
 	struct fd2_zsa_stateobj *zsa = fd2_zsa_stateobj(ctx->zsa);
-	struct fd_ringbuffer *ring = ctx->ring;
+	struct fd_ringbuffer *ring = ctx->batch->draw;
 
 	/* NOTE: we probably want to eventually refactor this so each state
 	 * object handles emitting it's own state..  although the mapping of
@@ -250,10 +252,10 @@ fd2_emit_state(struct fd_context *ctx, uint32_t dirty)
 		OUT_RING(ring, xy2d(scissor->maxx,       /* PA_SC_WINDOW_SCISSOR_BR */
 				scissor->maxy));
 
-		ctx->max_scissor.minx = MIN2(ctx->max_scissor.minx, scissor->minx);
-		ctx->max_scissor.miny = MIN2(ctx->max_scissor.miny, scissor->miny);
-		ctx->max_scissor.maxx = MAX2(ctx->max_scissor.maxx, scissor->maxx);
-		ctx->max_scissor.maxy = MAX2(ctx->max_scissor.maxy, scissor->maxy);
+		ctx->batch->max_scissor.minx = MIN2(ctx->batch->max_scissor.minx, scissor->minx);
+		ctx->batch->max_scissor.miny = MIN2(ctx->batch->max_scissor.miny, scissor->miny);
+		ctx->batch->max_scissor.maxx = MAX2(ctx->batch->max_scissor.maxx, scissor->maxx);
+		ctx->batch->max_scissor.maxy = MAX2(ctx->batch->max_scissor.maxy, scissor->maxy);
 	}
 
 	if (dirty & FD_DIRTY_VIEWPORT) {
@@ -282,7 +284,7 @@ fd2_emit_state(struct fd_context *ctx, uint32_t dirty)
 		fd2_program_emit(ring, &ctx->prog);
 	}
 
-	if (dirty & (FD_DIRTY_PROG | FD_DIRTY_CONSTBUF)) {
+	if (dirty & (FD_DIRTY_PROG | FD_DIRTY_CONST)) {
 		emit_constants(ring,  VS_CONST_BASE * 4,
 				&ctx->constbuf[PIPE_SHADER_VERTEX],
 				(dirty & FD_DIRTY_PROG) ? ctx->prog.vp : NULL);
@@ -307,19 +309,15 @@ fd2_emit_state(struct fd_context *ctx, uint32_t dirty)
 		OUT_RING(ring, blend->rb_colormask);
 	}
 
-	if (dirty & (FD_DIRTY_VERTTEX | FD_DIRTY_FRAGTEX | FD_DIRTY_PROG))
+	if (dirty & (FD_DIRTY_TEX | FD_DIRTY_PROG))
 		emit_textures(ring, ctx);
-
-	ctx->dirty &= ~dirty;
 }
 
 /* emit per-context initialization:
  */
 void
-fd2_emit_setup(struct fd_context *ctx)
+fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
 {
-	struct fd_ringbuffer *ring = ctx->ring;
-
 	OUT_PKT0(ring, REG_A2XX_TP0_CHICKEN, 1);
 	OUT_RING(ring, 0x00000002);
 
@@ -442,7 +440,17 @@ fd2_emit_setup(struct fd_context *ctx)
 	OUT_RING(ring, 0x00000000);        /* RB_BLEND_GREEN */
 	OUT_RING(ring, 0x00000000);        /* RB_BLEND_BLUE */
 	OUT_RING(ring, 0x000000ff);        /* RB_BLEND_ALPHA */
+}
 
-	fd_ringbuffer_flush(ring);
-	fd_ringmarker_mark(ctx->draw_start);
+static void
+fd2_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+{
+	__OUT_IB(ring, false, target);
+}
+
+void
+fd2_emit_init(struct pipe_context *pctx)
+{
+	struct fd_context *ctx = fd_context(pctx);
+	ctx->emit_ib = fd2_emit_ib;
 }

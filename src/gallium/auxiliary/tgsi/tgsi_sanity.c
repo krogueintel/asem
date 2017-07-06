@@ -256,7 +256,6 @@ static const char *file_names[TGSI_FILE_COUNT] =
    "SAMP",
    "ADDR",
    "IMM",
-   "PRED",
    "SV",
    "RES"
 };
@@ -321,7 +320,7 @@ iter_instruction(
    }
 
    info = tgsi_get_opcode_info( inst->Instruction.Opcode );
-   if (info == NULL) {
+   if (!info) {
       report_error( ctx, "(%u): Invalid instruction opcode", inst->Instruction.Opcode );
       return TRUE;
    }
@@ -414,9 +413,9 @@ iter_declaration(
          decl->Semantic.Name == TGSI_SEMANTIC_TESSOUTER ||
          decl->Semantic.Name == TGSI_SEMANTIC_TESSINNER;
       if (file == TGSI_FILE_INPUT && !patch && (
-                processor == TGSI_PROCESSOR_GEOMETRY ||
-                processor == TGSI_PROCESSOR_TESS_CTRL ||
-                processor == TGSI_PROCESSOR_TESS_EVAL)) {
+                processor == PIPE_SHADER_GEOMETRY ||
+                processor == PIPE_SHADER_TESS_CTRL ||
+                processor == PIPE_SHADER_TESS_EVAL)) {
          uint vert;
          for (vert = 0; vert < ctx->implied_array_size; ++vert) {
             scan_register *reg = MALLOC(sizeof(scan_register));
@@ -424,7 +423,7 @@ iter_declaration(
             check_and_declare(ctx, reg);
          }
       } else if (file == TGSI_FILE_OUTPUT && !patch &&
-                 processor == TGSI_PROCESSOR_TESS_CTRL) {
+                 processor == PIPE_SHADER_TESS_CTRL) {
          uint vert;
          for (vert = 0; vert < ctx->implied_out_array_size; ++vert) {
             scan_register *reg = MALLOC(sizeof(scan_register));
@@ -485,11 +484,11 @@ iter_property(
 {
    struct sanity_check_ctx *ctx = (struct sanity_check_ctx *) iter;
 
-   if (iter->processor.Processor == TGSI_PROCESSOR_GEOMETRY &&
+   if (iter->processor.Processor == PIPE_SHADER_GEOMETRY &&
        prop->Property.PropertyName == TGSI_PROPERTY_GS_INPUT_PRIM) {
       ctx->implied_array_size = u_vertices_per_prim(prop->u[0].Data);
    }
-   if (iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL &&
+   if (iter->processor.Processor == PIPE_SHADER_TESS_CTRL &&
        prop->Property.PropertyName == TGSI_PROPERTY_TCS_VERTICES_OUT)
       ctx->implied_out_array_size = prop->u[0].Data;
    return TRUE;
@@ -499,8 +498,8 @@ static boolean
 prolog(struct tgsi_iterate_context *iter)
 {
    struct sanity_check_ctx *ctx = (struct sanity_check_ctx *) iter;
-   if (iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL ||
-       iter->processor.Processor == TGSI_PROCESSOR_TESS_EVAL)
+   if (iter->processor.Processor == PIPE_SHADER_TESS_CTRL ||
+       iter->processor.Processor == PIPE_SHADER_TESS_EVAL)
       ctx->implied_array_size = 32;
    return TRUE;
 }
@@ -559,6 +558,7 @@ tgsi_sanity_check(
    const struct tgsi_token *tokens )
 {
    struct sanity_check_ctx ctx;
+   boolean retval;
 
    ctx.iter.prolog = prolog;
    ctx.iter.iterate_instruction = iter_instruction;
@@ -580,11 +580,12 @@ tgsi_sanity_check(
    ctx.implied_array_size = 0;
    ctx.print = debug_get_option_print_sanity();
 
-   if (!tgsi_iterate_shader( tokens, &ctx.iter ))
-      return FALSE;
-
+   retval = tgsi_iterate_shader( tokens, &ctx.iter );
    regs_hash_destroy(ctx.regs_decl);
    regs_hash_destroy(ctx.regs_used);
    regs_hash_destroy(ctx.regs_ind_used);
+   if (retval == FALSE)
+      return FALSE;
+
    return ctx.errors == 0;
 }

@@ -75,7 +75,7 @@ svga_create_stream_output(struct svga_context *svga,
    /* Allocate the streamout data structure */
    streamout = CALLOC_STRUCT(svga_stream_output);
 
-   if (streamout == NULL)
+   if (!streamout)
       return NULL;
 
    streamout->info = *info;
@@ -276,13 +276,14 @@ svga_set_stream_output_targets(struct pipe_context *pipe,
    for (i = 0; i < num_targets; i++) {
       struct svga_stream_output_target *sot
          = svga_stream_output_target(targets[i]);
-      struct svga_buffer *sbuf = svga_buffer(sot->base.buffer);
       unsigned size;
 
-      assert(sbuf->key.flags & SVGA3D_SURFACE_BIND_STREAM_OUTPUT);
-      (void) sbuf;
+      svga->so_surfaces[i] = svga_buffer_handle(svga, sot->base.buffer,
+                                                PIPE_BIND_STREAM_OUTPUT);
 
-      svga->so_surfaces[i] = svga_buffer_handle(svga, sot->base.buffer);
+      assert(svga_buffer(sot->base.buffer)->key.flags
+             & SVGA3D_SURFACE_BIND_STREAM_OUTPUT);
+
       svga->so_targets[i] = &sot->base;
       soBindings[i].offset = sot->base.buffer_offset;
 
@@ -309,6 +310,25 @@ svga_set_stream_output_targets(struct pipe_context *pipe,
    }
 
    svga->num_so_targets = num_targets;
+}
+
+/**
+ * Rebind stream output target surfaces
+ */
+enum pipe_error
+svga_rebind_stream_output_targets(struct svga_context *svga)
+{
+   struct svga_winsys_context *swc = svga->swc;
+   enum pipe_error ret;
+   unsigned i;
+
+   for (i = 0; i < svga->num_so_targets; i++) {
+      ret = swc->resource_rebind(swc, svga->so_surfaces[i], NULL, SVGA_RELOC_WRITE);
+      if (ret != PIPE_OK)
+         return ret;
+   }
+
+   return PIPE_OK;
 }
 
 void

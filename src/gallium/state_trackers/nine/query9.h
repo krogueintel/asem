@@ -40,6 +40,7 @@ struct NineQuery9
     D3DQUERYTYPE type;
     enum nine_query_state state;
     boolean instant; /* true if D3DISSUE_BEGIN is not needed / invalid */
+    unsigned counter; /* Number of pending Begin/End (0 if internal multithreading off) */
 };
 static inline struct NineQuery9 *
 NineQuery9( void *data )
@@ -63,17 +64,17 @@ NineQuery9_ctor( struct NineQuery9 *,
 void
 NineQuery9_dtor( struct NineQuery9 * );
 
-D3DQUERYTYPE WINAPI
+D3DQUERYTYPE NINE_WINAPI
 NineQuery9_GetType( struct NineQuery9 *This );
 
-DWORD WINAPI
+DWORD NINE_WINAPI
 NineQuery9_GetDataSize( struct NineQuery9 *This );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineQuery9_Issue( struct NineQuery9 *This,
                   DWORD dwIssueFlags );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineQuery9_GetData( struct NineQuery9 *This,
                     void *pData,
                     DWORD dwSize,

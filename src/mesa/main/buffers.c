@@ -36,6 +36,7 @@
 #include "enums.h"
 #include "fbobject.h"
 #include "mtypes.h"
+#include "util/bitscan.h"
 
 
 #define BAD_MASK ~0u
@@ -58,10 +59,7 @@ supported_buffer_bitmask(const struct gl_context *ctx,
 
    if (_mesa_is_user_fbo(fb)) {
       /* A user-created renderbuffer */
-      GLuint i;
-      for (i = 0; i < ctx->Const.MaxColorAttachments; i++) {
-         mask |= (BUFFER_BIT_COLOR0 << i);
-      }
+      mask = ((1 << ctx->Const.MaxColorAttachments) - 1) << BUFFER_COLOR0;
    }
    else {
       /* A window system framebuffer */
@@ -159,6 +157,9 @@ draw_buffer_enum_to_bitmask(const struct gl_context *ctx, GLenum buffer)
       case GL_COLOR_ATTACHMENT7_EXT:
          return BUFFER_BIT_COLOR7;
       default:
+         /* not an error, but also not supported */
+         if (buffer >= GL_COLOR_ATTACHMENT8 && buffer <= GL_COLOR_ATTACHMENT31)
+            return 1 << BUFFER_COUNT;
          /* error */
          return BAD_MASK;
    }
@@ -171,13 +172,23 @@ draw_buffer_enum_to_bitmask(const struct gl_context *ctx, GLenum buffer)
  * renderbuffer (a BUFFER_* value).
  * return -1 for an invalid buffer.
  */
-static GLint
-read_buffer_enum_to_index(GLenum buffer)
+static gl_buffer_index
+read_buffer_enum_to_index(const struct gl_context *ctx, GLenum buffer)
 {
    switch (buffer) {
       case GL_FRONT:
          return BUFFER_FRONT_LEFT;
       case GL_BACK:
+         if (_mesa_is_gles(ctx)) {
+            /* In draw_buffer_enum_to_bitmask, when GLES contexts draw to
+             * GL_BACK with a single-buffered configuration, we actually end
+             * up drawing to the sole front buffer in our internal
+             * representation.  For consistency, we must read from that
+             * front left buffer too.
+             */
+            if (!ctx->DrawBuffer->Visual.doubleBufferMode)
+               return BUFFER_FRONT_LEFT;
+         }
          return BUFFER_BACK_LEFT;
       case GL_RIGHT:
          return BUFFER_FRONT_RIGHT;
@@ -193,6 +204,8 @@ read_buffer_enum_to_index(GLenum buffer)
          return BUFFER_FRONT_LEFT;
       case GL_AUX0:
          return BUFFER_AUX0;
+      case GL_FRONT_AND_BACK:
+         return BUFFER_FRONT_LEFT;
       case GL_AUX1:
       case GL_AUX2:
       case GL_AUX3:
@@ -214,14 +227,23 @@ read_buffer_enum_to_index(GLenum buffer)
       case GL_COLOR_ATTACHMENT7_EXT:
          return BUFFER_COLOR7;
       default:
+         /* not an error, but also not supported */
+         if (buffer >= GL_COLOR_ATTACHMENT8 && buffer <= GL_COLOR_ATTACHMENT31)
+            return BUFFER_COUNT;
          /* error */
-         return -1;
+         return BUFFER_NONE;
    }
 }
 
+static bool
+is_legal_es3_readbuffer_enum(GLenum buf)
+{
+   return buf == GL_BACK || buf == GL_NONE ||
+          (buf >= GL_COLOR_ATTACHMENT0 && buf <= GL_COLOR_ATTACHMENT31);
+}
 
 /**
- * Called by glDrawBuffer().
+ * Called by glDrawBuffer() and glNamedFramebufferDrawBuffer().
  * Specify which renderbuffer(s) to draw into for the first color output.
  * <buffer> can name zero, one, two or four renderbuffers!
  * \sa _mesa_DrawBuffers
@@ -242,9 +264,9 @@ read_buffer_enum_to_index(GLenum buffer)
  *
  * See the GL_EXT_framebuffer_object spec for more info.
  */
-void
-_mesa_draw_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
-                  GLenum buffer, const char *caller)
+static void
+draw_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
+            GLenum buffer, const char *caller)
 {
    GLbitfield destMask;
 
@@ -293,7 +315,7 @@ void GLAPIENTRY
 _mesa_DrawBuffer(GLenum buffer)
 {
    GET_CURRENT_CONTEXT(ctx);
-   _mesa_draw_buffer(ctx, ctx->DrawBuffer, buffer, "glDrawBuffer");
+   draw_buffer(ctx, ctx->DrawBuffer, buffer, "glDrawBuffer");
 }
 
 
@@ -312,22 +334,24 @@ _mesa_NamedFramebufferDrawBuffer(GLuint framebuffer, GLenum buf)
    else
       fb = ctx->WinSysDrawBuffer;
 
-   _mesa_draw_buffer(ctx, fb, buf, "glNamedFramebufferDrawBuffer");
+   draw_buffer(ctx, fb, buf, "glNamedFramebufferDrawBuffer");
 }
 
 
 /**
- * Called by glDrawBuffersARB; specifies the destination color renderbuffers
- * for N fragment program color outputs.
+ * Called by glDrawBuffersARB() and glNamedFramebufferDrawBuffers() to specify
+ * the destination color renderbuffers for N fragment program color outputs.
  * \sa _mesa_DrawBuffer
  * \param n  number of outputs
  * \param buffers  array [n] of renderbuffer names.  Unlike glDrawBuffer, the
  *                 names cannot specify more than one buffer.  For example,
- *                 GL_FRONT_AND_BACK is illegal.
+ *                 GL_FRONT_AND_BACK is illegal. The only exception is GL_BACK
+ *                 that is considered special and allowed as far as n is one
+ *                 since 4.5.
  */
-void
-_mesa_draw_buffers(struct gl_context *ctx, struct gl_framebuffer *fb,
-                   GLsizei n, const GLenum *buffers, const char *caller)
+static void
+draw_buffers(struct gl_context *ctx, struct gl_framebuffer *fb,
+             GLsizei n, const GLenum *buffers, const char *caller)
 {
    GLuint output;
    GLbitfield usedBufferMask, supportedMask;
@@ -369,17 +393,66 @@ _mesa_draw_buffers(struct gl_context *ctx, struct gl_framebuffer *fb,
 
    /* complicated error checking... */
    for (output = 0; output < n; output++) {
-      /* Section 4.2 (Whole Framebuffer Operations) of the OpenGL 3.0
+      destMask[output] = draw_buffer_enum_to_bitmask(ctx, buffers[output]);
+
+      /* From the OpenGL 3.0 specification, page 258:
+       * "Each buffer listed in bufs must be one of the values from tables
+       *  4.5 or 4.6.  Otherwise, an INVALID_ENUM error is generated.
+       */
+      if (destMask[output] == BAD_MASK) {
+         _mesa_error(ctx, GL_INVALID_ENUM, "%s(invalid buffer %s)",
+                     caller, _mesa_enum_to_string(buffers[output]));
+         return;
+      }
+
+      /* From the OpenGL 4.5 specification, page 493 (page 515 of the PDF)
+       * "An INVALID_ENUM error is generated if any value in bufs is FRONT,
+       *  LEFT, RIGHT, or FRONT_AND_BACK . This restriction applies to both
+       *  the default framebuffer and framebuffer objects, and exists because
+       *  these constants may themselves refer to multiple buffers, as shown
+       *  in table 17.4."
+       *
+       * And on page 492 (page 514 of the PDF):
+       * "If the default framebuffer is affected, then each of the constants
+       *  must be one of the values listed in table 17.6 or the special value
+       *  BACK. When BACK is used, n must be 1 and color values are written
+       *  into the left buffer for single-buffered contexts, or into the back
+       *  left buffer for double-buffered contexts."
+       *
+       * Note "special value BACK". GL_BACK also refers to multiple buffers,
+       * but it is consider a special case here. This is a change on 4.5. For
+       * OpenGL 4.x we check that behaviour. For any previous version we keep
+       * considering it wrong (as INVALID_ENUM).
+       */
+      if (_mesa_bitcount(destMask[output]) > 1) {
+         if (_mesa_is_winsys_fbo(fb) && ctx->Version >= 40 &&
+             buffers[output] == GL_BACK) {
+            if (n != 1) {
+               _mesa_error(ctx, GL_INVALID_OPERATION, "%s(with GL_BACK n must be 1)",
+                           caller);
+               return;
+            }
+         } else {
+            _mesa_error(ctx, GL_INVALID_ENUM, "%s(invalid buffer %s)",
+                        caller, _mesa_enum_to_string(buffers[output]));
+            return;
+         }
+      }
+
+      /* Section 4.2 (Whole Framebuffer Operations) of the OpenGL ES 3.0
        * specification says:
        *
-       *     "Each buffer listed in bufs must be BACK, NONE, or one of the values
-       *      from table 4.3 (NONE, COLOR_ATTACHMENTi)"
+       *     "If the GL is bound to a draw framebuffer object, the ith buffer
+       *     listed in bufs must be COLOR_ATTACHMENTi or NONE . Specifying a
+       *     buffer out of order, BACK , or COLOR_ATTACHMENTm where m is greater
+       *     than or equal to the value of MAX_- COLOR_ATTACHMENTS , will
+       *     generate the error INVALID_OPERATION .
        */
-      if (_mesa_is_gles3(ctx) && buffers[output] != GL_NONE &&
-          buffers[output] != GL_BACK &&
+      if (_mesa_is_gles3(ctx) && _mesa_is_user_fbo(fb) &&
+          buffers[output] != GL_NONE &&
           (buffers[output] < GL_COLOR_ATTACHMENT0 ||
            buffers[output] >= GL_COLOR_ATTACHMENT0 + ctx->Const.MaxColorAttachments)) {
-         _mesa_error(ctx, GL_INVALID_ENUM, "glDrawBuffers(buffer)");
+         _mesa_error(ctx, GL_INVALID_OPERATION, "glDrawBuffers(buffer)");
          return;
       }
 
@@ -400,34 +473,6 @@ _mesa_draw_buffers(struct gl_context *ctx, struct gl_framebuffer *fb,
             _mesa_error(ctx, GL_INVALID_OPERATION,
                         "%s(buffers[%d] >= maximum number of draw buffers)",
                         caller, output);
-            return;
-         }
-
-         destMask[output] = draw_buffer_enum_to_bitmask(ctx, buffers[output]);
-
-         /* From the OpenGL 3.0 specification, page 258:
-          * "Each buffer listed in bufs must be one of the values from tables
-          *  4.5 or 4.6.  Otherwise, an INVALID_ENUM error is generated.
-          */
-         if (destMask[output] == BAD_MASK) {
-            _mesa_error(ctx, GL_INVALID_ENUM, "%s(invalid buffer %s)",
-                        caller, _mesa_enum_to_string(buffers[output]));
-            return;
-         }
-
-         /* From the OpenGL 4.0 specification, page 256:
-          * "For both the default framebuffer and framebuffer objects, the
-          *  constants FRONT, BACK, LEFT, RIGHT, and FRONT_AND_BACK are not
-          *  valid in the bufs array passed to DrawBuffers, and will result in
-          *  the error INVALID_ENUM. This restriction is because these
-          *  constants may themselves refer to multiple buffers, as shown in
-          *  table 4.4."
-          *  Previous versions of the OpenGL specification say INVALID_OPERATION,
-          *  but the Khronos conformance tests expect INVALID_ENUM.
-          */
-         if (_mesa_bitcount(destMask[output]) > 1) {
-            _mesa_error(ctx, GL_INVALID_ENUM, "%s(invalid buffer %s)",
-                        caller, _mesa_enum_to_string(buffers[output]));
             return;
          }
 
@@ -502,7 +547,7 @@ void GLAPIENTRY
 _mesa_DrawBuffers(GLsizei n, const GLenum *buffers)
 {
    GET_CURRENT_CONTEXT(ctx);
-   _mesa_draw_buffers(ctx, ctx->DrawBuffer, n, buffers, "glDrawBuffers");
+   draw_buffers(ctx, ctx->DrawBuffer, n, buffers, "glDrawBuffers");
 }
 
 
@@ -522,7 +567,7 @@ _mesa_NamedFramebufferDrawBuffers(GLuint framebuffer, GLsizei n,
    else
       fb = ctx->WinSysDrawBuffer;
 
-   _mesa_draw_buffers(ctx, fb, n, bufs, "glNamedFramebufferDrawBuffers");
+   draw_buffers(ctx, fb, n, bufs, "glNamedFramebufferDrawBuffers");
 }
 
 
@@ -545,8 +590,8 @@ updated_drawbuffers(struct gl_context *ctx, struct gl_framebuffer *fb)
 
 
 /**
- * Helper function to set the GL_DRAW_BUFFER state in the context and
- * current FBO.  Called via glDrawBuffer(), glDrawBuffersARB()
+ * Helper function to set the GL_DRAW_BUFFER state for the given context and
+ * FBO.  Called via glDrawBuffer(), glDrawBuffersARB()
  *
  * All error checking will have been done prior to calling this function
  * so nothing should go wrong at this point.
@@ -586,13 +631,12 @@ _mesa_drawbuffers(struct gl_context *ctx, struct gl_framebuffer *fb,
    if (n > 0 && _mesa_bitcount(destMask[0]) > 1) {
       GLuint count = 0, destMask0 = destMask[0];
       while (destMask0) {
-         GLint bufIndex = ffs(destMask0) - 1;
+         const int bufIndex = u_bit_scan(&destMask0);
          if (fb->_ColorDrawBufferIndexes[count] != bufIndex) {
             updated_drawbuffers(ctx, fb);
             fb->_ColorDrawBufferIndexes[count] = bufIndex;
          }
          count++;
-         destMask0 &= ~(1 << bufIndex);
       }
       fb->ColorDrawBuffer[0] = buffers[0];
       fb->_NumColorDrawBuffers = count;
@@ -662,14 +706,17 @@ _mesa_update_draw_buffers(struct gl_context *ctx)
 
 /**
  * Like \sa _mesa_drawbuffers(), this is a helper function for setting
- * GL_READ_BUFFER state in the context and current FBO.
+ * GL_READ_BUFFER state for the given context and FBO.
+ * Note that all error checking should have been done before calling
+ * this function.
  * \param ctx  the rendering context
+ * \param fb  the framebuffer object to update
  * \param buffer  GL_FRONT, GL_BACK, GL_COLOR_ATTACHMENT0, etc.
  * \param bufferIndex  the numerical index corresponding to 'buffer'
  */
 void
 _mesa_readbuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
-                 GLenum buffer, GLint bufferIndex)
+                 GLenum buffer, gl_buffer_index bufferIndex)
 {
    if ((fb == ctx->ReadBuffer) && _mesa_is_winsys_fbo(fb)) {
       /* Only update the per-context READ_BUFFER state if we're bound to
@@ -687,15 +734,15 @@ _mesa_readbuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
 
 
 /**
- * Called by glReadBuffer to set the source renderbuffer for reading pixels.
+ * Called by glReadBuffer and glNamedFramebufferReadBuffer to set the source
+ * renderbuffer for reading pixels.
  * \param mode color buffer such as GL_FRONT, GL_BACK, etc.
  */
-void
-_mesa_read_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
-                  GLenum buffer, const char *caller)
+static ALWAYS_INLINE void
+read_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
+            GLenum buffer, const char *caller, bool no_error)
 {
-   GLbitfield supportedMask;
-   GLint srcBuffer;
+   gl_buffer_index srcBuffer;
 
    FLUSH_VERTICES(ctx, 0);
 
@@ -704,23 +751,33 @@ _mesa_read_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
 
    if (buffer == GL_NONE) {
       /* This is legal--it means that no buffer should be bound for reading. */
-      srcBuffer = -1;
+      srcBuffer = BUFFER_NONE;
    }
    else {
       /* general case / window-system framebuffer */
-      srcBuffer = read_buffer_enum_to_index(buffer);
-      if (srcBuffer == -1) {
-         _mesa_error(ctx, GL_INVALID_ENUM,
-                     "%s(invalid buffer %s)", caller,
-                     _mesa_enum_to_string(buffer));
-         return;
-      }
-      supportedMask = supported_buffer_bitmask(ctx, fb);
-      if (((1 << srcBuffer) & supportedMask) == 0) {
-         _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "%s(invalid buffer %s)", caller,
-                     _mesa_enum_to_string(buffer));
-         return;
+      if (!no_error &&_mesa_is_gles3(ctx) &&
+          !is_legal_es3_readbuffer_enum(buffer))
+         srcBuffer = BUFFER_NONE;
+      else
+         srcBuffer = read_buffer_enum_to_index(ctx, buffer);
+
+      if (!no_error) {
+         GLbitfield supportedMask;
+
+         if (srcBuffer == BUFFER_NONE) {
+            _mesa_error(ctx, GL_INVALID_ENUM,
+                        "%s(invalid buffer %s)", caller,
+                        _mesa_enum_to_string(buffer));
+            return;
+         }
+
+         supportedMask = supported_buffer_bitmask(ctx, fb);
+         if (((1 << srcBuffer) & supportedMask) == 0) {
+            _mesa_error(ctx, GL_INVALID_OPERATION,
+                        "%s(invalid buffer %s)", caller,
+                        _mesa_enum_to_string(buffer));
+            return;
+         }
       }
    }
 
@@ -731,8 +788,32 @@ _mesa_read_buffer(struct gl_context *ctx, struct gl_framebuffer *fb,
    /* Call the device driver function only if fb is the bound read buffer */
    if (fb == ctx->ReadBuffer) {
       if (ctx->Driver.ReadBuffer)
-         (*ctx->Driver.ReadBuffer)(ctx, buffer);
+         ctx->Driver.ReadBuffer(ctx, buffer);
    }
+}
+
+
+static void
+read_buffer_err(struct gl_context *ctx, struct gl_framebuffer *fb,
+                GLenum buffer, const char *caller)
+{
+   read_buffer(ctx, fb, buffer, caller, false);
+}
+
+
+static void
+read_buffer_no_error(struct gl_context *ctx, struct gl_framebuffer *fb,
+                     GLenum buffer, const char *caller)
+{
+   read_buffer(ctx, fb, buffer, caller, true);
+}
+
+
+void GLAPIENTRY
+_mesa_ReadBuffer_no_error(GLenum buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   read_buffer_no_error(ctx, ctx->ReadBuffer, buffer, "glReadBuffer");
 }
 
 
@@ -740,7 +821,24 @@ void GLAPIENTRY
 _mesa_ReadBuffer(GLenum buffer)
 {
    GET_CURRENT_CONTEXT(ctx);
-   _mesa_read_buffer(ctx, ctx->ReadBuffer, buffer, "glReadBuffer");
+   read_buffer_err(ctx, ctx->ReadBuffer, buffer, "glReadBuffer");
+}
+
+
+void GLAPIENTRY
+_mesa_NamedFramebufferReadBuffer_no_error(GLuint framebuffer, GLenum src)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_framebuffer *fb;
+
+   if (framebuffer) {
+      fb = _mesa_lookup_framebuffer(ctx, framebuffer);
+   } else {
+      fb = ctx->WinSysReadBuffer;
+   }
+
+   read_buffer_no_error(ctx, fb, src, "glNamedFramebufferReadBuffer");
 }
 
 
@@ -759,5 +857,5 @@ _mesa_NamedFramebufferReadBuffer(GLuint framebuffer, GLenum src)
    else
       fb = ctx->WinSysReadBuffer;
 
-   _mesa_read_buffer(ctx, fb, src, "glNamedFramebufferReadBuffer");
+   read_buffer_err(ctx, fb, src, "glNamedFramebufferReadBuffer");
 }

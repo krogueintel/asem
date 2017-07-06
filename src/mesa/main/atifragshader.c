@@ -30,6 +30,7 @@
 #include "main/mtypes.h"
 #include "main/dispatch.h"
 #include "main/atifragshader.h"
+#include "program/program.h"
 
 #define MESA_DEBUG_ATI_FS 0
 
@@ -63,6 +64,7 @@ _mesa_delete_ati_fragment_shader(struct gl_context *ctx, struct ati_fragment_sha
       free(s->Instructions[i]);
       free(s->SetupInst[i]);
    }
+   _mesa_reference_program(ctx, &s->Program, NULL);
    free(s);
 }
 
@@ -199,10 +201,14 @@ _mesa_GenFragmentShadersATI(GLuint range)
       return 0;
    }
 
+   _mesa_HashLockMutex(ctx->Shared->ATIShaders);
+
    first = _mesa_HashFindFreeKeyBlock(ctx->Shared->ATIShaders, range);
    for (i = 0; i < range; i++) {
-      _mesa_HashInsert(ctx->Shared->ATIShaders, first + i, &DummyShader);
+      _mesa_HashInsertLocked(ctx->Shared->ATIShaders, first + i, &DummyShader);
    }
+
+   _mesa_HashUnlockMutex(ctx->Shared->ATIShaders);
 
    return first;
 }
@@ -258,9 +264,6 @@ _mesa_BindFragmentShaderATI(GLuint id)
    assert(ctx->ATIFragmentShader.Current);
    if (newProg)
       newProg->RefCount++;
-
-   /*if (ctx->Driver.BindProgram)
-      ctx->Driver.BindProgram(ctx, target, prog); */
 }
 
 void GLAPIENTRY
@@ -293,7 +296,7 @@ _mesa_DeleteFragmentShaderATI(GLuint id)
 	 prog->RefCount--;
 	 if (prog->RefCount <= 0) {
 	    assert(prog != &DummyShader);
-	    free(prog);
+            _mesa_delete_ati_fragment_shader(ctx, prog);
 	 }
       }
    }
@@ -321,6 +324,8 @@ _mesa_BeginFragmentShaderATI(void)
          free(ctx->ATIFragmentShader.Current->SetupInst[i]);
    }
 
+   _mesa_reference_program(ctx, &ctx->ATIFragmentShader.Current->Program, NULL);
+
    /* malloc the instructions here - not sure if the best place but its
       a start */
    for (i = 0; i < MAX_NUM_PASSES_ATI; i++) {
@@ -345,6 +350,9 @@ _mesa_BeginFragmentShaderATI(void)
    ctx->ATIFragmentShader.Current->isValid = GL_FALSE;
    ctx->ATIFragmentShader.Current->swizzlerq = 0;
    ctx->ATIFragmentShader.Compiling = 1;
+#if MESA_DEBUG_ATI_FS
+   _mesa_debug(ctx, "%s %u\n", __func__, ctx->ATIFragmentShader.Current->Id);
+#endif
 }
 
 void GLAPIENTRY
@@ -402,7 +410,14 @@ _mesa_EndFragmentShaderATI(void)
    }
 #endif
 
-   if (!ctx->Driver.ProgramStringNotify(ctx, GL_FRAGMENT_SHADER_ATI, NULL)) {
+   if (ctx->Driver.NewATIfs) {
+      struct gl_program *prog = ctx->Driver.NewATIfs(ctx,
+                                                     ctx->ATIFragmentShader.Current);
+      _mesa_reference_program(ctx, &ctx->ATIFragmentShader.Current->Program, prog);
+   }
+
+   if (!ctx->Driver.ProgramStringNotify(ctx, GL_FRAGMENT_SHADER_ATI,
+                                        curProg->Program)) {
       ctx->ATIFragmentShader.Current->isValid = GL_FALSE;
       /* XXX is this the right error? */
       _mesa_error(ctx, GL_INVALID_OPERATION,

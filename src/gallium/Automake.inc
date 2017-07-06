@@ -46,9 +46,16 @@ GALLIUM_TARGET_CFLAGS = \
 
 GALLIUM_COMMON_LIB_DEPS = \
 	-lm \
+	$(LIBUNWIND_LIBS) \
+	$(LIBSENSORS_LIBS) \
 	$(CLOCK_LIB) \
 	$(PTHREAD_LIBS) \
 	$(DLOPEN_LIBS)
+
+if HAVE_LIBDRM
+GALLIUM_COMMON_LIB_DEPS += \
+	$(LIBDRM_LIBS)
+endif
 
 GALLIUM_WINSYS_CFLAGS = \
 	-I$(top_srcdir)/src \
@@ -66,4 +73,10 @@ GALLIUM_PIPE_LOADER_WINSYS_LIBS = \
 if HAVE_DRISW
 GALLIUM_PIPE_LOADER_WINSYS_LIBS += \
 	$(top_builddir)/src/gallium/winsys/sw/dri/libswdri.la
+endif
+
+if HAVE_DRISW_KMS
+GALLIUM_PIPE_LOADER_WINSYS_LIBS += \
+	$(top_builddir)/src/gallium/winsys/sw/kms-dri/libswkmsdri.la \
+	$(LIBDRM_LIBS)
 endif

@@ -220,7 +220,7 @@ readpixels_memcpy(struct gl_context *ctx,
    struct gl_renderbuffer *rb =
          _mesa_get_read_renderbuffer_for_format(ctx, format);
    GLubyte *dst, *map;
-   int dstStride, stride, j, texelBytes;
+   int dstStride, stride, j, texelBytes, bytesPerRow;
 
    /* Fail if memcpy cannot be used. */
    if (!readpixels_can_use_memcpy(ctx, format, type, packing)) {
@@ -239,12 +239,17 @@ readpixels_memcpy(struct gl_context *ctx,
    }
 
    texelBytes = _mesa_get_format_bytes(rb->Format);
+   bytesPerRow = texelBytes * width;
 
    /* memcpy*/
-   for (j = 0; j < height; j++) {
-      memcpy(dst, map, width * texelBytes);
-      dst += dstStride;
-      map += stride;
+   if (dstStride == stride && dstStride == bytesPerRow) {
+      memcpy(dst, map, bytesPerRow * height);
+   } else {
+      for (j = 0; j < height; j++) {
+         memcpy(dst, map, bytesPerRow);
+         dst += dstStride;
+         map += stride;
+      }
    }
 
    ctx->Driver.UnmapRenderbuffer(ctx, rb);
@@ -582,7 +587,7 @@ read_rgba_pixels( struct gl_context *ctx,
       void *luminance;
       uint32_t luminance_format;
 
-      luminance_stride = width * sizeof(GL_FLOAT);
+      luminance_stride = width * sizeof(GLfloat);
       if (format == GL_LUMINANCE_ALPHA)
          luminance_stride *= 2;
       luminance_bytes = height * luminance_stride;
@@ -608,8 +613,7 @@ read_rgba_pixels( struct gl_context *ctx,
                                              dst, format, type);
    }
 
-   if (rgba)
-      free(rgba);
+   free(rgba);
 
 done_swap:
    /* Handle byte swapping if required */
@@ -858,46 +862,40 @@ _mesa_readpixels(struct gl_context *ctx,
                  const struct gl_pixelstore_attrib *packing,
                  GLvoid *pixels)
 {
-   struct gl_pixelstore_attrib clippedPacking = *packing;
-
    if (ctx->NewState)
       _mesa_update_state(ctx);
 
-   /* Do all needed clipping here, so that we can forget about it later */
-   if (_mesa_clip_readpixels(ctx, &x, &y, &width, &height, &clippedPacking)) {
+   pixels = _mesa_map_pbo_dest(ctx, packing, pixels);
 
-      pixels = _mesa_map_pbo_dest(ctx, &clippedPacking, pixels);
-
-      if (pixels) {
-         /* Try memcpy first. */
-         if (readpixels_memcpy(ctx, x, y, width, height, format, type,
-                               pixels, packing)) {
-            _mesa_unmap_pbo_dest(ctx, &clippedPacking);
-            return;
-         }
-
-         /* Otherwise take the slow path. */
-         switch (format) {
-         case GL_STENCIL_INDEX:
-            read_stencil_pixels(ctx, x, y, width, height, type, pixels,
-                                &clippedPacking);
-            break;
-         case GL_DEPTH_COMPONENT:
-            read_depth_pixels(ctx, x, y, width, height, type, pixels,
-                              &clippedPacking);
-            break;
-         case GL_DEPTH_STENCIL_EXT:
-            read_depth_stencil_pixels(ctx, x, y, width, height, type, pixels,
-                                      &clippedPacking);
-            break;
-         default:
-            /* all other formats should be color formats */
-            read_rgba_pixels(ctx, x, y, width, height, format, type, pixels,
-                             &clippedPacking);
-         }
-
-         _mesa_unmap_pbo_dest(ctx, &clippedPacking);
+   if (pixels) {
+      /* Try memcpy first. */
+      if (readpixels_memcpy(ctx, x, y, width, height, format, type,
+                            pixels, packing)) {
+         _mesa_unmap_pbo_dest(ctx, packing);
+         return;
       }
+
+      /* Otherwise take the slow path. */
+      switch (format) {
+      case GL_STENCIL_INDEX:
+         read_stencil_pixels(ctx, x, y, width, height, type, pixels,
+                             packing);
+         break;
+      case GL_DEPTH_COMPONENT:
+         read_depth_pixels(ctx, x, y, width, height, type, pixels,
+                           packing);
+         break;
+      case GL_DEPTH_STENCIL_EXT:
+         read_depth_stencil_pixels(ctx, x, y, width, height, type, pixels,
+                                   packing);
+         break;
+      default:
+         /* all other formats should be color formats */
+         read_rgba_pixels(ctx, x, y, width, height, format, type, pixels,
+                          packing);
+      }
+
+      _mesa_unmap_pbo_dest(ctx, packing);
    }
 }
 
@@ -993,6 +991,7 @@ _mesa_ReadnPixelsARB( GLint x, GLint y, GLsizei width, GLsizei height,
 {
    GLenum err = GL_NO_ERROR;
    struct gl_renderbuffer *rb;
+   struct gl_pixelstore_attrib clippedPacking;
 
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1039,11 +1038,11 @@ _mesa_ReadnPixelsARB( GLint x, GLint y, GLsizei width, GLsizei height,
    if (_mesa_is_gles(ctx)) {
       if (ctx->API == API_OPENGLES2 &&
           _mesa_is_color_format(format) &&
-          _mesa_get_color_read_format(ctx) == format &&
-          _mesa_get_color_read_type(ctx) == type) {
+          _mesa_get_color_read_format(ctx, NULL, "glReadPixels") == format &&
+          _mesa_get_color_read_type(ctx, NULL, "glReadPixels") == type) {
          err = GL_NO_ERROR;
       } else if (ctx->Version < 30) {
-         err = _mesa_es_error_check_format_and_type(format, type, 2);
+         err = _mesa_es_error_check_format_and_type(ctx, format, type, 2);
          if (err == GL_NO_ERROR) {
             if (type == GL_FLOAT || type == GL_HALF_FLOAT_OES) {
                err = GL_INVALID_OPERATION;
@@ -1094,7 +1093,9 @@ _mesa_ReadnPixelsARB( GLint x, GLint y, GLsizei width, GLsizei height,
       }
    }
 
-   if (width == 0 || height == 0)
+   /* Do all needed clipping here, so that we can forget about it later */
+   clippedPacking = ctx->Pack;
+   if (!_mesa_clip_readpixels(ctx, &x, &y, &width, &height, &clippedPacking))
       return; /* nothing to do */
 
    if (!_mesa_validate_pbo_access(2, &ctx->Pack, width, height, 1,
@@ -1118,7 +1119,7 @@ _mesa_ReadnPixelsARB( GLint x, GLint y, GLsizei width, GLsizei height,
    }
 
    ctx->Driver.ReadPixels(ctx, x, y, width, height,
-			  format, type, &ctx->Pack, pixels);
+                          format, type, &clippedPacking, pixels);
 }
 
 void GLAPIENTRY

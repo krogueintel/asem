@@ -145,11 +145,11 @@ register_surface(struct gl_context *ctx, GLboolean isOutput,
    surf->output = isOutput;
    for (i = 0; i < numTextureNames; ++i) {
       struct gl_texture_object *tex;
-      tex  = _mesa_lookup_texture(ctx, textureNames[i]);
+
+      tex = _mesa_lookup_texture_err(ctx, textureNames[i],
+                                     "VDPAURegisterSurfaceNV");
       if (tex == NULL) {
          free(surf);
-         _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "VDPAURegisterSurfaceNV(texture ID not found)");
          return (GLintptr)NULL;
       }
 
@@ -163,9 +163,10 @@ register_surface(struct gl_context *ctx, GLboolean isOutput,
          return (GLintptr)NULL;
       }
 
-      if (tex->Target == 0)
+      if (tex->Target == 0) {
          tex->Target = target;
-      else if (tex->Target != target) {
+         tex->TargetIndex = _mesa_tex_target_to_index(ctx, target);
+      } else if (tex->Target != target) {
          _mesa_unlock_texture(ctx, tex);
          free(surf);
          _mesa_error(ctx, GL_INVALID_OPERATION,

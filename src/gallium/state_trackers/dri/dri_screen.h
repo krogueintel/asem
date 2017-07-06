@@ -89,7 +89,7 @@ struct dri_screen
    __DRIimage * (*lookup_egl_image)(struct dri_screen *ctx, void *handle);
 
    /* OpenCL interop */
-   pipe_mutex opencl_func_mutex;
+   mtx_t opencl_func_mutex;
    opencl_dri_event_add_ref_t opencl_dri_event_add_ref;
    opencl_dri_event_release_t opencl_dri_event_release;
    opencl_dri_event_wait_t opencl_dri_event_wait;
@@ -109,6 +109,7 @@ struct __DRIimageRec {
    unsigned layer;
    uint32_t dri_format;
    uint32_t dri_components;
+   unsigned use;
 
    void *loader_private;
 
@@ -136,10 +137,13 @@ void
 dri_fill_st_visual(struct st_visual *stvis, struct dri_screen *screen,
                    const struct gl_config *mode);
 
+unsigned
+dri_init_options_get_screen_flags(struct dri_screen *screen,
+                                  const char* driver_name);
+
 const __DRIconfig **
 dri_init_screen_helper(struct dri_screen *screen,
-                       struct pipe_screen *pscreen,
-                       const char* driver_name);
+                       struct pipe_screen *pscreen);
 
 void
 dri_destroy_screen_helper(struct dri_screen * screen);
@@ -147,7 +151,6 @@ dri_destroy_screen_helper(struct dri_screen * screen);
 void
 dri_destroy_screen(__DRIscreen * sPriv);
 
-extern struct pipe_screen *kms_swrast_create_screen(int fd);
 extern const struct __DriverAPIRec dri_kms_driver_api;
 
 extern const struct __DriverAPIRec galliumdrm_driver_api;

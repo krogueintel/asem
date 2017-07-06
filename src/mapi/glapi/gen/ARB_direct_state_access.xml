@@ -5,7 +5,6 @@
 <category name="GL_ARB_direct_state_access" number="164">
    <enum name="TEXTURE_TARGET"  value="0x1006"/>
    <enum name="QUERY_TARGET"    value="0x82EA"/>
-   <enum name="TEXTURE_BINDING" value="0x82EB"/>
 
    <!-- Transform Feedback object functions -->
 
@@ -50,33 +49,33 @@
 
    <!-- Buffer object functions -->
 
-   <function name="CreateBuffers">
+   <function name="CreateBuffers" no_error="true">
       <param name="n" type="GLsizei" />
       <param name="buffers" type="GLuint *" />
    </function>
 
-   <function name="NamedBufferStorage">
+   <function name="NamedBufferStorage" no_error="true">
       <param name="buffer" type="GLuint" />
       <param name="size" type="GLsizeiptr" />
       <param name="data" type="const GLvoid *" />
       <param name="flags" type="GLbitfield" />
    </function>
 
-   <function name="NamedBufferData">
+   <function name="NamedBufferData" marshal="custom">
       <param name="buffer" type="GLuint" />
       <param name="size" type="GLsizeiptr" />
       <param name="data" type="const GLvoid *" />
       <param name="usage" type="GLenum" />
    </function>
 
-   <function name="NamedBufferSubData">
+   <function name="NamedBufferSubData" no_error="true" marshal="custom">
       <param name="buffer" type="GLuint" />
       <param name="offset" type="GLintptr" />
       <param name="size" type="GLsizeiptr" />
       <param name="data" type="const GLvoid *" />
    </function>
 
-   <function name="CopyNamedBufferSubData">
+   <function name="CopyNamedBufferSubData" no_error="true">
       <param name="readBuffer" type="GLuint" />
       <param name="writeBuffer" type="GLuint" />
       <param name="readOffset" type="GLintptr" />
@@ -102,13 +101,13 @@
       <param name="data" type="const GLvoid *" />
    </function>
 
-   <function name="MapNamedBuffer">
+   <function name="MapNamedBuffer" no_error="true">
       <return type="GLvoid *" />
       <param name="buffer" type="GLuint" />
       <param name="access" type="GLenum" />
    </function>
 
-   <function name="MapNamedBufferRange">
+   <function name="MapNamedBufferRange" no_error="true">
       <return type="GLvoid *" />
       <param name="buffer" type="GLuint" />
       <param name="offset" type="GLintptr" />
@@ -116,12 +115,12 @@
       <param name="access" type="GLbitfield" />
    </function>
 
-   <function name="UnmapNamedBuffer">
+   <function name="UnmapNamedBuffer" no_error="true">
       <return type="GLboolean" />
       <param name="buffer" type="GLuint" />
    </function>
 
-   <function name="FlushMappedNamedBufferRange">
+   <function name="FlushMappedNamedBufferRange" no_error="true">
       <param name="buffer" type="GLuint" />
       <param name="offset" type="GLintptr" />
       <param name="length" type="GLsizeiptr" />
@@ -154,32 +153,32 @@
 
    <!-- Framebuffer object functions -->
 
-   <function name="CreateFramebuffers" offset="assign">
+   <function name="CreateFramebuffers">
       <param name="n" type="GLsizei" />
       <param name="framebuffers" type="GLuint *" />
    </function>
 
-   <function name="NamedFramebufferRenderbuffer" offset="assign">
+   <function name="NamedFramebufferRenderbuffer">
       <param name="framebuffer" type="GLuint" />
       <param name="attachment" type="GLenum" />
       <param name="renderbuffertarget" type="GLenum" />
       <param name="renderbuffer" type="GLuint" />
    </function>
 
-   <function name="NamedFramebufferParameteri" offset="assign">
+   <function name="NamedFramebufferParameteri">
       <param name="framebuffer" type="GLuint" />
       <param name="pname" type="GLenum" />
       <param name="param" type="GLint" />
    </function>
 
-   <function name="NamedFramebufferTexture" offset="assign">
+   <function name="NamedFramebufferTexture" no_error="true">
       <param name="framebuffer" type="GLuint" />
       <param name="attachment" type="GLenum" />
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
    </function>
 
-   <function name="NamedFramebufferTextureLayer" offset="assign">
+   <function name="NamedFramebufferTextureLayer" no_error="true">
       <param name="framebuffer" type="GLuint" />
       <param name="attachment" type="GLenum" />
       <param name="texture" type="GLuint" />
@@ -187,29 +186,29 @@
       <param name="layer" type="GLint" />
    </function>
 
-   <function name="NamedFramebufferDrawBuffer" offset="assign">
+   <function name="NamedFramebufferDrawBuffer">
       <param name="framebuffer" type="GLuint" />
       <param name="buf" type="GLenum" />
    </function>
 
-   <function name="NamedFramebufferDrawBuffers" offset="assign">
+   <function name="NamedFramebufferDrawBuffers">
       <param name="framebuffer" type="GLuint" />
       <param name="n" type="GLsizei" />
       <param name="bufs" type="const GLenum *" />
    </function>
 
-   <function name="NamedFramebufferReadBuffer" offset="assign">
+   <function name="NamedFramebufferReadBuffer" no_error="true">
       <param name="framebuffer" type="GLuint" />
       <param name="buf" type="GLenum" />
    </function>
 
-   <function name="InvalidateNamedFramebufferData" offset="assign">
+   <function name="InvalidateNamedFramebufferData">
       <param name="framebuffer" type="GLuint" />
       <param name="numAttachments" type="GLsizei" />
       <param name="attachments" type="const GLenum *" />
    </function>
 
-   <function name="InvalidateNamedFramebufferSubData" offset="assign">
+   <function name="InvalidateNamedFramebufferSubData">
       <param name="framebuffer" type="GLuint" />
       <param name="numAttachments" type="GLsizei" />
       <param name="attachments" type="const GLenum *" />
@@ -219,35 +218,36 @@
       <param name="height" type="GLsizei" />
    </function>
 
-   <function name="ClearNamedFramebufferiv" offset="assign">
+   <function name="ClearNamedFramebufferiv">
       <param name="framebuffer" type="GLuint" />
       <param name="buffer" type="GLenum" />
       <param name="drawbuffer" type="GLint" />
       <param name="value" type="const GLint *" />
    </function>
 
-   <function name="ClearNamedFramebufferuiv" offset="assign">
+   <function name="ClearNamedFramebufferuiv">
       <param name="framebuffer" type="GLuint" />
       <param name="buffer" type="GLenum" />
       <param name="drawbuffer" type="GLint" />
       <param name="value" type="const GLuint *" />
    </function>
 
-   <function name="ClearNamedFramebufferfv" offset="assign">
+   <function name="ClearNamedFramebufferfv">
       <param name="framebuffer" type="GLuint" />
       <param name="buffer" type="GLenum" />
       <param name="drawbuffer" type="GLint" />
       <param name="value" type="const GLfloat *" />
    </function>
 
-   <function name="ClearNamedFramebufferfi" offset="assign">
+   <function name="ClearNamedFramebufferfi">
       <param name="framebuffer" type="GLuint" />
       <param name="buffer" type="GLenum" />
+      <param name="drawbuffer" type="GLint" />
       <param name="depth" type="GLfloat" />
       <param name="stencil" type="GLint" />
    </function>
 
-   <function name="BlitNamedFramebuffer" offset="assign">
+   <function name="BlitNamedFramebuffer">
       <param name="readFramebuffer" type="GLuint" />
       <param name="drawFramebuffer" type="GLuint" />
       <param name="srcX0" type="GLint" />
@@ -262,19 +262,19 @@
       <param name="filter" type="GLenum" />
    </function>
 
-   <function name="CheckNamedFramebufferStatus" offset="assign">
+   <function name="CheckNamedFramebufferStatus">
       <return type="GLenum" />
       <param name="framebuffer" type="GLuint" />
       <param name="target" type="GLenum" />
    </function>
 
-   <function name="GetNamedFramebufferParameteriv" offset="assign">
+   <function name="GetNamedFramebufferParameteriv">
       <param name="framebuffer" type="GLuint" />
       <param name="pname" type="GLenum" />
       <param name="param" type="GLint *" />
    </function>
 
-   <function name="GetNamedFramebufferAttachmentParameteriv" offset="assign">
+   <function name="GetNamedFramebufferAttachmentParameteriv">
       <param name="framebuffer" type="GLuint" />
       <param name="attachment" type="GLenum" />
       <param name="pname" type="GLenum" />
@@ -283,7 +283,7 @@
 
    <!-- Renderbuffer object functions -->
 
-   <function name="CreateRenderbuffers">
+   <function name="CreateRenderbuffers" no_error="true">
       <param name="n" type="GLsizei" />
       <param name="renderbuffers" type="GLuint *" />
    </function>
@@ -311,7 +311,7 @@
 
    <!-- Texture object functions -->
 
-   <function name="CreateTextures">
+   <function name="CreateTextures" no_error="true">
       <param name="target" type="GLenum" />
       <param name="n" type="GLsizei" />
       <param name="textures" type="GLuint *" />
@@ -410,7 +410,7 @@
       <param name="pixels" type="const GLvoid *" />
    </function>
 
-   <function name="CompressedTextureSubImage1D">
+   <function name="CompressedTextureSubImage1D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -420,7 +420,7 @@
       <param name="data" type="const GLvoid *" />
    </function>
 
-   <function name="CompressedTextureSubImage2D">
+   <function name="CompressedTextureSubImage2D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -432,7 +432,7 @@
       <param name="data" type="const GLvoid *" />
    </function>
 
-   <function name="CompressedTextureSubImage3D">
+   <function name="CompressedTextureSubImage3D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -446,7 +446,7 @@
       <param name="data" type="const GLvoid *" />
    </function>
 
-   <function name="CopyTextureSubImage1D">
+   <function name="CopyTextureSubImage1D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -455,7 +455,7 @@
       <param name="width" type="GLsizei" />
    </function>
 
-   <function name="CopyTextureSubImage2D">
+   <function name="CopyTextureSubImage2D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -466,7 +466,7 @@
       <param name="height" type="GLsizei" />
    </function>
 
-   <function name="CopyTextureSubImage3D">
+   <function name="CopyTextureSubImage3D" no_error="true">
       <param name="texture" type="GLuint" />
       <param name="level" type="GLint" />
       <param name="xoffset" type="GLint" />
@@ -518,7 +518,7 @@
       <param name="texture" type="GLuint" />
    </function>
 
-   <function name="BindTextureUnit">
+   <function name="BindTextureUnit" no_error="true">
       <param name="unit" type="GLuint" />
       <param name="texture" type="GLuint" />
    </function>
@@ -584,12 +584,12 @@
       <param name="arrays" type="GLuint *" />
    </function>
 
-   <function name="DisableVertexArrayAttrib">
+   <function name="DisableVertexArrayAttrib" no_error="true">
       <param name="vaobj" type="GLuint" />
       <param name="index" type="GLuint" />
    </function>
 
-   <function name="EnableVertexArrayAttrib">
+   <function name="EnableVertexArrayAttrib" no_error="true">
       <param name="vaobj" type="GLuint" />
       <param name="index" type="GLuint" />
    </function>
@@ -599,7 +599,7 @@
       <param name="buffer" type="GLuint" />
    </function>
 
-   <function name="VertexArrayVertexBuffer">
+   <function name="VertexArrayVertexBuffer" no_error="true">
       <param name="vaobj" type="GLuint" />
       <param name="bindingindex" type="GLuint" />
       <param name="buffer" type="GLuint" />
@@ -607,7 +607,7 @@
       <param name="stride" type="GLsizei" />
    </function>
 
-   <function name="VertexArrayVertexBuffers">
+   <function name="VertexArrayVertexBuffers" no_error="true">
       <param name="vaobj" type="GLuint" />
       <param name="first" type="GLuint" />
       <param name="count" type="GLsizei" />
@@ -641,7 +641,7 @@
       <param name="relativeoffset" type="GLuint" />
    </function>
 
-   <function name="VertexArrayAttribBinding">
+   <function name="VertexArrayAttribBinding" no_error="true">
       <param name="vaobj" type="GLuint" />
       <param name="attribindex" type="GLuint" />
       <param name="bindingindex" type="GLuint" />
@@ -675,14 +675,14 @@
 
    <!-- Sampler object functions -->
 
-   <function name="CreateSamplers">
+   <function name="CreateSamplers" no_error="true">
       <param name="n" type="GLsizei" />
       <param name="samplers" type="GLuint *" />
    </function>
 
    <!-- Program Pipeline object functions -->
 
-   <function name="CreateProgramPipelines">
+   <function name="CreateProgramPipelines" no_error="true">
       <param name="n" type="GLsizei" />
       <param name="pipelines" type="GLuint *" />
    </function>

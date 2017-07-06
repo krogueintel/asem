@@ -36,6 +36,20 @@
 
 #define PIPE_ATOMIC "GCC Sync Intrinsics"
 
+#if defined(USE_GCC_ATOMIC_BUILTINS)
+
+/* The builtins with explicit memory model are available since GCC 4.7. */
+#define p_atomic_set(_v, _i) __atomic_store_n((_v), (_i), __ATOMIC_RELEASE)
+#define p_atomic_read(_v) __atomic_load_n((_v), __ATOMIC_ACQUIRE)
+#define p_atomic_dec_zero(v) (__atomic_sub_fetch((v), 1, __ATOMIC_ACQ_REL) == 0)
+#define p_atomic_inc(v) (void) __atomic_add_fetch((v), 1, __ATOMIC_ACQ_REL)
+#define p_atomic_dec(v) (void) __atomic_sub_fetch((v), 1, __ATOMIC_ACQ_REL)
+#define p_atomic_add(v, i) (void) __atomic_add_fetch((v), (i), __ATOMIC_ACQ_REL)
+#define p_atomic_inc_return(v) __atomic_add_fetch((v), 1, __ATOMIC_ACQ_REL)
+#define p_atomic_dec_return(v) __atomic_sub_fetch((v), 1, __ATOMIC_ACQ_REL)
+
+#else
+
 #define p_atomic_set(_v, _i) (*(_v) = (_i))
 #define p_atomic_read(_v) (*(_v))
 #define p_atomic_dec_zero(v) (__sync_sub_and_fetch((v), 1) == 0)
@@ -44,6 +58,13 @@
 #define p_atomic_add(v, i) (void) __sync_add_and_fetch((v), (i))
 #define p_atomic_inc_return(v) __sync_add_and_fetch((v), 1)
 #define p_atomic_dec_return(v) __sync_sub_and_fetch((v), 1)
+
+#endif
+
+/* There is no __atomic_* compare and exchange that returns the current value.
+ * Also, GCC 5.4 seems unable to optimize a compound statement expression that
+ * uses an additional stack variable with __atomic_compare_exchange[_n].
+ */
 #define p_atomic_cmpxchg(v, old, _new) \
    __sync_val_compare_and_swap((v), (old), (_new))
 
@@ -87,65 +108,6 @@
 #include <windows.h>
 #include <intrin.h>
 #include <assert.h>
-
-#if _MSC_VER < 1600
-
-/* Implement _InterlockedCompareExchange8 in terms of _InterlockedCompareExchange16 */
-static __inline char
-_InterlockedCompareExchange8(char volatile *destination8, char exchange8, char comparand8)
-{
-   INT_PTR destinationAddr = (INT_PTR)destination8;
-   short volatile *destination16 = (short volatile *)(destinationAddr & ~1);
-   const short shift8 = (destinationAddr & 1) * 8;
-   const short mask8 = 0xff << shift8;
-   short initial16 = *destination16;
-   char initial8 = initial16 >> shift8;
-   while (initial8 == comparand8) {
-      /* initial *destination8 matches, so try exchange it while keeping the
-       * neighboring byte untouched */
-      short exchange16 = (initial16 & ~mask8) | ((short)exchange8 << shift8);
-      short comparand16 = initial16;
-      short initial16 = _InterlockedCompareExchange16(destination16, exchange16, comparand16);
-      if (initial16 == comparand16) {
-         /* succeeded */
-         return comparand8;
-      }
-      /* something changed, retry with the new initial value */
-      initial8 = initial16 >> shift8;
-   }
-   return initial8;
-}
-
-/* Implement _InterlockedExchangeAdd16 in terms of _InterlockedCompareExchange16 */
-static __inline short
-_InterlockedExchangeAdd16(short volatile *addend, short value)
-{
-   short initial = *addend;
-   short comparand;
-   do {
-      short exchange = initial + value;
-      comparand = initial;
-      /* if *addend==comparand then *addend=exchange, return original *addend */
-      initial = _InterlockedCompareExchange16(addend, exchange, comparand);
-   } while(initial != comparand);
-   return comparand;
-}
-
-/* Implement _InterlockedExchangeAdd8 in terms of _InterlockedCompareExchange8 */
-static __inline char
-_InterlockedExchangeAdd8(char volatile *addend, char value)
-{
-   char initial = *addend;
-   char comparand;
-   do {
-      char exchange = initial + value;
-      comparand = initial;
-      initial = _InterlockedCompareExchange8(addend, exchange, comparand);
-   } while(initial != comparand);
-   return comparand;
-}
-
-#endif /* _MSC_VER < 1600 */
 
 /* MSVC supports decltype keyword, but it's only supported on C++ and doesn't
  * quite work here; and if a C++-only solution is worthwhile, then it would be

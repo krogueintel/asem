@@ -29,29 +29,11 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
+#include "intel_batchbuffer.h"
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
 #include "main/framebuffer.h"
-
-static void
-upload_clip_vp(struct brw_context *brw)
-{
-   struct gl_context *ctx = &brw->ctx;
-   struct brw_clipper_viewport *vp;
-
-   vp = brw_state_batch(brw, AUB_TRACE_CLIP_VP_STATE,
-                        sizeof(*vp), 32, &brw->clip.vp_offset);
-
-   const float maximum_post_clamp_delta = 4096;
-   float gbx = maximum_post_clamp_delta / ctx->ViewportArray[0].Width;
-   float gby = maximum_post_clamp_delta / ctx->ViewportArray[0].Height;
-
-   vp->xmin = -gbx;
-   vp->xmax = gbx;
-   vp->ymin = -gby;
-   vp->ymax = gby;
-}
 
 static void
 brw_upload_clip_unit(struct brw_context *brw)
@@ -59,15 +41,7 @@ brw_upload_clip_unit(struct brw_context *brw)
    struct gl_context *ctx = &brw->ctx;
    struct brw_clip_unit_state *clip;
 
-   /* _NEW_BUFFERS */
-   const struct gl_framebuffer *fb = ctx->DrawBuffer;
-   const float fb_width = (float)_mesa_geometric_width(fb);
-   const float fb_height = (float)_mesa_geometric_height(fb);
-
-   upload_clip_vp(brw);
-
-   clip = brw_state_batch(brw, AUB_TRACE_CLIP_STATE,
-			  sizeof(*clip), 32, &brw->clip.state_offset);
+   clip = brw_state_batch(brw, sizeof(*clip), 32, &brw->clip.state_offset);
    memset(clip, 0, sizeof(*clip));
 
    /* BRW_NEW_PROGRAM_CACHE | BRW_NEW_CLIP_PROG_DATA */
@@ -87,7 +61,7 @@ brw_upload_clip_unit(struct brw_context *brw)
    clip->thread3.const_urb_entry_read_length =
       brw->clip.prog_data->curb_read_length;
 
-   /* BRW_NEW_CURBE_OFFSETS */
+   /* BRW_NEW_PUSH_CONSTANT_ALLOCATION */
    clip->thread3.const_urb_entry_read_offset = brw->curbe.clip_start * 2;
    clip->thread3.dispatch_grf_start_reg = 1;
    clip->thread3.urb_entry_read_offset = 0;
@@ -115,9 +89,6 @@ brw_upload_clip_unit(struct brw_context *brw)
       clip->thread4.max_threads = 1 - 1;
    }
 
-   if (unlikely(INTEL_DEBUG & DEBUG_STATS))
-      clip->thread4.stats_enable = 1;
-
    /* _NEW_TRANSFORM */
    if (brw->gen == 5 || brw->is_g4x)
       clip->clip5.userclip_enable_flags = ctx->Transform.ClipPlanesEnabled;
@@ -128,22 +99,16 @@ brw_upload_clip_unit(struct brw_context *brw)
    clip->clip5.userclip_must_clip = 1;
 
    /* enable guardband clipping if we can */
-   if (ctx->ViewportArray[0].X == 0 &&
-       ctx->ViewportArray[0].Y == 0 &&
-       ctx->ViewportArray[0].Width == fb_width &&
-       ctx->ViewportArray[0].Height == fb_height)
-   {
-      clip->clip5.guard_band_enable = 1;
-      clip->clip6.clipper_viewport_state_ptr =
-         (brw->batch.bo->offset64 + brw->clip.vp_offset) >> 5;
+   clip->clip5.guard_band_enable = 1;
+   clip->clip6.clipper_viewport_state_ptr =
+      (brw->batch.bo->offset64 + brw->clip.vp_offset) >> 5;
 
-      /* emit clip viewport relocation */
-      drm_intel_bo_emit_reloc(brw->batch.bo,
-                              (brw->clip.state_offset +
-                               offsetof(struct brw_clip_unit_state, clip6)),
-                              brw->batch.bo, brw->clip.vp_offset,
-                              I915_GEM_DOMAIN_INSTRUCTION, 0);
-   }
+   /* emit clip viewport relocation */
+   brw_emit_reloc(&brw->batch,
+                  (brw->clip.state_offset +
+                   offsetof(struct brw_clip_unit_state, clip6)),
+                  brw->batch.bo, brw->clip.vp_offset,
+                  I915_GEM_DOMAIN_INSTRUCTION, 0);
 
    /* _NEW_TRANSFORM */
    if (!ctx->Transform.DepthClamp)
@@ -169,12 +134,12 @@ brw_upload_clip_unit(struct brw_context *brw)
 
 const struct brw_tracked_state brw_clip_unit = {
    .dirty = {
-      .mesa  = _NEW_BUFFERS |
-               _NEW_TRANSFORM |
+      .mesa  = _NEW_TRANSFORM |
                _NEW_VIEWPORT,
       .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
                BRW_NEW_CLIP_PROG_DATA |
-               BRW_NEW_CURBE_OFFSETS |
+               BRW_NEW_PUSH_CONSTANT_ALLOCATION |
                BRW_NEW_PROGRAM_CACHE |
                BRW_NEW_URB_FENCE,
    },

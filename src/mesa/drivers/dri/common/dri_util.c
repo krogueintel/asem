@@ -44,7 +44,9 @@
 #include "utils.h"
 #include "xmlpool.h"
 #include "main/mtypes.h"
+#include "main/framebuffer.h"
 #include "main/version.h"
+#include "main/debug_output.h"
 #include "main/errors.h"
 #include "main/macros.h"
 
@@ -73,6 +75,8 @@ setupLoaderExtensions(__DRIscreen *psp,
 	    psp->dri2.image = (__DRIimageLookupExtension *) extensions[i];
 	if (strcmp(extensions[i]->name, __DRI_USE_INVALIDATE) == 0)
 	    psp->dri2.useInvalidate = (__DRIuseInvalidateExtension *) extensions[i];
+        if (strcmp(extensions[i]->name, __DRI_BACKGROUND_CALLABLE) == 0)
+            psp->dri2.backgroundCallable = (__DRIbackgroundCallableExtension *) extensions[i];
 	if (strcmp(extensions[i]->name, __DRI_SWRAST_LOADER) == 0)
 	    psp->swrast_loader = (__DRIswrastLoaderExtension *) extensions[i];
         if (strcmp(extensions[i]->name, __DRI_IMAGE_LOADER) == 0)
@@ -374,11 +378,32 @@ driCreateContextAttribs(__DRIscreen *screen, int api,
      *     EGL_CONTEXT_FLAGS_KHR, then a <debug context> will be created.
      *     [...] This bit is supported for OpenGL and OpenGL ES contexts.
      *
-     * None of the other flags have any meaning in an ES context, so this seems safe.
+     * No other EGL_CONTEXT_OPENGL_*_BIT is legal for an ES context.
+     *
+     * However, Mesa's EGL layer translates the context attribute
+     * EGL_CONTEXT_OPENGL_ROBUST_ACCESS into the context flag
+     * __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS.  That attribute is legal for ES
+     * (with EGL 1.5 or EGL_EXT_create_context_robustness) and GL (only with
+     * EGL 1.5).
+     *
+     * From the EGL_EXT_create_context_robustness spec:
+     *
+     *     This extension is written against the OpenGL ES 2.0 Specification
+     *     but can apply to OpenGL ES 1.1 and up.
+     *
+     * From the EGL 1.5 (2014.08.27) spec, p55:
+     *
+     *     If the EGL_CONTEXT_OPENGL_ROBUST_ACCESS attribute is set to
+     *     EGL_TRUE, a context supporting robust buffer access will be created.
+     *     OpenGL contexts must support the GL_ARB_robustness extension, or
+     *     equivalent core API functional- ity. OpenGL ES contexts must support
+     *     the GL_EXT_robustness extension, or equivalent core API
+     *     functionality.
      */
     if (mesa_api != API_OPENGL_COMPAT
         && mesa_api != API_OPENGL_CORE
-        && (flags & ~__DRI_CTX_FLAG_DEBUG)) {
+        && (flags & ~(__DRI_CTX_FLAG_DEBUG |
+	              __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS))) {
 	*error = __DRI_CTX_ERROR_BAD_FLAG;
 	return NULL;
     }
@@ -622,6 +647,8 @@ driCreateNewDrawable(__DRIscreen *screen,
 {
     __DRIdrawable *pdraw;
 
+    assert(data != NULL);
+
     pdraw = malloc(sizeof *pdraw);
     if (!pdraw)
 	return NULL;
@@ -651,6 +678,16 @@ driCreateNewDrawable(__DRIscreen *screen,
 static void
 driDestroyDrawable(__DRIdrawable *pdp)
 {
+    /*
+     * The loader's data structures are going away, even if pdp itself stays
+     * around for the time being because it is currently bound. This happens
+     * when a currently bound GLX pixmap is destroyed.
+     *
+     * Clear out the pointer back into the loader's data structures to avoid
+     * accessing an outdated pointer.
+     */
+    pdp->loaderPrivate = NULL;
+
     dri_put_drawable(pdp);
 }
 
@@ -793,7 +830,7 @@ driUpdateFramebufferSize(struct gl_context *ctx, const __DRIdrawable *dPriv)
 {
    struct gl_framebuffer *fb = (struct gl_framebuffer *) dPriv->driverPrivate;
    if (fb && (dPriv->w != fb->Width || dPriv->h != fb->Height)) {
-      ctx->Driver.ResizeBuffers(ctx, fb, dPriv->w, dPriv->h);
+      _mesa_resize_framebuffer(ctx, fb, dPriv->w, dPriv->h);
       /* if the driver needs the hw lock for ResizeBuffers, the drawable
          might have changed again by now */
       assert(fb->Width == dPriv->w);
@@ -807,6 +844,8 @@ driGLFormatToImageFormat(mesa_format format)
    switch (format) {
    case MESA_FORMAT_B5G6R5_UNORM:
       return __DRI_IMAGE_FORMAT_RGB565;
+   case MESA_FORMAT_B5G5R5A1_UNORM:
+      return __DRI_IMAGE_FORMAT_ARGB1555;
    case MESA_FORMAT_B8G8R8X8_UNORM:
       return __DRI_IMAGE_FORMAT_XRGB8888;
    case MESA_FORMAT_B10G10R10A2_UNORM:
@@ -819,8 +858,10 @@ driGLFormatToImageFormat(mesa_format format)
       return __DRI_IMAGE_FORMAT_ABGR8888;
    case MESA_FORMAT_R8G8B8X8_UNORM:
       return __DRI_IMAGE_FORMAT_XBGR8888;
+   case MESA_FORMAT_L_UNORM8:
    case MESA_FORMAT_R_UNORM8:
       return __DRI_IMAGE_FORMAT_R8;
+   case MESA_FORMAT_L8A8_UNORM:
    case MESA_FORMAT_R8G8_UNORM:
       return __DRI_IMAGE_FORMAT_GR88;
    case MESA_FORMAT_NONE:
@@ -838,6 +879,8 @@ driImageFormatToGLFormat(uint32_t image_format)
    switch (image_format) {
    case __DRI_IMAGE_FORMAT_RGB565:
       return MESA_FORMAT_B5G6R5_UNORM;
+   case __DRI_IMAGE_FORMAT_ARGB1555:
+      return MESA_FORMAT_B5G5R5A1_UNORM;
    case __DRI_IMAGE_FORMAT_XRGB8888:
       return MESA_FORMAT_B8G8R8X8_UNORM;
    case __DRI_IMAGE_FORMAT_ARGB2101010:
@@ -852,8 +895,12 @@ driImageFormatToGLFormat(uint32_t image_format)
       return MESA_FORMAT_R8G8B8X8_UNORM;
    case __DRI_IMAGE_FORMAT_R8:
       return MESA_FORMAT_R_UNORM8;
+   case __DRI_IMAGE_FORMAT_R16:
+      return MESA_FORMAT_R_UNORM16;
    case __DRI_IMAGE_FORMAT_GR88:
       return MESA_FORMAT_R8G8_UNORM;
+   case __DRI_IMAGE_FORMAT_GR1616:
+      return MESA_FORMAT_R16G16_UNORM;
    case __DRI_IMAGE_FORMAT_SARGB8:
       return MESA_FORMAT_B8G8R8A8_SRGB;
    case __DRI_IMAGE_FORMAT_NONE:

@@ -129,7 +129,8 @@ lp_build_emit_llvm_unary(
    unsigned tgsi_opcode,
    LLVMValueRef arg0)
 {
-   struct lp_build_emit_data emit_data;
+   struct lp_build_emit_data emit_data = {{0}};
+   emit_data.info = tgsi_get_opcode_info(tgsi_opcode);
    emit_data.arg_count = 1;
    emit_data.args[0] = arg0;
    return lp_build_emit_llvm(bld_base, tgsi_opcode, &emit_data);
@@ -142,7 +143,8 @@ lp_build_emit_llvm_binary(
    LLVMValueRef arg0,
    LLVMValueRef arg1)
 {
-   struct lp_build_emit_data emit_data;
+   struct lp_build_emit_data emit_data = {{0}};
+   emit_data.info = tgsi_get_opcode_info(tgsi_opcode);
    emit_data.arg_count = 2;
    emit_data.args[0] = arg0;
    emit_data.args[1] = arg1;
@@ -157,7 +159,8 @@ lp_build_emit_llvm_ternary(
    LLVMValueRef arg1,
    LLVMValueRef arg2)
 {
-   struct lp_build_emit_data emit_data;
+   struct lp_build_emit_data emit_data = {{0}};
+   emit_data.info = tgsi_get_opcode_info(tgsi_opcode);
    emit_data.arg_count = 3;
    emit_data.args[0] = arg0;
    emit_data.args[1] = arg1;
@@ -183,15 +186,15 @@ void lp_build_fetch_args(
 }
 
 /**
- * with doubles src and dst channels aren't 1:1.
+ * with 64-bit src and dst channels aren't 1:1.
  * check the src/dst types for the opcode,
- * 1. if neither is double then src == dst;
- * 2. if dest is double
+ * 1. if neither is 64-bit then src == dst;
+ * 2. if dest is 64-bit
  *     - don't store to y or w
- *     - if src is double then src == dst.
+ *     - if src is 64-bit then src == dst.
  *     - else for f2d, d.xy = s.x
  *     - else for f2d, d.zw = s.y
- * 3. if dst is single, src is double
+ * 3. if dst is single, src is 64-bit
  *    - map dst x,z to src xy;
  *    - map dst y,w to src zw;
  */
@@ -201,12 +204,12 @@ static int get_src_chan_idx(unsigned opcode,
    enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(opcode);
    enum tgsi_opcode_type stype = tgsi_opcode_infer_src_type(opcode);
 
-   if (dtype != TGSI_TYPE_DOUBLE && stype != TGSI_TYPE_DOUBLE)
+   if (!tgsi_type_is_64bit(dtype) && !tgsi_type_is_64bit(stype))
       return dst_chan_index;
-   if (dtype == TGSI_TYPE_DOUBLE) {
+   if (tgsi_type_is_64bit(dtype)) {
       if (dst_chan_index == 1 || dst_chan_index == 3)
          return -1;
-      if (stype == TGSI_TYPE_DOUBLE)
+      if (tgsi_type_is_64bit(stype))
          return dst_chan_index;
       if (dst_chan_index == 0)
          return 0;
@@ -245,7 +248,6 @@ lp_build_tgsi_inst_llvm(
    /* Ignore deprecated instructions */
    switch (inst->Instruction.Opcode) {
 
-   case TGSI_OPCODE_UP2H:
    case TGSI_OPCODE_UP2US:
    case TGSI_OPCODE_UP4B:
    case TGSI_OPCODE_UP4UB:
@@ -313,7 +315,7 @@ lp_build_tgsi_inst_llvm(
       }
    }
 
-   if (info->num_dst > 0) {
+   if (info->num_dst > 0 && info->opcode != TGSI_OPCODE_STORE) {
       bld_base->emit_store(bld_base, inst, info, emit_data.output);
    }
    return TRUE;
@@ -321,19 +323,17 @@ lp_build_tgsi_inst_llvm(
 
 
 LLVMValueRef
-lp_build_emit_fetch(
+lp_build_emit_fetch_src(
    struct lp_build_tgsi_context *bld_base,
-   const struct tgsi_full_instruction *inst,
-   unsigned src_op,
+   const struct tgsi_full_src_register *reg,
+   enum tgsi_opcode_type stype,
    const unsigned chan_index)
 {
-   const struct tgsi_full_src_register *reg = &inst->Src[src_op];
    unsigned swizzle;
    LLVMValueRef res;
-   enum tgsi_opcode_type stype = tgsi_opcode_infer_src_type(inst->Instruction.Opcode);
 
    if (chan_index == LP_CHAN_ALL) {
-      swizzle = ~0;
+      swizzle = ~0u;
    } else {
       swizzle = tgsi_util_get_full_src_register_swizzle(reg, chan_index);
       if (swizzle > 3) {
@@ -358,10 +358,12 @@ lp_build_emit_fetch(
       case TGSI_TYPE_DOUBLE:
       case TGSI_TYPE_UNTYPED:
           /* modifiers on movs assume data is float */
-         res = lp_build_emit_llvm_unary(bld_base, TGSI_OPCODE_ABS, res);
+         res = lp_build_abs(&bld_base->base, res);
          break;
       case TGSI_TYPE_UNSIGNED:
       case TGSI_TYPE_SIGNED:
+      case TGSI_TYPE_UNSIGNED64:
+      case TGSI_TYPE_SIGNED64:
       case TGSI_TYPE_VOID:
       default:
          /* abs modifier is only legal on floating point types */
@@ -385,6 +387,10 @@ lp_build_emit_fetch(
       case TGSI_TYPE_UNSIGNED:
          res = lp_build_negate( &bld_base->int_bld, res );
          break;
+      case TGSI_TYPE_SIGNED64:
+      case TGSI_TYPE_UNSIGNED64:
+         res = lp_build_negate( &bld_base->int64_bld, res );
+         break;
       case TGSI_TYPE_VOID:
       default:
          assert(0);
@@ -396,7 +402,7 @@ lp_build_emit_fetch(
     * Swizzle the argument
     */
 
-   if (swizzle == ~0) {
+   if (swizzle == ~0u) {
       res = bld_base->emit_swizzle(bld_base, res,
                      reg->Register.SwizzleX,
                      reg->Register.SwizzleY,
@@ -405,7 +411,21 @@ lp_build_emit_fetch(
    }
 
    return res;
+}
 
+
+LLVMValueRef
+lp_build_emit_fetch(
+   struct lp_build_tgsi_context *bld_base,
+   const struct tgsi_full_instruction *inst,
+   unsigned src_op,
+   const unsigned chan_index)
+{
+   const struct tgsi_full_src_register *reg = &inst->Src[src_op];
+   enum tgsi_opcode_type stype =
+      tgsi_opcode_infer_src_type(inst->Instruction.Opcode);
+
+   return lp_build_emit_fetch_src(bld_base, reg, stype, chan_index);
 }
 
 
@@ -451,7 +471,7 @@ lp_build_emit_fetch_texoffset(
     * Swizzle the argument
     */
 
-   if (swizzle == ~0) {
+   if (swizzle == ~0u) {
       res = bld_base->emit_swizzle(bld_base, res,
                                    off->SwizzleX,
                                    off->SwizzleY,

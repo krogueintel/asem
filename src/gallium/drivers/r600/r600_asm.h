@@ -25,6 +25,7 @@
 
 #include "r600_pipe.h"
 #include "r600_isa.h"
+#include "tgsi/tgsi_exec.h"
 
 struct r600_bytecode_alu_src {
 	unsigned			sel;
@@ -52,6 +53,7 @@ struct r600_bytecode_alu {
 	unsigned			op;
 	unsigned			last;
 	unsigned			is_op3;
+	unsigned			is_lds_idx_op;
 	unsigned			execute_mask;
 	unsigned			update_pred;
 	unsigned			pred_sel;
@@ -59,6 +61,7 @@ struct r600_bytecode_alu {
 	unsigned			bank_swizzle_force;
 	unsigned			omod;
 	unsigned                        index_mode;
+	unsigned                        lds_idx;
 };
 
 struct r600_bytecode_tex {
@@ -115,6 +118,27 @@ struct r600_bytecode_vtx {
 	unsigned			buffer_index_mode;
 };
 
+struct r600_bytecode_gds {
+	struct list_head		list;
+	unsigned			op;
+	unsigned			src_gpr;
+	unsigned			src_rel;
+	unsigned			src_sel_x;
+	unsigned			src_sel_y;
+	unsigned			src_sel_z;
+	unsigned			src_gpr2;
+	unsigned			dst_gpr;
+	unsigned			dst_rel;
+	unsigned			dst_sel_x;
+	unsigned			dst_sel_y;
+	unsigned			dst_sel_z;
+	unsigned			dst_sel_w;
+	unsigned			uav_index_mode;
+	unsigned                        uav_id;
+	unsigned                        alloc_consume;
+	unsigned                        bcast_first_req;
+};
+
 struct r600_bytecode_output {
 	unsigned			array_base;
 	unsigned			array_size;
@@ -159,6 +183,7 @@ struct r600_bytecode_cf {
 	struct list_head		alu;
 	struct list_head		tex;
 	struct list_head		vtx;
+	struct list_head		gds;
 	struct r600_bytecode_output		output;
 	struct r600_bytecode_alu		*curr_bs_head;
 	struct r600_bytecode_alu		*prev_bs_head;
@@ -217,15 +242,15 @@ struct r600_bytecode {
 	unsigned			force_add_cf;
 	uint32_t			*bytecode;
 	uint32_t			fc_sp;
-	struct r600_cf_stack_entry	fc_stack[32];
+	struct r600_cf_stack_entry	fc_stack[TGSI_EXEC_MAX_NESTING];
 	struct r600_stack_info		stack;
 	unsigned	ar_loaded;
 	unsigned	ar_reg;
 	unsigned	ar_chan;
 	unsigned        ar_handling;
 	unsigned        r6xx_nop_after_rel_dst;
-	bool		index_loaded[2];
-	unsigned 	index_reg[2]; /* indexing register CF_INDEX_[01] */
+	bool            index_loaded[2];
+	unsigned        index_reg[2]; /* indexing register CF_INDEX_[01] */
 	unsigned        debug_id;
 	struct r600_isa* isa;
 };
@@ -233,7 +258,9 @@ struct r600_bytecode {
 /* eg_asm.c */
 int eg_bytecode_cf_build(struct r600_bytecode *bc, struct r600_bytecode_cf *cf);
 int egcm_load_index_reg(struct r600_bytecode *bc, unsigned id, bool inside_alu_clause);
-
+int eg_bytecode_gds_build(struct r600_bytecode *bc, struct r600_bytecode_gds *gds, unsigned id);
+int eg_bytecode_alu_build(struct r600_bytecode *bc,
+			  struct r600_bytecode_alu *alu, unsigned id);
 /* r600_asm.c */
 void r600_bytecode_init(struct r600_bytecode *bc,
 			enum chip_class chip_class,
@@ -244,8 +271,12 @@ int r600_bytecode_add_alu(struct r600_bytecode *bc,
 		const struct r600_bytecode_alu *alu);
 int r600_bytecode_add_vtx(struct r600_bytecode *bc,
 		const struct r600_bytecode_vtx *vtx);
+int r600_bytecode_add_vtx_tc(struct r600_bytecode *bc,
+			     const struct r600_bytecode_vtx *vtx);
 int r600_bytecode_add_tex(struct r600_bytecode *bc,
 		const struct r600_bytecode_tex *tex);
+int r600_bytecode_add_gds(struct r600_bytecode *bc,
+		const struct r600_bytecode_gds *gds);
 int r600_bytecode_add_output(struct r600_bytecode *bc,
 		const struct r600_bytecode_output *output);
 int r600_bytecode_build(struct r600_bytecode *bc);
@@ -255,7 +286,7 @@ int r600_bytecode_add_cfinst(struct r600_bytecode *bc,
 int r600_bytecode_add_alu_type(struct r600_bytecode *bc,
 		const struct r600_bytecode_alu *alu, unsigned type);
 void r600_bytecode_special_constants(uint32_t value,
-		unsigned *sel, unsigned *neg);
+		unsigned *sel, unsigned *neg, unsigned abs);
 void r600_bytecode_disasm(struct r600_bytecode *bc);
 void r600_bytecode_alu_read(struct r600_bytecode *bc,
 		struct r600_bytecode_alu *alu, uint32_t word0, uint32_t word1);

@@ -1,7 +1,3 @@
-if HAVE_LOADER_GALLIUM
-SUBDIRS := pipe-loader
-endif
-
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
@@ -9,22 +5,33 @@ noinst_LTLIBRARIES = libgallium.la
 
 AM_CFLAGS = \
 	-I$(top_srcdir)/src/loader \
-	-I$(top_builddir)/src/glsl/nir \
+	-I$(top_builddir)/src/compiler/nir \
 	-I$(top_srcdir)/src/gallium/auxiliary/util \
 	$(GALLIUM_CFLAGS) \
+	$(LIBUNWIND_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
-	$(MSVC2008_COMPAT_CXXFLAGS)
+	$(MSVC2013_COMPAT_CFLAGS)
 
 AM_CXXFLAGS = \
 	$(VISIBILITY_CXXFLAGS) \
-	$(MSVC2008_COMPAT_CXXFLAGS)
+	$(MSVC2013_COMPAT_CXXFLAGS)
 
 libgallium_la_SOURCES = \
 	$(C_SOURCES) \
 	$(NIR_SOURCES) \
 	$(GENERATED_SOURCES)
 
-if HAVE_MESA_LLVM
+if HAVE_LIBDRM
+
+AM_CFLAGS += \
+	$(LIBDRM_CFLAGS)
+
+libgallium_la_SOURCES += \
+	$(RENDERONLY_SOURCES)
+
+endif
+
+if HAVE_GALLIUM_LLVM
 
 AM_CFLAGS += \
 	$(LLVM_CFLAGS)
@@ -65,16 +72,9 @@ if NEED_GALLIUM_VL
 COMMON_VL_CFLAGS = \
 	$(AM_CFLAGS) \
 	$(VL_CFLAGS) \
+	$(XCB_DRI3_CFLAGS) \
 	$(DRI2PROTO_CFLAGS) \
-	$(LIBDRM_CFLAGS) \
-	$(GALLIUM_PIPE_LOADER_DEFINES) \
-	-DPIPE_SEARCH_DIR=\"$(libdir)/gallium-pipe\"
-
-if HAVE_GALLIUM_STATIC_TARGETS
-COMMON_VL_CFLAGS += \
-	-DGALLIUM_STATIC_TARGETS=1
-
-endif # HAVE_GALLIUM_STATIC_TARGETS
+	$(LIBDRM_CFLAGS)
 
 noinst_LTLIBRARIES += libgalliumvl.la
 
@@ -88,15 +88,23 @@ if NEED_GALLIUM_VL_WINSYS
 
 noinst_LTLIBRARIES += libgalliumvlwinsys.la
 
-libgalliumvlwinsys_la_CFLAGS = \
-	$(COMMON_VL_CFLAGS)
+libgalliumvlwinsys_la_CFLAGS = $(COMMON_VL_CFLAGS)
+libgalliumvlwinsys_la_SOURCES = $(VL_WINSYS_SOURCES)
 
-libgalliumvlwinsys_la_SOURCES = \
-	$(VL_WINSYS_SOURCES)
+if HAVE_PLATFORM_X11
+libgalliumvlwinsys_la_SOURCES += $(VL_WINSYS_DRI2_SOURCES)
 
+if HAVE_DRI3
+libgalliumvlwinsys_la_SOURCES += $(VL_WINSYS_DRI3_SOURCES)
+endif
 endif
 
+if HAVE_PLATFORM_DRM
+libgalliumvlwinsys_la_SOURCES += $(VL_WINSYS_DRM_SOURCES)
 endif
+
+endif # NEED_GALLIUM_VL_WINSYS
+endif # NEED_GALLIUM_VL
 
 EXTRA_DIST = \
 	SConscript \

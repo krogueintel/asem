@@ -45,8 +45,8 @@
  * free to avoid exponential performance degradation as the hash table fills
  */
 
-uint32_t deleted_key_value;
-const void *deleted_key = &deleted_key_value;
+static const uint32_t deleted_key_value;
+static const void *deleted_key = &deleted_key_value;
 
 static const struct {
    uint32_t max_entries, size, rehash;
@@ -282,7 +282,8 @@ set_add(struct set *ht, uint32_t hash, const void *key)
        * If freeing of old keys is required to avoid memory leaks,
        * perform a search before inserting.
        */
-      if (entry->hash == hash &&
+      if (!entry_is_deleted(entry) &&
+          entry->hash == hash &&
           ht->key_equals_function(key, entry->key)) {
          entry->key = key;
          return entry;

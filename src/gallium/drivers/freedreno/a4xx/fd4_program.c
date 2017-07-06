@@ -50,8 +50,10 @@ static struct fd4_shader_stateobj *
 create_shader_stateobj(struct pipe_context *pctx, const struct pipe_shader_state *cso,
 		enum shader_t type)
 {
+	struct fd_context *ctx = fd_context(pctx);
+	struct ir3_compiler *compiler = ctx->screen->compiler;
 	struct fd4_shader_stateobj *so = CALLOC_STRUCT(fd4_shader_stateobj);
-	so->shader = ir3_shader_create(pctx, cso, type);
+	so->shader = ir3_shader_create(compiler, cso, type, &ctx->debug);
 	return so;
 }
 
@@ -87,38 +89,38 @@ static void
 emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 {
 	const struct ir3_info *si = &so->info;
-	enum adreno_state_block sb;
+	enum a4xx_state_block sb = fd4_stage2shadersb(so->type);
 	enum adreno_state_src src;
 	uint32_t i, sz, *bin;
 
-	if (so->type == SHADER_VERTEX) {
-		sb = SB_VERT_SHADER;
-	} else {
-		sb = SB_FRAG_SHADER;
-	}
-
 	if (fd_mesa_debug & FD_DBG_DIRECT) {
 		sz = si->sizedwords;
-		src = SS_DIRECT;
+		src = SS4_DIRECT;
 		bin = fd_bo_map(so->bo);
 	} else {
 		sz = 0;
-		src = 2;  // enums different on a4xx..
+		src = SS4_INDIRECT;
 		bin = NULL;
 	}
 
-	OUT_PKT3(ring, CP_LOAD_STATE, 2 + sz);
-	OUT_RING(ring, CP_LOAD_STATE_0_DST_OFF(0) |
-			CP_LOAD_STATE_0_STATE_SRC(src) |
-			CP_LOAD_STATE_0_STATE_BLOCK(sb) |
-			CP_LOAD_STATE_0_NUM_UNIT(so->instrlen));
+	OUT_PKT3(ring, CP_LOAD_STATE4, 2 + sz);
+	OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(0) |
+			CP_LOAD_STATE4_0_STATE_SRC(src) |
+			CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
+			CP_LOAD_STATE4_0_NUM_UNIT(so->instrlen));
 	if (bin) {
-		OUT_RING(ring, CP_LOAD_STATE_1_EXT_SRC_ADDR(0) |
-				CP_LOAD_STATE_1_STATE_TYPE(ST_SHADER));
+		OUT_RING(ring, CP_LOAD_STATE4_1_EXT_SRC_ADDR(0) |
+				CP_LOAD_STATE4_1_STATE_TYPE(ST4_SHADER));
 	} else {
 		OUT_RELOC(ring, so->bo, 0,
-				CP_LOAD_STATE_1_STATE_TYPE(ST_SHADER), 0);
+				CP_LOAD_STATE4_1_STATE_TYPE(ST4_SHADER), 0);
 	}
+
+	/* for how clever coverity is, it is sometimes rather dull, and
+	 * doesn't realize that the only case where bin==NULL, sz==0:
+	 */
+	assume(bin || (sz == 0));
+
 	for (i = 0; i < sz; i++) {
 		OUT_RING(ring, bin[i]);
 	}
@@ -150,14 +152,7 @@ setup_stages(struct fd4_emit *emit, struct stage *s)
 	unsigned i;
 
 	s[VS].v = fd4_emit_get_vp(emit);
-
-	if (emit->key.binning_pass) {
-		/* use dummy stateobj to simplify binning vs non-binning: */
-		static const struct ir3_shader_variant binning_fp = {};
-		s[FS].v = &binning_fp;
-	} else {
-		s[FS].v = fd4_emit_get_fp(emit);
-	}
+	s[FS].v = fd4_emit_get_fp(emit);
 
 	s[HS].v = s[DS].v = s[GS].v = NULL;  /* for now */
 
@@ -217,17 +212,30 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	struct stage s[MAX_STAGES];
 	uint32_t pos_regid, posz_regid, psize_regid, color_regid[8];
 	uint32_t face_regid, coord_regid, zwcoord_regid;
+	enum a3xx_threadsize fssz;
 	int constmode;
-	int i, j, k;
+	int i, j;
 
 	debug_assert(nr <= ARRAY_SIZE(color_regid));
 
+	if (emit->key.binning_pass)
+		nr = 0;
+
 	setup_stages(emit, s);
+
+	fssz = (s[FS].i->max_reg >= 24) ? TWO_QUADS : FOUR_QUADS;
 
 	/* blob seems to always use constmode currently: */
 	constmode = 1;
 
 	pos_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_POS);
+	if (pos_regid == regid(63, 0)) {
+		/* hw dislikes when there is no position output, which can
+		 * happen for transform-feedback vertex shaders.  Just tell
+		 * the hw to use r0.x, with whatever random value is there:
+		 */
+		pos_regid = regid(0, 0);
+	}
 	posz_regid = ir3_find_output_regid(s[FS].v, FRAG_RESULT_DEPTH);
 	psize_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_PSIZ);
 	if (s[FS].v->color0_mrt) {
@@ -245,13 +253,6 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 		color_regid[7] = ir3_find_output_regid(s[FS].v, FRAG_RESULT_DATA7);
 	}
 
-	/* adjust regids for alpha output formats. there is no alpha render
-	 * format, so it's just treated like red
-	 */
-	for (i = 0; i < nr; i++)
-		if (util_format_is_alpha(pipe_surface_format(bufs[i])))
-			color_regid[i] += 3;
-
 	/* TODO get these dynamically: */
 	face_regid = s[FS].v->frag_face ? regid(0,0) : regid(63,0);
 	coord_regid = s[FS].v->frag_coord ? regid(0,0) : regid(63,0);
@@ -265,7 +266,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	OUT_RING(ring, 0x00000003);
 
 	OUT_PKT0(ring, REG_A4XX_HLSQ_CONTROL_0_REG, 5);
-	OUT_RING(ring, A4XX_HLSQ_CONTROL_0_REG_FSTHREADSIZE(FOUR_QUADS) |
+	OUT_RING(ring, A4XX_HLSQ_CONTROL_0_REG_FSTHREADSIZE(fssz) |
 			A4XX_HLSQ_CONTROL_0_REG_CONSTMODE(constmode) |
 			A4XX_HLSQ_CONTROL_0_REG_FSSUPERTHREADENABLE |
 			/* NOTE:  I guess SHADERRESTART and CONSTFULLUPDATE maybe
@@ -333,47 +334,36 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 			A4XX_SP_VS_CTRL_REG1_INITIALOUTSTANDING(s[VS].v->total_in));
 	OUT_RING(ring, A4XX_SP_VS_PARAM_REG_POSREGID(pos_regid) |
 			A4XX_SP_VS_PARAM_REG_PSIZEREGID(psize_regid) |
-			A4XX_SP_VS_PARAM_REG_TOTALVSOUTVAR(align(s[FS].v->total_in, 4) / 4));
+			A4XX_SP_VS_PARAM_REG_TOTALVSOUTVAR(s[FS].v->varying_in));
 
-	for (i = 0, j = -1; (i < 16) && (j < (int)s[FS].v->inputs_count); i++) {
+	struct ir3_shader_linkage l = {0};
+	ir3_link_shaders(&l, s[VS].v, s[FS].v);
+
+	for (i = 0, j = 0; (i < 16) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
 
 		OUT_PKT0(ring, REG_A4XX_SP_VS_OUT_REG(i), 1);
 
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count) {
-			k = ir3_find_output(s[VS].v, s[FS].v->inputs[j].slot);
-			reg |= A4XX_SP_VS_OUT_REG_A_REGID(s[VS].v->outputs[k].regid);
-			reg |= A4XX_SP_VS_OUT_REG_A_COMPMASK(s[FS].v->inputs[j].compmask);
-		}
+		reg |= A4XX_SP_VS_OUT_REG_A_REGID(l.var[j].regid);
+		reg |= A4XX_SP_VS_OUT_REG_A_COMPMASK(l.var[j].compmask);
+		j++;
 
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count) {
-			k = ir3_find_output(s[VS].v, s[FS].v->inputs[j].slot);
-			reg |= A4XX_SP_VS_OUT_REG_B_REGID(s[VS].v->outputs[k].regid);
-			reg |= A4XX_SP_VS_OUT_REG_B_COMPMASK(s[FS].v->inputs[j].compmask);
-		}
+		reg |= A4XX_SP_VS_OUT_REG_B_REGID(l.var[j].regid);
+		reg |= A4XX_SP_VS_OUT_REG_B_COMPMASK(l.var[j].compmask);
+		j++;
 
 		OUT_RING(ring, reg);
 	}
 
-	for (i = 0, j = -1; (i < 8) && (j < (int)s[FS].v->inputs_count); i++) {
+	for (i = 0, j = 0; (i < 8) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
 
 		OUT_PKT0(ring, REG_A4XX_SP_VS_VPC_DST_REG(i), 1);
 
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count)
-			reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC0(s[FS].v->inputs[j].inloc);
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count)
-			reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC1(s[FS].v->inputs[j].inloc);
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count)
-			reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC2(s[FS].v->inputs[j].inloc);
-		j = ir3_next_varying(s[FS].v, j);
-		if (j < s[FS].v->inputs_count)
-			reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC3(s[FS].v->inputs[j].inloc);
+		reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC0(l.var[j++].loc + 8);
+		reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC1(l.var[j++].loc + 8);
+		reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC2(l.var[j++].loc + 8);
+		reg |= A4XX_SP_VS_VPC_DST_REG_OUTLOC3(l.var[j++].loc + 8);
 
 		OUT_RING(ring, reg);
 	}
@@ -383,31 +373,49 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 			A4XX_SP_VS_OBJ_OFFSET_REG_SHADEROBJOFFSET(s[VS].instroff));
 	OUT_RELOC(ring, s[VS].v->bo, 0, 0, 0);  /* SP_VS_OBJ_START_REG */
 
-	OUT_PKT0(ring, REG_A4XX_SP_FS_LENGTH_REG, 1);
-	OUT_RING(ring, s[FS].v->instrlen);  /* SP_FS_LENGTH_REG */
+	if (emit->key.binning_pass) {
+		OUT_PKT0(ring, REG_A4XX_SP_FS_LENGTH_REG, 1);
+		OUT_RING(ring, 0x00000000);         /* SP_FS_LENGTH_REG */
 
-	OUT_PKT0(ring, REG_A4XX_SP_FS_CTRL_REG0, 2);
-	OUT_RING(ring, A4XX_SP_FS_CTRL_REG0_THREADMODE(MULTI) |
-			COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG0_VARYING) |
-			A4XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT(s[FS].i->max_half_reg + 1) |
-			A4XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(s[FS].i->max_reg + 1) |
-			A4XX_SP_FS_CTRL_REG0_INOUTREGOVERLAP(1) |
-			A4XX_SP_FS_CTRL_REG0_THREADSIZE(FOUR_QUADS) |
-			A4XX_SP_FS_CTRL_REG0_SUPERTHREADMODE |
-			COND(s[FS].v->has_samp, A4XX_SP_FS_CTRL_REG0_PIXLODENABLE));
-	OUT_RING(ring, A4XX_SP_FS_CTRL_REG1_CONSTLENGTH(s[FS].constlen) |
-			0x80000000 |      /* XXX */
-			COND(s[FS].v->frag_face, A4XX_SP_FS_CTRL_REG1_FACENESS) |
-			COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG1_VARYING) |
-			COND(s[FS].v->frag_coord, A4XX_SP_FS_CTRL_REG1_FRAGCOORD));
+		OUT_PKT0(ring, REG_A4XX_SP_FS_CTRL_REG0, 2);
+		OUT_RING(ring, A4XX_SP_FS_CTRL_REG0_THREADMODE(MULTI) |
+				COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG0_VARYING) |
+				A4XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT(0) |
+				A4XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(0) |
+				A4XX_SP_FS_CTRL_REG0_INOUTREGOVERLAP(1) |
+				A4XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
+				A4XX_SP_FS_CTRL_REG0_SUPERTHREADMODE);
+		OUT_RING(ring, A4XX_SP_FS_CTRL_REG1_CONSTLENGTH(s[FS].constlen) |
+				0x80000000);
 
-	OUT_PKT0(ring, REG_A4XX_SP_FS_OBJ_OFFSET_REG, 2);
-	OUT_RING(ring, A4XX_SP_FS_OBJ_OFFSET_REG_CONSTOBJECTOFFSET(s[FS].constoff) |
-			A4XX_SP_FS_OBJ_OFFSET_REG_SHADEROBJOFFSET(s[FS].instroff));
-	if (emit->key.binning_pass)
+		OUT_PKT0(ring, REG_A4XX_SP_FS_OBJ_OFFSET_REG, 2);
+		OUT_RING(ring, A4XX_SP_FS_OBJ_OFFSET_REG_CONSTOBJECTOFFSET(s[FS].constoff) |
+				A4XX_SP_FS_OBJ_OFFSET_REG_SHADEROBJOFFSET(s[FS].instroff));
 		OUT_RING(ring, 0x00000000);
-	else
+	} else {
+		OUT_PKT0(ring, REG_A4XX_SP_FS_LENGTH_REG, 1);
+		OUT_RING(ring, s[FS].v->instrlen);  /* SP_FS_LENGTH_REG */
+
+		OUT_PKT0(ring, REG_A4XX_SP_FS_CTRL_REG0, 2);
+		OUT_RING(ring, A4XX_SP_FS_CTRL_REG0_THREADMODE(MULTI) |
+				COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG0_VARYING) |
+				A4XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT(s[FS].i->max_half_reg + 1) |
+				A4XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(s[FS].i->max_reg + 1) |
+				A4XX_SP_FS_CTRL_REG0_INOUTREGOVERLAP(1) |
+				A4XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
+				A4XX_SP_FS_CTRL_REG0_SUPERTHREADMODE |
+				COND(s[FS].v->has_samp, A4XX_SP_FS_CTRL_REG0_PIXLODENABLE));
+		OUT_RING(ring, A4XX_SP_FS_CTRL_REG1_CONSTLENGTH(s[FS].constlen) |
+				0x80000000 |      /* XXX */
+				COND(s[FS].v->frag_face, A4XX_SP_FS_CTRL_REG1_FACENESS) |
+				COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG1_VARYING) |
+				COND(s[FS].v->frag_coord, A4XX_SP_FS_CTRL_REG1_FRAGCOORD));
+
+		OUT_PKT0(ring, REG_A4XX_SP_FS_OBJ_OFFSET_REG, 2);
+		OUT_RING(ring, A4XX_SP_FS_OBJ_OFFSET_REG_CONSTOBJECTOFFSET(s[FS].constoff) |
+				A4XX_SP_FS_OBJ_OFFSET_REG_SHADEROBJOFFSET(s[FS].instroff));
 		OUT_RELOC(ring, s[FS].v->bo, 0, 0, 0);  /* SP_FS_OBJ_START_REG */
+	}
 
 	OUT_PKT0(ring, REG_A4XX_SP_HS_OBJ_OFFSET_REG, 1);
 	OUT_RING(ring, A4XX_SP_HS_OBJ_OFFSET_REG_CONSTOBJECTOFFSET(s[HS].constoff) |
@@ -427,17 +435,15 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 			COND(s[FS].v->frag_face, A4XX_RB_RENDER_CONTROL2_FACENESS) |
 			COND(s[FS].v->frag_coord, A4XX_RB_RENDER_CONTROL2_XCOORD |
 					A4XX_RB_RENDER_CONTROL2_YCOORD |
-// TODO enabling gl_FragCoord.z is causing lockups on 0ad (but seems
-// to work everywhere else).
-//					A4XX_RB_RENDER_CONTROL2_ZCOORD |
+					A4XX_RB_RENDER_CONTROL2_ZCOORD |
 					A4XX_RB_RENDER_CONTROL2_WCOORD));
 
 	OUT_PKT0(ring, REG_A4XX_RB_FS_OUTPUT_REG, 1);
-	OUT_RING(ring, A4XX_RB_FS_OUTPUT_REG_MRT(MAX2(1, nr)) |
+	OUT_RING(ring, A4XX_RB_FS_OUTPUT_REG_MRT(nr) |
 			COND(s[FS].v->writes_pos, A4XX_RB_FS_OUTPUT_REG_FRAG_WRITES_Z));
 
 	OUT_PKT0(ring, REG_A4XX_SP_FS_OUTPUT_REG, 1);
-	OUT_RING(ring, A4XX_SP_FS_OUTPUT_REG_MRT(MAX2(1, nr)) |
+	OUT_RING(ring, A4XX_SP_FS_OUTPUT_REG_MRT(nr) |
 			COND(s[FS].v->writes_pos, A4XX_SP_FS_OUTPUT_REG_DEPTH_ENABLE) |
 			A4XX_SP_FS_OUTPUT_REG_DEPTH_REGID(posz_regid));
 
@@ -486,24 +492,24 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 		 */
 		/* figure out VARYING_INTERP / VARYING_PS_REPL register values: */
 		for (j = -1; (j = ir3_next_varying(s[FS].v, j)) < (int)s[FS].v->inputs_count; ) {
-
-			/* TODO might be cleaner to just +8 in SP_VS_VPC_DST_REG
-			 * instead.. rather than -8 everywhere else..
+			/* NOTE: varyings are packed, so if compmask is 0xb
+			 * then first, third, and fourth component occupy
+			 * three consecutive varying slots:
 			 */
-			uint32_t inloc = s[FS].v->inputs[j].inloc - 8;
+			unsigned compmask = s[FS].v->inputs[j].compmask;
 
-			/* currently assuming varyings aligned to 4 (not
-			 * packed):
-			 */
-			debug_assert((inloc % 4) == 0);
+			uint32_t inloc = s[FS].v->inputs[j].inloc;
 
-			if ((s[FS].v->inputs[j].interpolate == INTERP_QUALIFIER_FLAT) ||
+			if ((s[FS].v->inputs[j].interpolate == INTERP_MODE_FLAT) ||
 					(s[FS].v->inputs[j].rasterflat && emit->rasterflat)) {
 				uint32_t loc = inloc;
 
-				for (i = 0; i < 4; i++, loc++) {
-					vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
-					//flatshade[loc / 32] |= 1 << (loc % 32);
+				for (i = 0; i < 4; i++) {
+					if (compmask & (1 << i)) {
+						vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
+						//flatshade[loc / 32] |= 1 << (loc % 32);
+						loc++;
+					}
 				}
 			}
 
@@ -516,10 +522,31 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 				 * interpolation bits for .zw such that they become .01
 				 */
 				if (emit->sprite_coord_enable & texmask) {
-					vpsrepl[inloc / 16] |= (emit->sprite_coord_mode ? 0x0d : 0x09)
-						<< ((inloc % 16) * 2);
-					vinterp[(inloc + 2) / 16] |= 2 << (((inloc + 2) % 16) * 2);
-					vinterp[(inloc + 3) / 16] |= 3 << (((inloc + 3) % 16) * 2);
+					/* mask is two 2-bit fields, where:
+					 *   '01' -> S
+					 *   '10' -> T
+					 *   '11' -> 1 - T  (flip mode)
+					 */
+					unsigned mask = emit->sprite_coord_mode ? 0b1101 : 0b1001;
+					uint32_t loc = inloc;
+					if (compmask & 0x1) {
+						vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
+						loc++;
+					}
+					if (compmask & 0x2) {
+						vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
+						loc++;
+					}
+					if (compmask & 0x4) {
+						/* .z <- 0.0f */
+						vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
+						loc++;
+					}
+					if (compmask & 0x8) {
+						/* .w <- 1.0f */
+						vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
+						loc++;
+					}
 				}
 			}
 		}

@@ -21,13 +21,8 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-# use c99 compiler by default
-ifeq ($(LOCAL_CC),)
 ifeq ($(LOCAL_IS_HOST_MODULE),true)
-LOCAL_CC := $(HOST_CC) -std=c99 -D_GNU_SOURCE
-else
-LOCAL_CC := $(TARGET_CC) -std=c99
-endif
+LOCAL_CFLAGS += -D_GNU_SOURCE
 endif
 
 LOCAL_C_INCLUDES += \
@@ -35,13 +30,24 @@ LOCAL_C_INCLUDES += \
 	$(MESA_TOP)/include
 
 MESA_VERSION := $(shell cat $(MESA_TOP)/VERSION)
-# define ANDROID_VERSION (e.g., 4.0.x => 0x0400)
 LOCAL_CFLAGS += \
+	-Wno-unused-parameter \
+	-Wno-date-time \
+	-Wno-pointer-arith \
+	-Wno-missing-field-initializers \
+	-Wno-initializer-overrides \
+	-Wno-mismatched-tags \
+	-DVERSION=\"$(MESA_VERSION)\" \
 	-DPACKAGE_VERSION=\"$(MESA_VERSION)\" \
-	-DPACKAGE_BUGREPORT=\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\" \
-	-DANDROID_VERSION=0x0$(MESA_ANDROID_MAJOR_VERSION)0$(MESA_ANDROID_MINOR_VERSION)
+	-DPACKAGE_BUGREPORT=\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\"
 
+# XXX: The following __STDC_*_MACROS defines should not be needed.
+# It's likely due to a bug elsewhere, but let's temporarily add them
+# here to fix the radeonsi build.
 LOCAL_CFLAGS += \
+	-DANDROID_API_LEVEL=$(PLATFORM_SDK_VERSION) \
+	-DENABLE_SHADER_CACHE \
+	-D__STDC_CONSTANT_MACROS \
 	-D__STDC_LIMIT_MACROS \
 	-DHAVE___BUILTIN_EXPECT \
 	-DHAVE___BUILTIN_FFS \
@@ -50,6 +56,7 @@ LOCAL_CFLAGS += \
 	-DHAVE_FUNC_ATTRIBUTE_UNUSED \
 	-DHAVE_FUNC_ATTRIBUTE_FORMAT \
 	-DHAVE_FUNC_ATTRIBUTE_PACKED \
+	-DHAVE_FUNC_ATTRIBUTE_ALIAS \
 	-DHAVE___BUILTIN_CTZ \
 	-DHAVE___BUILTIN_POPCOUNT \
 	-DHAVE___BUILTIN_POPCOUNTLL \
@@ -57,30 +64,38 @@ LOCAL_CFLAGS += \
 	-DHAVE___BUILTIN_CLZLL \
 	-DHAVE___BUILTIN_UNREACHABLE \
 	-DHAVE_PTHREAD=1 \
+	-DHAVE_DLOPEN \
+	-DHAVE_DL_ITERATE_PHDR \
+	-DMAJOR_IN_SYSMACROS \
 	-fvisibility=hidden \
 	-Wno-sign-compare
+
+LOCAL_CPPFLAGS += \
+	-D__STDC_CONSTANT_MACROS \
+	-D__STDC_FORMAT_MACROS \
+	-D__STDC_LIMIT_MACROS \
+	-Wno-error=non-virtual-dtor \
+	-Wno-non-virtual-dtor
+
+# mesa requires at least c99 compiler
+LOCAL_CONLYFLAGS += \
+	-std=c99
 
 ifeq ($(strip $(MESA_ENABLE_ASM)),true)
 ifeq ($(TARGET_ARCH),x86)
 LOCAL_CFLAGS += \
-	-DUSE_X86_ASM \
-	-DHAVE_DLOPEN \
+	-DUSE_X86_ASM
 
 endif
 endif
 
-ifeq ($(MESA_ENABLE_LLVM),true)
-LOCAL_CFLAGS += \
-	-DHAVE_LLVM=0x0305 -DMESA_LLVM_VERSION_PATCH=2 \
-	-D__STDC_CONSTANT_MACROS \
-	-D__STDC_FORMAT_MACROS \
-	-D__STDC_LIMIT_MACROS
+ifneq ($(LOCAL_IS_HOST_MODULE),true)
+LOCAL_CFLAGS += -DHAVE_LIBDRM
+LOCAL_SHARED_LIBRARIES += libdrm
 endif
 
-LOCAL_CPPFLAGS += \
-	$(if $(filter true,$(MESA_LOLLIPOP_BUILD)),-D_USING_LIBCXX) \
-	-Wno-error=non-virtual-dtor \
-	-Wno-non-virtual-dtor
+LOCAL_CFLAGS_32 += -DDEFAULT_DRIVER_DIR=\"/system/lib/$(MESA_DRI_MODULE_REL_PATH)\"
+LOCAL_CFLAGS_64 += -DDEFAULT_DRIVER_DIR=\"/system/lib64/$(MESA_DRI_MODULE_REL_PATH)\"
 
 # uncomment to keep the debug symbols
 #LOCAL_STRIP_MODULE := false
@@ -88,3 +103,6 @@ LOCAL_CPPFLAGS += \
 ifeq ($(strip $(LOCAL_MODULE_TAGS)),)
 LOCAL_MODULE_TAGS := optional
 endif
+
+# Quiet down the build system and remove any .h files from the sources
+LOCAL_SRC_FILES := $(patsubst %.h, , $(LOCAL_SRC_FILES))

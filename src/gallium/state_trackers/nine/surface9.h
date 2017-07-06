@@ -35,7 +35,6 @@ struct NineSurface9
     struct NineResource9 base;
 
     /* G3D state */
-    struct pipe_context *pipe;
     struct pipe_transfer *transfer;
     struct pipe_surface *surface[2]; /* created on-demand (linear, sRGB) */
     int lock_count;
@@ -48,7 +47,12 @@ struct NineSurface9
     D3DSURFACE_DESC desc;
 
     uint8_t *data; /* system memory backing */
+    uint8_t *data_conversion; /* for conversions */
+    enum pipe_format format_conversion;
     unsigned stride; /* for system memory backing */
+    unsigned stride_conversion;
+
+    unsigned pending_uploads_counter; /* pending uploads */
 };
 static inline struct NineSurface9 *
 NineSurface9( void *data )
@@ -86,15 +90,11 @@ NineSurface9_dtor( struct NineSurface9 *This );
 void
 NineSurface9_MarkContainerDirty( struct NineSurface9 *This );
 
-struct pipe_surface *
-NineSurface9_CreatePipeSurface( struct NineSurface9 *This, const int sRGB );
-
 static inline struct pipe_surface *
 NineSurface9_GetSurface( struct NineSurface9 *This, int sRGB )
 {
-    if (This->surface[sRGB])
-        return This->surface[sRGB];
-    return NineSurface9_CreatePipeSurface(This, sRGB);
+    assert(This->surface[sRGB]);
+    return This->surface[sRGB];
 }
 
 static inline struct pipe_resource *
@@ -103,15 +103,13 @@ NineSurface9_GetResource( struct NineSurface9 *This )
     return This->base.resource;
 }
 
-static inline void
+void
 NineSurface9_SetResource( struct NineSurface9 *This,
-                          struct pipe_resource *resource, unsigned level )
-{
-    This->level = level;
-    pipe_resource_reference(&This->base.resource, resource);
-    pipe_surface_reference(&This->surface[0], NULL);
-    pipe_surface_reference(&This->surface[1], NULL);
-}
+                          struct pipe_resource *resource, unsigned level );
+
+void
+NineSurface9_SetMultiSampleType( struct NineSurface9 *This,
+                                 D3DMULTISAMPLE_TYPE mst );
 
 void
 NineSurface9_SetResourceResize( struct NineSurface9 *This,
@@ -151,29 +149,29 @@ NineSurface9_Dump( struct NineSurface9 *This ) { }
 
 /*** Direct3D public ***/
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_GetContainer( struct NineSurface9 *This,
                            REFIID riid,
                            void **ppContainer );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_GetDesc( struct NineSurface9 *This,
                       D3DSURFACE_DESC *pDesc );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_LockRect( struct NineSurface9 *This,
                        D3DLOCKED_RECT *pLockedRect,
                        const RECT *pRect,
                        DWORD Flags );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_UnlockRect( struct NineSurface9 *This );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_GetDC( struct NineSurface9 *This,
                     HDC *phdc );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineSurface9_ReleaseDC( struct NineSurface9 *This,
                         HDC hdc );
 

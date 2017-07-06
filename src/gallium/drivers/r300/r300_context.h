@@ -199,7 +199,7 @@ struct r300_sampler_view {
     unsigned width0_override;
     unsigned height0_override;
 
-    /* Swizzles in the UTIL_FORMAT_SWIZZLE_* representation,
+    /* Swizzles in the PIPE_SWIZZLE_* representation,
      * derived from base. */
     unsigned char swizzle[4];
 
@@ -295,7 +295,6 @@ struct r300_query {
 
     /* The buffer where query results are stored. */
     struct pb_buffer *buf;
-    struct radeon_winsys_cs_handle *cs_buf;
 };
 
 struct r300_surface {
@@ -303,7 +302,6 @@ struct r300_surface {
 
     /* Winsys buffer backing the texture. */
     struct pb_buffer *buf;
-    struct radeon_winsys_cs_handle *cs_buf;
 
     enum radeon_bo_domain domain;
 
@@ -395,7 +393,6 @@ struct r300_resource
 
     /* Winsys buffer backing this resource. */
     struct pb_buffer *buf;
-    struct radeon_winsys_cs_handle *cs_buf;
     enum radeon_bo_domain domain;
 
     /* Constant buffers and SWTCL vertex and index buffers are in user
@@ -460,7 +457,6 @@ struct r300_context {
     struct draw_context* draw;
     /* Vertex buffer for SW TCL. */
     struct pb_buffer *vbo;
-    struct radeon_winsys_cs_handle *vbo_cs;
     /* Offset and size into the SW TCL VBO. */
     size_t draw_vbo_offset;
 
@@ -595,12 +591,11 @@ struct r300_context {
 
     void *dsa_decompress_zmask;
 
-    struct pipe_index_buffer index_buffer;
     struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
     unsigned nr_vertex_buffers;
     struct u_upload_mgr *uploader;
 
-    struct util_slab_mempool pool_transfers;
+    struct slab_child_pool pool_transfers;
 
     /* Stat counter. */
     uint64_t flush_counter;
@@ -737,7 +732,7 @@ void r300_stop_query(struct r300_context *r300);
 
 /* r300_render_translate.c */
 void r300_translate_index_buffer(struct r300_context *r300,
-                                 struct pipe_index_buffer *ib,
+                                 const struct pipe_draw_info *info,
                                  struct pipe_resource **out_index_buffer,
                                  unsigned *index_size, unsigned index_offset,
                                  unsigned *start, unsigned count);

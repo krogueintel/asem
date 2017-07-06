@@ -27,6 +27,7 @@
  */
 
 #include <unistd.h>
+#include <fcntl.h>
 #include "xa_tracker.h"
 #include "xa_priv.h"
 #include "pipe/p_state.h"
@@ -152,21 +153,17 @@ xa_tracker_create(int drm_fd)
     struct xa_tracker *xa = calloc(1, sizeof(struct xa_tracker));
     enum xa_surface_type stype;
     unsigned int num_formats;
-    int loader_fd;
+    int fd;
 
     if (!xa)
 	return NULL;
 
-#if GALLIUM_STATIC_TARGETS
-    xa->screen = dd_create_screen(drm_fd);
-    (void) loader_fd; /* silence unused var warning */
-#else
-    loader_fd = dup(drm_fd);
-    if (loader_fd == -1)
-        return NULL;
-    if (pipe_loader_drm_probe_fd(&xa->dev, loader_fd))
-	xa->screen = pipe_loader_create_screen(xa->dev, PIPE_SEARCH_DIR);
-#endif
+    if (drm_fd < 0 || (fd = fcntl(drm_fd, F_DUPFD_CLOEXEC, 3)) < 0)
+	goto out_no_fd;
+
+    if (pipe_loader_drm_probe_fd(&xa->dev, fd))
+	xa->screen = pipe_loader_create_screen(xa->dev, 0);
+
     if (!xa->screen)
 	goto out_no_screen;
 
@@ -214,10 +211,11 @@ xa_tracker_create(int drm_fd)
  out_no_pipe:
     xa->screen->destroy(xa->screen);
  out_no_screen:
-#if !GALLIUM_STATIC_TARGETS
     if (xa->dev)
 	pipe_loader_release(&xa->dev, 1);
-#endif
+    else
+	close(fd);
+ out_no_fd:
     free(xa);
     return NULL;
 }
@@ -228,9 +226,7 @@ xa_tracker_destroy(struct xa_tracker *xa)
     free(xa->supported_formats);
     xa_context_destroy(xa->default_ctx);
     xa->screen->destroy(xa->screen);
-#if !GALLIUM_STATIC_TARGETS
     pipe_loader_release(&xa->dev, 1);
-#endif
     free(xa);
 }
 
@@ -367,7 +363,8 @@ surface_create(struct xa_tracker *xa,
 	template->bind |= PIPE_BIND_SCANOUT;
 
     if (whandle)
-	srf->tex = xa->screen->resource_from_handle(xa->screen, template, whandle);
+	srf->tex = xa->screen->resource_from_handle(xa->screen, template, whandle,
+                                                    PIPE_HANDLE_USAGE_READ_WRITE);
     else
 	srf->tex = xa->screen->resource_create(xa->screen, template);
     if (!srf->tex)
@@ -553,7 +550,9 @@ xa_surface_handle(struct xa_surface *srf,
 
     memset(&whandle, 0, sizeof(whandle));
     whandle.type = handle_type(type);
-    res = screen->resource_get_handle(screen, srf->tex, &whandle);
+    res = screen->resource_get_handle(screen, srf->xa->default_ctx->pipe,
+                                      srf->tex, &whandle,
+                                      PIPE_HANDLE_USAGE_READ_WRITE);
     if (!res)
 	return -XA_ERR_INVAL;
 

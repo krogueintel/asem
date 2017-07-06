@@ -36,7 +36,7 @@
 #include "fd4_format.h"
 
 static enum a4xx_tex_clamp
-tex_clamp(unsigned wrap, bool clamp_to_edge)
+tex_clamp(unsigned wrap, bool clamp_to_edge, bool *needs_border)
 {
 	/* Hardware does not support _CLAMP, but we emulate it: */
 	if (wrap == PIPE_TEX_WRAP_CLAMP) {
@@ -50,6 +50,7 @@ tex_clamp(unsigned wrap, bool clamp_to_edge)
 	case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
 		return A4XX_TEX_CLAMP_TO_EDGE;
 	case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
+		*needs_border = true;
 		return A4XX_TEX_CLAMP_TO_BORDER;
 	case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE:
 		/* only works for PoT.. need to emulate otherwise! */
@@ -113,20 +114,23 @@ fd4_sampler_state_create(struct pipe_context *pctx,
 		so->saturate_r = (cso->wrap_r == PIPE_TEX_WRAP_CLAMP);
 	}
 
+	so->needs_border = false;
 	so->texsamp0 =
 		COND(miplinear, A4XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) |
 		A4XX_TEX_SAMP_0_XY_MAG(tex_filter(cso->mag_img_filter, aniso)) |
 		A4XX_TEX_SAMP_0_XY_MIN(tex_filter(cso->min_img_filter, aniso)) |
 		A4XX_TEX_SAMP_0_ANISO(aniso) |
-		A4XX_TEX_SAMP_0_WRAP_S(tex_clamp(cso->wrap_s, clamp_to_edge)) |
-		A4XX_TEX_SAMP_0_WRAP_T(tex_clamp(cso->wrap_t, clamp_to_edge)) |
-		A4XX_TEX_SAMP_0_WRAP_R(tex_clamp(cso->wrap_r, clamp_to_edge));
+		A4XX_TEX_SAMP_0_WRAP_S(tex_clamp(cso->wrap_s, clamp_to_edge, &so->needs_border)) |
+		A4XX_TEX_SAMP_0_WRAP_T(tex_clamp(cso->wrap_t, clamp_to_edge, &so->needs_border)) |
+		A4XX_TEX_SAMP_0_WRAP_R(tex_clamp(cso->wrap_r, clamp_to_edge, &so->needs_border));
 
 	so->texsamp1 =
 //		COND(miplinear, A4XX_TEX_SAMP_1_MIPFILTER_LINEAR_FAR) |
+		COND(!cso->seamless_cube_map, A4XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) |
 		COND(!cso->normalized_coords, A4XX_TEX_SAMP_1_UNNORM_COORDS);
 
 	if (cso->min_mip_filter != PIPE_TEX_MIPFILTER_NONE) {
+		so->texsamp0 |= A4XX_TEX_SAMP_0_LOD_BIAS(cso->lod_bias);
 		so->texsamp1 |=
 			A4XX_TEX_SAMP_1_MIN_LOD(cso->min_lod) |
 			A4XX_TEX_SAMP_1_MAX_LOD(cso->max_lod);
@@ -140,13 +144,16 @@ fd4_sampler_state_create(struct pipe_context *pctx,
 
 static void
 fd4_sampler_states_bind(struct pipe_context *pctx,
-		unsigned shader, unsigned start,
+		enum pipe_shader_type shader, unsigned start,
 		unsigned nr, void **hwcso)
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
 	uint16_t saturate_s = 0, saturate_t = 0, saturate_r = 0;
 	unsigned i;
+
+	if (!hwcso)
+		nr = 0;
 
 	for (i = 0; i < nr; i++) {
 		if (hwcso[i]) {
@@ -204,14 +211,21 @@ tex_type(unsigned target)
 	}
 }
 
+static bool
+use_astc_srgb_workaround(struct pipe_context *pctx, enum pipe_format format)
+{
+	return (fd_screen(pctx->screen)->gpu_id == 420) &&
+		(util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC);
+}
+
 static struct pipe_sampler_view *
 fd4_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 		const struct pipe_sampler_view *cso)
 {
 	struct fd4_pipe_sampler_view *so = CALLOC_STRUCT(fd4_pipe_sampler_view);
 	struct fd_resource *rsc = fd_resource(prsc);
-	unsigned lvl = fd_sampler_first_level(cso);
-	unsigned miplevels = fd_sampler_last_level(cso) - lvl;
+	unsigned lvl, layers;
+	uint32_t sz2 = 0;
 
 	if (!so)
 		return NULL;
@@ -223,39 +237,67 @@ fd4_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 	so->base.context = pctx;
 
 	so->texconst0 =
-		A4XX_TEX_CONST_0_TYPE(tex_type(prsc->target)) |
+		A4XX_TEX_CONST_0_TYPE(tex_type(cso->target)) |
 		A4XX_TEX_CONST_0_FMT(fd4_pipe2tex(cso->format)) |
-		A4XX_TEX_CONST_0_MIPLVLS(miplevels) |
 		fd4_tex_swiz(cso->format, cso->swizzle_r, cso->swizzle_g,
 				cso->swizzle_b, cso->swizzle_a);
 
-	if (util_format_is_srgb(cso->format))
+	if (util_format_is_srgb(cso->format)) {
+		if (use_astc_srgb_workaround(pctx, cso->format))
+			so->astc_srgb = true;
 		so->texconst0 |= A4XX_TEX_CONST_0_SRGB;
+	}
 
-	so->texconst1 =
-		A4XX_TEX_CONST_1_WIDTH(u_minify(prsc->width0, lvl)) |
-		A4XX_TEX_CONST_1_HEIGHT(u_minify(prsc->height0, lvl));
-	so->texconst2 =
-		A4XX_TEX_CONST_2_FETCHSIZE(fd4_pipe2fetchsize(cso->format)) |
-		A4XX_TEX_CONST_2_PITCH(rsc->slices[lvl].pitch * rsc->cpp);
+	if (cso->target == PIPE_BUFFER) {
+		unsigned elements = cso->u.buf.size / util_format_get_blocksize(cso->format);
 
-	switch (prsc->target) {
+		lvl = 0;
+		so->texconst1 =
+			A4XX_TEX_CONST_1_WIDTH(elements) |
+			A4XX_TEX_CONST_1_HEIGHT(1);
+		so->texconst2 =
+			A4XX_TEX_CONST_2_FETCHSIZE(fd4_pipe2fetchsize(cso->format)) |
+			A4XX_TEX_CONST_2_PITCH(elements * rsc->cpp);
+		so->offset = cso->u.buf.offset;
+	} else {
+		unsigned miplevels;
+
+		lvl = fd_sampler_first_level(cso);
+		miplevels = fd_sampler_last_level(cso) - lvl;
+		layers = cso->u.tex.last_layer - cso->u.tex.first_layer + 1;
+
+		so->texconst0 |= A4XX_TEX_CONST_0_MIPLVLS(miplevels);
+		so->texconst1 =
+			A4XX_TEX_CONST_1_WIDTH(u_minify(prsc->width0, lvl)) |
+			A4XX_TEX_CONST_1_HEIGHT(u_minify(prsc->height0, lvl));
+		so->texconst2 =
+			A4XX_TEX_CONST_2_FETCHSIZE(fd4_pipe2fetchsize(cso->format)) |
+			A4XX_TEX_CONST_2_PITCH(
+					util_format_get_nblocksx(
+							cso->format, rsc->slices[lvl].pitch) * rsc->cpp);
+		so->offset = fd_resource_offset(rsc, lvl, cso->u.tex.first_layer);
+	}
+
+	switch (cso->target) {
 	case PIPE_TEXTURE_1D_ARRAY:
 	case PIPE_TEXTURE_2D_ARRAY:
 		so->texconst3 =
-			A4XX_TEX_CONST_3_DEPTH(prsc->array_size) |
+			A4XX_TEX_CONST_3_DEPTH(layers) |
 			A4XX_TEX_CONST_3_LAYERSZ(rsc->layer_size);
 		break;
 	case PIPE_TEXTURE_CUBE:
 	case PIPE_TEXTURE_CUBE_ARRAY:
 		so->texconst3 =
-			A4XX_TEX_CONST_3_DEPTH(prsc->array_size / 6) |
+			A4XX_TEX_CONST_3_DEPTH(layers / 6) |
 			A4XX_TEX_CONST_3_LAYERSZ(rsc->layer_size);
 		break;
 	case PIPE_TEXTURE_3D:
 		so->texconst3 =
 			A4XX_TEX_CONST_3_DEPTH(u_minify(prsc->depth0, lvl)) |
-			A4XX_TEX_CONST_3_LAYERSZ(rsc->slices[0].size0);
+			A4XX_TEX_CONST_3_LAYERSZ(rsc->slices[lvl].size0);
+		while (lvl < cso->u.tex.last_level && sz2 != rsc->slices[lvl+1].size0)
+			sz2 = rsc->slices[++lvl].size0;
+		so->texconst4 = A4XX_TEX_CONST_4_LAYERSZ(sz2);
 		break;
 	default:
 		so->texconst3 = 0x00000000;
@@ -265,11 +307,39 @@ fd4_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 	return &so->base;
 }
 
+static void
+fd4_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
+		unsigned start, unsigned nr,
+		struct pipe_sampler_view **views)
+{
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd4_context *fd4_ctx = fd4_context(ctx);
+	uint16_t astc_srgb = 0;
+	unsigned i;
+
+	for (i = 0; i < nr; i++) {
+		if (views[i]) {
+			struct fd4_pipe_sampler_view *view =
+					fd4_pipe_sampler_view(views[i]);
+			if (view->astc_srgb)
+				astc_srgb |= (1 << i);
+		}
+	}
+
+	fd_set_sampler_views(pctx, shader, start, nr, views);
+
+	if (shader == PIPE_SHADER_FRAGMENT) {
+		fd4_ctx->fastc_srgb = astc_srgb;
+	} else if (shader == PIPE_SHADER_VERTEX) {
+		fd4_ctx->vastc_srgb = astc_srgb;
+	}
+}
+
 void
 fd4_texture_init(struct pipe_context *pctx)
 {
 	pctx->create_sampler_state = fd4_sampler_state_create;
 	pctx->bind_sampler_states = fd4_sampler_states_bind;
 	pctx->create_sampler_view = fd4_sampler_view_create;
-	pctx->set_sampler_views = fd_set_sampler_views;
+	pctx->set_sampler_views = fd4_set_sampler_views;
 }

@@ -108,8 +108,8 @@ gen7_emit_depth_stencil_hiz(struct brw_context *brw,
    OUT_BATCH((depth_mt ? depth_mt->pitch - 1 : 0) |
              (depthbuffer_format << 18) |
              ((hiz ? 1 : 0) << 22) |
-             ((stencil_mt != NULL && ctx->Stencil._WriteEnabled) << 27) |
-             ((ctx->Depth.Mask != 0) << 28) |
+             ((stencil_mt != NULL && brw->stencil_write_enabled) << 27) |
+             (brw_depth_writes_enabled(brw) << 28) |
              (surftype << 29));
 
    /* 3DSTATE_DEPTH_BUFFER dw2 */
@@ -145,13 +145,13 @@ gen7_emit_depth_stencil_hiz(struct brw_context *brw,
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else {
-      struct intel_miptree_aux_buffer *hiz_buf = depth_mt->hiz_buf;
+      assert(depth_mt);
 
       BEGIN_BATCH(3);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (3 - 2));
       OUT_BATCH((mocs << 25) |
-                (hiz_buf->pitch - 1));
-      OUT_RELOC(hiz_buf->bo,
+                (depth_mt->hiz_buf->pitch - 1));
+      OUT_RELOC(depth_mt->hiz_buf->bo,
                 I915_GEM_DOMAIN_RENDER,
                 I915_GEM_DOMAIN_RENDER,
                 0);
@@ -165,6 +165,7 @@ gen7_emit_depth_stencil_hiz(struct brw_context *brw,
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else {
+      stencil_mt->r8stencil_needs_update = true;
       const int enabled = brw->is_haswell ? HSW_STENCIL_ENABLED : 0;
 
       BEGIN_BATCH(3);
@@ -190,7 +191,12 @@ gen7_emit_depth_stencil_hiz(struct brw_context *brw,
 
    BEGIN_BATCH(3);
    OUT_BATCH(GEN7_3DSTATE_CLEAR_PARAMS << 16 | (3 - 2));
-   OUT_BATCH(depth_mt ? depth_mt->depth_clear_value : 0);
+   if (depth_mt) {
+      OUT_BATCH(brw_convert_depth_value(depth_mt->format,
+                                        depth_mt->fast_clear_color.f32[0]));
+   } else {
+      OUT_BATCH(0);
+   }
    OUT_BATCH(1);
    ADVANCE_BATCH();
 
@@ -205,7 +211,8 @@ const struct brw_tracked_state gen7_depthbuffer = {
       .mesa = _NEW_BUFFERS |
               _NEW_DEPTH |
               _NEW_STENCIL,
-      .brw = BRW_NEW_BATCH,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP,
    },
    .emit = brw_emit_depthbuffer,
 };

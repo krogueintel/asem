@@ -1,10 +1,11 @@
 Import('env')
 
-# 
+#
 # Auxiliary modules
 #
 
 SConscript('auxiliary/SConscript')
+SConscript('auxiliary/pipe-loader/SConscript')
 
 #
 # Drivers
@@ -17,6 +18,7 @@ SConscript([
     'drivers/softpipe/SConscript',
     'drivers/svga/SConscript',
     'drivers/trace/SConscript',
+    'drivers/swr/SConscript',
 ])
 
 #

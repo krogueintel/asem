@@ -88,12 +88,6 @@ get_tex_depth(struct gl_context *ctx, GLuint dimensions,
       return;
    }
 
-   if (texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY) {
-      depth = height;
-      height = 1;
-   }
-
-   assert(zoffset + depth <= texImage->Depth);
    for (img = 0; img < depth; img++) {
       GLubyte *srcMap;
       GLint srcRowStride;
@@ -141,7 +135,6 @@ get_tex_depth_stencil(struct gl_context *ctx, GLuint dimensions,
    assert(type == GL_UNSIGNED_INT_24_8 ||
           type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV);
 
-   assert(zoffset + depth <= texImage->Depth);
    for (img = 0; img < depth; img++) {
       GLubyte *srcMap;
       GLint rowstride;
@@ -233,7 +226,6 @@ get_tex_ycbcr(struct gl_context *ctx, GLuint dimensions,
 {
    GLint img, row;
 
-   assert(zoffset + depth <= texImage->Depth);
    for (img = 0; img < depth; img++) {
       GLubyte *srcMap;
       GLint rowstride;
@@ -273,6 +265,40 @@ get_tex_ycbcr(struct gl_context *ctx, GLuint dimensions,
    }
 }
 
+/**
+ * Depending on the base format involved we may need to apply a rebase
+ * transform (for example: if we download to a Luminance format we want
+ * G=0 and B=0).
+ */
+static bool
+teximage_needs_rebase(mesa_format texFormat, GLenum baseFormat,
+                      bool is_compressed, uint8_t *rebaseSwizzle)
+{
+   bool needsRebase = false;
+
+   if (baseFormat == GL_LUMINANCE ||
+       baseFormat == GL_INTENSITY) {
+      needsRebase = true;
+      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
+      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
+      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
+      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_ONE;
+   } else if (baseFormat == GL_LUMINANCE_ALPHA) {
+      needsRebase = true;
+      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
+      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
+      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
+      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_W;
+   } else if (!is_compressed &&
+              (baseFormat != _mesa_get_format_base_format(texFormat))) {
+      needsRebase =
+         _mesa_compute_rgba2base2rgba_component_mapping(baseFormat,
+                                                        rebaseSwizzle);
+   }
+
+   return needsRebase;
+}
+
 
 /**
  * Get a color texture image with decompression.
@@ -297,8 +323,7 @@ get_tex_rgba_compressed(struct gl_context *ctx, GLuint dimensions,
    uint8_t rebaseSwizzle[4];
 
    /* Decompress into temp float buffer, then pack into user buffer */
-   tempImage = malloc(width * height * depth
-                                  * 4 * sizeof(GLfloat));
+   tempImage = malloc(width * height * depth * 4 * sizeof(GLfloat));
    if (!tempImage) {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGetTexImage()");
       return;
@@ -328,26 +353,8 @@ get_tex_rgba_compressed(struct gl_context *ctx, GLuint dimensions,
       }
    }
 
-   /* Depending on the base format involved we may need to apply a rebase
-    * transform (for example: if we download to a Luminance format we want
-    * G=0 and B=0).
-    */
-   if (baseFormat == GL_LUMINANCE ||
-       baseFormat == GL_INTENSITY) {
-      needsRebase = true;
-      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
-      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_ONE;
-   } else if (baseFormat == GL_LUMINANCE_ALPHA) {
-      needsRebase = true;
-      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
-      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_W;
-   } else {
-      needsRebase = false;
-   }
+   needsRebase = teximage_needs_rebase(texFormat, baseFormat, true,
+                                       rebaseSwizzle);
 
    srcStride = 4 * width * sizeof(GLfloat);
    dstStride = _mesa_image_row_stride(&ctx->Pack, width, format, type);
@@ -432,38 +439,8 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
    bool needsRebase;
    void *rgba = NULL;
 
-   if (texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY) {
-      depth = height;
-      height = 1;
-      zoffset = yoffset;
-      yoffset = 0;
-   }
-
-   /* Depending on the base format involved we may need to apply a rebase
-    * transform (for example: if we download to a Luminance format we want
-    * G=0 and B=0).
-    */
-   if (texImage->_BaseFormat == GL_LUMINANCE ||
-       texImage->_BaseFormat == GL_INTENSITY) {
-      needsRebase = true;
-      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
-      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_ONE;
-   } else if (texImage->_BaseFormat == GL_LUMINANCE_ALPHA) {
-      needsRebase = true;
-      rebaseSwizzle[0] = MESA_FORMAT_SWIZZLE_X;
-      rebaseSwizzle[1] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[2] = MESA_FORMAT_SWIZZLE_ZERO;
-      rebaseSwizzle[3] = MESA_FORMAT_SWIZZLE_W;
-    } else if (texImage->_BaseFormat !=
-               _mesa_get_format_base_format(texFormat)) {
-      needsRebase =
-         _mesa_compute_rgba2base2rgba_component_mapping(texImage->_BaseFormat,
-                                                        rebaseSwizzle);
-    } else {
-      needsRebase = false;
-    }
+   needsRebase = teximage_needs_rebase(texFormat, texImage->_BaseFormat, false,
+                                       rebaseSwizzle);
 
    /* Describe the dst format */
    dst_is_integer = _mesa_is_enum_format_integer(format);
@@ -518,13 +495,15 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
           */
          if (format == rgba_format) {
             rgba = dest;
-         } else if (rgba == NULL) { /* Allocate the RGBA buffer only once */
+         } else {
             need_convert = true;
-            rgba = malloc(height * rgba_stride);
-            if (!rgba) {
-               _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGetTexImage()");
-               ctx->Driver.UnmapTextureImage(ctx, texImage, img);
-               return;
+            if (rgba == NULL) { /* Allocate the RGBA buffer only once */
+               rgba = malloc(height * rgba_stride);
+               if (!rgba) {
+                  _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGetTexImage()");
+                  ctx->Driver.UnmapTextureImage(ctx, texImage, img);
+                  return;
+               }
             }
          }
 
@@ -573,8 +552,7 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
    }
 
 done:
-   if (rgba)
-      free(rgba);
+   free(rgba);
 }
 
 
@@ -676,7 +654,7 @@ get_tex_memcpy(struct gl_context *ctx,
 
       if (src) {
          if (bytesPerRow == dstRowStride && bytesPerRow == srcRowStride) {
-            memcpy(dst, src, bytesPerRow * texImage->Height);
+            memcpy(dst, src, bytesPerRow * height);
          }
          else {
             GLuint row;
@@ -736,6 +714,17 @@ _mesa_GetTexSubImage_sw(struct gl_context *ctx,
        * Now make it a real, client-side pointer inside the mapped region.
        */
       pixels = ADD_POINTERS(buf, pixels);
+   }
+
+   /* for all array textures, the Z axis selects the layer */
+   if (texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY) {
+      depth = height;
+      height = 1;
+      zoffset = yoffset;
+      yoffset = 0;
+      assert(zoffset + depth <= texImage->Height);
+   } else {
+      assert(zoffset + depth <= texImage->Depth);
    }
 
    if (get_tex_memcpy(ctx, xoffset, yoffset, zoffset, width, height, depth,
@@ -874,12 +863,12 @@ legal_getteximage_target(struct gl_context *ctx, GLenum target, bool dsa)
     *    the targets from table 8.19 (for GetTexImage and GetnTexImage *only*),
     *    or TEXTURE_CUBE_MAP (for GetTextureImage *only*)." (Emphasis added.)
     */
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_X_ARB:
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_Y_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_ARB:
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_Z_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_ARB:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
       return dsa ? GL_FALSE : ctx->Extensions.ARB_texture_cube_map;
    case GL_TEXTURE_CUBE_MAP:
       return dsa ? GL_TRUE : GL_FALSE;
@@ -891,7 +880,7 @@ legal_getteximage_target(struct gl_context *ctx, GLenum target, bool dsa)
 
 /**
  * Wrapper for _mesa_select_tex_image() which can handle target being
- * GL_TEXTURE_CUBE_MAP_ARB in which case we use zoffset to select a cube face.
+ * GL_TEXTURE_CUBE_MAP in which case we use zoffset to select a cube face.
  * This can happen for glGetTextureImage and glGetTextureSubImage (DSA
  * functions).
  */
@@ -1042,9 +1031,9 @@ dimensions_error_check(struct gl_context *ctx,
 
    /* Extra checks for compressed textures */
    {
-      GLuint bw, bh;
-      _mesa_get_format_block_size(texImage->TexFormat, &bw, &bh);
-      if (bw > 1 || bh > 1) {
+      GLuint bw, bh, bd;
+      _mesa_get_format_block_size_3d(texImage->TexFormat, &bw, &bh, &bd);
+      if (bw > 1 || bh > 1 || bd > 1) {
          /* offset must be multiple of block size */
          if (xoffset % bw != 0) {
             _mesa_error(ctx, GL_INVALID_VALUE,
@@ -1059,7 +1048,13 @@ dimensions_error_check(struct gl_context *ctx,
             }
          }
 
-         /* The size must be a multiple of bw x bh, or we must be using a
+         if (zoffset % bd != 0) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "%s(zoffset = %d)", caller, zoffset);
+            return true;
+         }
+
+         /* The size must be a multiple of bw x bh x bd, or we must be using a
           * offset+size that exactly hits the edge of the image.
           */
          if ((width % bw != 0) &&
@@ -1073,6 +1068,13 @@ dimensions_error_check(struct gl_context *ctx,
              (yoffset + height != (GLint) texImage->Height)) {
             _mesa_error(ctx, GL_INVALID_VALUE,
                         "%s(height = %d)", caller, height);
+            return true;
+         }
+
+         if ((depth % bd != 0) &&
+             (zoffset + depth != (GLint) texImage->Depth)) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "%s(depth = %d)", caller, depth);
             return true;
          }
       }
@@ -1427,6 +1429,11 @@ _mesa_GetTextureImage(GLuint texture, GLint level, GLenum format, GLenum type,
       return;
    }
 
+   if (!legal_getteximage_target(ctx, texObj->Target, true)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s", caller);
+      return;
+   }
+
    get_texture_image_dims(texObj, texObj->Target, level,
                           &width, &height, &depth);
 
@@ -1455,6 +1462,12 @@ _mesa_GetTextureSubImage(GLuint texture, GLint level,
       _mesa_lookup_texture_err(ctx, texture, caller);
 
    if (!texObj) {
+      return;
+   }
+
+   if (!legal_getteximage_target(ctx, texObj->Target, true)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "%s(buffer/multisample texture)", caller);
       return;
    }
 
@@ -1760,7 +1773,7 @@ _mesa_GetCompressedTextureSubImage(GLuint texture, GLint level,
 {
    GET_CURRENT_CONTEXT(ctx);
    static const char *caller = "glGetCompressedTextureImage";
-   struct gl_texture_object *texObj;
+   struct gl_texture_object *texObj = NULL;
 
    texObj = _mesa_lookup_texture_err(ctx, texture, caller);
    if (!texObj) {

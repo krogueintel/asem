@@ -84,9 +84,7 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
    int src_pitch;
 
    /* The miptree's buffer. */
-   drm_intel_bo *bo;
-
-   int error = 0;
+   struct brw_bo *bo;
 
    uint32_t cpp;
    mem_copy_fn mem_copy = NULL;
@@ -119,8 +117,7 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
    if (ctx->_ImageTransferState)
       return false;
 
-   if (!intel_get_memcpy(texImage->TexFormat, format, type, &mem_copy, &cpp,
-                         INTEL_UPLOAD))
+   if (!intel_get_memcpy(texImage->TexFormat, format, type, &mem_copy, &cpp))
       return false;
 
    /* If this is a nontrivial texture view, let another path handle it instead. */
@@ -137,20 +134,34 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
       return false;
    }
 
+   /* linear_to_tiled() assumes that if the object is swizzled, it is using
+    * I915_BIT6_SWIZZLE_9_10 for X and I915_BIT6_SWIZZLE_9 for Y.  This is only
+    * true on gen5 and above.
+    *
+    * The killer on top is that some gen4 have an L-shaped swizzle mode, where
+    * parts of the memory aren't swizzled at all. Userspace just can't handle
+    * that.
+    */
+   if (brw->gen < 5 && brw->has_swizzling)
+      return false;
+
+   int level = texImage->Level + texImage->TexObject->MinLevel;
+
    /* Since we are going to write raw data to the miptree, we need to resolve
     * any pending fast color clears before we start.
     */
-   intel_miptree_resolve_color(brw, image->mt);
+   assert(image->mt->logical_depth0 == 1);
+   intel_miptree_access_raw(brw, image->mt, level, 0, true);
 
    bo = image->mt->bo;
 
-   if (drm_intel_bo_references(brw->batch.bo, bo)) {
+   if (brw_batch_references(&brw->batch, bo)) {
       perf_debug("Flushing before mapping a referenced bo.\n");
       intel_batchbuffer_flush(brw);
    }
 
-   error = brw_bo_map(brw, bo, true /* write enable */, "miptree");
-   if (error || bo->virtual == NULL) {
+   void *map = brw_bo_map(brw, bo, MAP_WRITE | MAP_RAW);
+   if (map == NULL) {
       DBG("%s: failed to map bo\n", __func__);
       return false;
    }
@@ -169,8 +180,6 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
        packing->Alignment, packing->RowLength, packing->SkipPixels,
        packing->SkipRows, for_glTexImage);
 
-   int level = texImage->Level + texImage->TexObject->MinLevel;
-
    /* Adjust x and y offset based on miplevel */
    xoffset += image->mt->level[level].level_x;
    yoffset += image->mt->level[level].level_y;
@@ -178,7 +187,7 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
    linear_to_tiled(
       xoffset * cpp, (xoffset + width) * cpp,
       yoffset, yoffset + height,
-      bo->virtual,
+      map,
       pixels - (ptrdiff_t) yoffset * src_pitch - (ptrdiff_t) xoffset * cpp,
       image->mt->pitch, src_pitch,
       brw->has_swizzling,
@@ -186,7 +195,7 @@ intel_texsubimage_tiled_memcpy(struct gl_context * ctx,
       mem_copy
    );
 
-   drm_intel_bo_unmap(bo);
+   brw_bo_unmap(bo);
    return true;
 }
 
@@ -200,10 +209,13 @@ intelTexSubImage(struct gl_context * ctx,
                  const GLvoid * pixels,
                  const struct gl_pixelstore_attrib *packing)
 {
-   struct intel_texture_image *intelImage = intel_texture_image(texImage);
+   struct intel_mipmap_tree *mt = intel_texture_image(texImage)->mt;
    bool ok;
 
-   bool tex_busy = intelImage->mt && drm_intel_bo_busy(intelImage->mt->bo);
+   bool tex_busy = mt && brw_bo_busy(mt->bo);
+
+   if (mt && mt->format == MESA_FORMAT_S_UINT8)
+      mt->r8stencil_needs_update = true;
 
    DBG("%s mesa_format %s target %s format %s type %s level %d %dx%dx%d\n",
        __func__, _mesa_get_format_name(texImage->TexFormat),
@@ -214,7 +226,7 @@ intelTexSubImage(struct gl_context * ctx,
    ok = _mesa_meta_pbo_TexSubImage(ctx, dims, texImage,
                                    xoffset, yoffset, zoffset,
                                    width, height, depth, format, type,
-                                   pixels, false, tex_busy, packing);
+                                   pixels, tex_busy, packing);
    if (ok)
       return;
 

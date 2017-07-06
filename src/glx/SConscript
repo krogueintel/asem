@@ -40,9 +40,6 @@ if env['HAVE_XF86VIDMODE']:
     env.Append(CPPDEFINES = ['XF86VIDMODE'])
     env.PkgUseModules('XF86VIDMODE')
 
-if False: # XXX: SHARED_GLAPI
-    env.Append(CPPDEFINES = ['GLX_SHARED_GLAPI'])
-
 sources = [
     'clientattrib.c',
     'clientinfo.c',
@@ -83,6 +80,7 @@ sources = [
     'dri2_glx.c',
     'dri2.c',
     'dri_common_query_renderer.c',
+    'dri_common_interop.c',
     #'dri3_glx.c',
     'applegl_glx.c',
 ]
@@ -108,14 +106,14 @@ env.CodeGenerate(
     )
 
 env.CodeGenerate(
-    target = 'indirect_size.c', 
+    target = 'indirect_size.c',
     script = GLAPI + 'gen/glX_proto_size.py',
     source = sources,
     command = python_cmd + ' $SCRIPT -f $SOURCE -m size_c --only-set > $TARGET'
 )
 
 env.CodeGenerate(
-    target = 'indirect_init.c', 
+    target = 'indirect_init.c',
     script = GLAPI + 'gen/glX_proto_send.py',
     source = sources,
     command = python_cmd + ' $SCRIPT -f $SOURCE -m init_c > $TARGET'

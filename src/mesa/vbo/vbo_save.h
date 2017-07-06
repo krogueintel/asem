@@ -61,6 +61,7 @@ struct vbo_save_copied_vtx {
  * compiled using the fallback opcode mechanism provided by dlist.c.
  */
 struct vbo_save_vertex_list {
+   GLbitfield64 enabled; /**< mask of enabled vbo arrays. */
    GLubyte attrsz[VBO_ATTRIB_MAX];
    GLenum attrtype[VBO_ATTRIB_MAX];
    GLuint vertex_size;  /**< size in GLfloats */
@@ -95,7 +96,7 @@ struct vbo_save_vertex_list {
  * likelyhood as it occurs.  No reason we couldn't change usage
  * internally even though this probably isn't allowed for client VBOs?
  */
-#define VBO_SAVE_BUFFER_SIZE (8*1024) /* dwords */
+#define VBO_SAVE_BUFFER_SIZE (256*1024) /* dwords */
 #define VBO_SAVE_PRIM_SIZE   128
 #define VBO_SAVE_PRIM_MODE_MASK         0x3f
 #define VBO_SAVE_PRIM_WEAK              0x40
@@ -123,9 +124,10 @@ struct vbo_save_context {
    struct gl_context *ctx;
    GLvertexformat vtxfmt;
    GLvertexformat vtxfmt_noop;  /**< Used if out_of_memory is true */
-   struct gl_client_array arrays[VBO_ATTRIB_MAX];
-   const struct gl_client_array *inputs[VBO_ATTRIB_MAX];
+   struct gl_vertex_array arrays[VBO_ATTRIB_MAX];
+   const struct gl_vertex_array *inputs[VBO_ATTRIB_MAX];
 
+   GLbitfield64 enabled; /**< mask of enabled vbo arrays. */
    GLubyte attrsz[VBO_ATTRIB_MAX];  /**< 1, 2, 3 or 4 */
    GLenum attrtype[VBO_ATTRIB_MAX];  /**< GL_FLOAT, GL_INT, etc */
    GLubyte active_sz[VBO_ATTRIB_MAX];  /**< 1, 2, 3 or 4 */
@@ -175,13 +177,6 @@ void vbo_loopback_vertex_list( struct gl_context *ctx,
 
 /* Callbacks:
  */
-void vbo_save_EndList( struct gl_context *ctx );
-void vbo_save_NewList( struct gl_context *ctx, GLuint list, GLenum mode );
-void vbo_save_EndCallList( struct gl_context *ctx );
-void vbo_save_BeginCallList( struct gl_context *ctx, struct gl_display_list *list );
-void vbo_save_SaveFlushVertices( struct gl_context *ctx );
-GLboolean vbo_save_NotifyBegin( struct gl_context *ctx, GLenum mode );
-
 void vbo_save_playback_vertex_list( struct gl_context *ctx, void *data );
 
 void vbo_save_api_init( struct vbo_save_context *save );

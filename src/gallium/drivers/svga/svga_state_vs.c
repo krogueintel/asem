@@ -52,9 +52,8 @@ get_dummy_vertex_shader(void)
    const struct tgsi_token *tokens;
    struct ureg_src src;
    struct ureg_dst dst;
-   unsigned num_tokens;
 
-   ureg = ureg_create(TGSI_PROCESSOR_VERTEX);
+   ureg = ureg_create(PIPE_SHADER_VERTEX);
    if (!ureg)
       return NULL;
 
@@ -63,7 +62,7 @@ get_dummy_vertex_shader(void)
    ureg_MOV(ureg, dst, src);
    ureg_END(ureg);
 
-   tokens = ureg_get_tokens(ureg, &num_tokens);
+   tokens = ureg_get_tokens(ureg, NULL);
 
    ureg_destroy(ureg);
 
@@ -81,7 +80,8 @@ translate_vertex_program(struct svga_context *svga,
                                         PIPE_SHADER_VERTEX);
    }
    else {
-      return svga_tgsi_vgpu9_translate(&vs->base, key, PIPE_SHADER_VERTEX);
+      return svga_tgsi_vgpu9_translate(svga, &vs->base, key,
+                                       PIPE_SHADER_VERTEX);
    }
 }
 
@@ -161,7 +161,7 @@ compile_vs(struct svga_context *svga,
 static void
 make_vs_key(struct svga_context *svga, struct svga_compile_key *key)
 {
-   const unsigned shader = PIPE_SHADER_VERTEX;
+   const enum pipe_shader_type shader = PIPE_SHADER_VERTEX;
 
    memset(key, 0, sizeof *key);
 
@@ -172,8 +172,11 @@ make_vs_key(struct svga_context *svga, struct svga_compile_key *key)
       return;
    }
 
+   /* SVGA_NEW_PRESCALE */
    key->vs.need_prescale = svga->state.hw_clear.prescale.enabled &&
                            (svga->curr.gs == NULL);
+
+   /* SVGA_NEW_RAST */
    key->vs.allow_psiz = svga->curr.rast->templ.point_size_per_vertex;
 
    /* SVGA_NEW_FS */
@@ -260,7 +263,6 @@ compile_passthrough_vs(struct svga_context *svga,
    struct ureg_src src[PIPE_MAX_SHADER_INPUTS];
    struct ureg_dst dst[PIPE_MAX_SHADER_OUTPUTS];
    struct ureg_program *ureg;
-   unsigned num_tokens;
    struct svga_compile_key key;
    enum pipe_error ret;
 
@@ -269,7 +271,7 @@ compile_passthrough_vs(struct svga_context *svga,
 
    num_inputs = fs->base.info.num_inputs;
 
-   ureg = ureg_create(TGSI_PROCESSOR_VERTEX);
+   ureg = ureg_create(PIPE_SHADER_VERTEX);
    if (!ureg)
       return PIPE_ERROR_OUT_OF_MEMORY;
 
@@ -309,7 +311,7 @@ compile_passthrough_vs(struct svga_context *svga,
    ureg_END(ureg);
 
    memset(&new_vs, 0, sizeof(new_vs));
-   new_vs.base.tokens = ureg_get_tokens(ureg, &num_tokens);
+   new_vs.base.tokens = ureg_get_tokens(ureg, NULL);
    tgsi_scan_shader(new_vs.base.tokens, &new_vs.base.info);
 
    memset(&key, 0, sizeof(key));
@@ -341,6 +343,8 @@ emit_hw_vs(struct svga_context *svga, unsigned dirty)
    struct svga_fragment_shader *fs = svga->curr.fs;
    enum pipe_error ret = PIPE_OK;
    struct svga_compile_key key;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_EMITVS);
 
    /* If there is an active geometry shader, and it has stream output
     * defined, then we will skip the stream output from the vertex shader
@@ -377,7 +381,7 @@ emit_hw_vs(struct svga_context *svga, unsigned dirty)
             ret = compile_vs(svga, vs, &key, &variant);
          }
          if (ret != PIPE_OK)
-            return ret;
+            goto done;
 
          /* insert the new variant at head of linked list */
          assert(variant);
@@ -391,7 +395,7 @@ emit_hw_vs(struct svga_context *svga, unsigned dirty)
       if (variant) {
          ret = svga_set_shader(svga, SVGA3D_SHADERTYPE_VS, variant);
          if (ret != PIPE_OK)
-            return ret;
+            goto done;
          svga->rebind.flags.vs = FALSE;
       }
 
@@ -399,7 +403,9 @@ emit_hw_vs(struct svga_context *svga, unsigned dirty)
       svga->state.hw_draw.vs = variant;
    }
 
-   return PIPE_OK;
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
+   return ret;
 }
 
 struct svga_tracked_state svga_hw_vs = 

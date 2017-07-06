@@ -32,38 +32,54 @@
 #ifndef AMDGPU_WINSYS_H
 #define AMDGPU_WINSYS_H
 
+#include "pipebuffer/pb_cache.h"
+#include "pipebuffer/pb_slab.h"
 #include "gallium/drivers/radeon/radeon_winsys.h"
 #include "addrlib/addrinterface.h"
-#include "os/os_thread.h"
+#include "util/u_queue.h"
 #include <amdgpu.h>
 
 struct amdgpu_cs;
 
+#define AMDGPU_SLAB_MIN_SIZE_LOG2 9
+#define AMDGPU_SLAB_MAX_SIZE_LOG2 14
+
 struct amdgpu_winsys {
    struct radeon_winsys base;
    struct pipe_reference reference;
+   struct pb_cache bo_cache;
+   struct pb_slabs bo_slabs;
 
    amdgpu_device_handle dev;
 
-   pipe_mutex bo_fence_lock;
+   mtx_t bo_fence_lock;
 
    int num_cs; /* The number of command streams created. */
+   unsigned num_total_rejected_cs;
    uint32_t next_bo_unique_id;
    uint64_t allocated_vram;
    uint64_t allocated_gtt;
+   uint64_t mapped_vram;
+   uint64_t mapped_gtt;
    uint64_t buffer_wait_time; /* time spent in buffer_wait in ns */
-   uint64_t num_cs_flushes;
-   unsigned gart_page_size;
+   uint64_t num_gfx_IBs;
+   uint64_t num_sdma_IBs;
+   uint64_t num_mapped_buffers;
 
    struct radeon_info info;
 
-   struct pb_manager *kman;
-   struct pb_manager *cman;
+   /* multithreaded IB submission */
+   struct util_queue cs_queue;
 
    struct amdgpu_gpu_info amdinfo;
    ADDR_HANDLE addrlib;
-   uint32_t rev_id;
-   unsigned family;
+
+   bool check_vm;
+
+   /* List of all allocated buffers */
+   mtx_t global_bo_list_lock;
+   struct list_head global_bo_list;
+   unsigned num_buffers;
 };
 
 static inline struct amdgpu_winsys *
@@ -73,6 +89,5 @@ amdgpu_winsys(struct radeon_winsys *base)
 }
 
 void amdgpu_surface_init_functions(struct amdgpu_winsys *ws);
-ADDR_HANDLE amdgpu_addr_create(struct amdgpu_winsys *ws);
 
 #endif

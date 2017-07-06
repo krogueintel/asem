@@ -27,11 +27,9 @@ AM_CFLAGS = \
 	$(GALLIUM_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
 	$(VL_CFLAGS) \
+	$(XCB_DRI3_CFLAGS) \
 	$(VA_CFLAGS) \
 	-DVA_DRIVER_INIT_FUNC="__vaDriverInit_$(VA_MAJOR)_$(VA_MINOR)"
-
-AM_CPPFLAGS = \
-	-I$(top_srcdir)/include
 
 noinst_LTLIBRARIES = libvatracker.la
 

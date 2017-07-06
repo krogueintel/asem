@@ -40,6 +40,7 @@
 #include <unistd.h>
 #include <sched.h>
 #endif
+#include <inttypes.h>
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_defines.h"
@@ -69,7 +70,7 @@ struct fenced_manager
    /**
     * Following members are mutable and protected by this mutex.
     */
-   pipe_mutex mutex;
+   mtx_t mutex;
 
    /**
     * Fenced buffer list.
@@ -172,7 +173,7 @@ fenced_manager_dump_locked(struct fenced_manager *fenced_mgr)
    while(curr != &fenced_mgr->unfenced) {
       fenced_buf = LIST_ENTRY(struct fenced_buffer, curr, head);
       assert(!fenced_buf->fence);
-      debug_printf("%10p %7u %8u %7s\n",
+      debug_printf("%10p %"PRIu64" %8u %7s\n",
                    (void *) fenced_buf,
                    fenced_buf->base.size,
                    p_atomic_read(&fenced_buf->base.reference.count),
@@ -188,7 +189,7 @@ fenced_manager_dump_locked(struct fenced_manager *fenced_mgr)
       fenced_buf = LIST_ENTRY(struct fenced_buffer, curr, head);
       assert(fenced_buf->buffer);
       signaled = ops->fence_signalled(ops, fenced_buf->fence, 0);
-      debug_printf("%10p %7u %8u %7s %10p %s\n",
+      debug_printf("%10p %"PRIu64" %8u %7s %10p %s\n",
                    (void *) fenced_buf,
                    fenced_buf->base.size,
                    p_atomic_read(&fenced_buf->base.reference.count),
@@ -310,11 +311,11 @@ fenced_buffer_finish_locked(struct fenced_manager *fenced_mgr,
 
       ops->fence_reference(ops, &fence, fenced_buf->fence);
 
-      pipe_mutex_unlock(fenced_mgr->mutex);
+      mtx_unlock(&fenced_mgr->mutex);
 
       finished = ops->fence_finish(ops, fenced_buf->fence, 0);
 
-      pipe_mutex_lock(fenced_mgr->mutex);
+      mtx_lock(&fenced_mgr->mutex);
 
       assert(pipe_is_referenced(&fenced_buf->base.reference));
 
@@ -507,11 +508,11 @@ fenced_buffer_destroy(struct pb_buffer *buf)
 
    assert(!pipe_is_referenced(&fenced_buf->base.reference));
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    fenced_buffer_destroy_locked(fenced_mgr, fenced_buf);
 
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 }
 
 
@@ -524,7 +525,7 @@ fenced_buffer_map(struct pb_buffer *buf,
    struct pb_fence_ops *ops = fenced_mgr->ops;
    void *map = NULL;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    assert(!(flags & PB_USAGE_GPU_READ_WRITE));
 
@@ -563,7 +564,7 @@ fenced_buffer_map(struct pb_buffer *buf,
    }
 
 done:
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 
    return map;
 }
@@ -575,7 +576,7 @@ fenced_buffer_unmap(struct pb_buffer *buf)
    struct fenced_buffer *fenced_buf = fenced_buffer(buf);
    struct fenced_manager *fenced_mgr = fenced_buf->mgr;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    assert(fenced_buf->mapcount);
    if(fenced_buf->mapcount) {
@@ -586,7 +587,7 @@ fenced_buffer_unmap(struct pb_buffer *buf)
          fenced_buf->flags &= ~PB_USAGE_CPU_READ_WRITE;
    }
 
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 }
 
 
@@ -599,7 +600,7 @@ fenced_buffer_validate(struct pb_buffer *buf,
    struct fenced_manager *fenced_mgr = fenced_buf->mgr;
    enum pipe_error ret;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    if(!vl) {
       /* invalidate */
@@ -634,7 +635,7 @@ fenced_buffer_validate(struct pb_buffer *buf,
    fenced_buf->validation_flags |= flags;
 
 done:
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 
    return ret;
 }
@@ -648,7 +649,7 @@ fenced_buffer_fence(struct pb_buffer *buf,
    struct fenced_manager *fenced_mgr = fenced_buf->mgr;
    struct pb_fence_ops *ops = fenced_mgr->ops;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    assert(pipe_is_referenced(&fenced_buf->base.reference));
    assert(fenced_buf->buffer);
@@ -675,7 +676,7 @@ fenced_buffer_fence(struct pb_buffer *buf,
       fenced_buf->validation_flags = 0;
    }
 
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 }
 
 
@@ -687,7 +688,7 @@ fenced_buffer_get_base_buffer(struct pb_buffer *buf,
    struct fenced_buffer *fenced_buf = fenced_buffer(buf);
    struct fenced_manager *fenced_mgr = fenced_buf->mgr;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    assert(fenced_buf->buffer);
 
@@ -698,7 +699,7 @@ fenced_buffer_get_base_buffer(struct pb_buffer *buf,
       *offset = 0;
    }
 
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 }
 
 
@@ -738,7 +739,7 @@ fenced_bufmgr_create_buffer(struct pb_manager *mgr,
    fenced_buf->base.vtbl = &fenced_buffer_vtbl;
    fenced_buf->mgr = fenced_mgr;
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    /*
     * Try to create GPU storage without stalling,
@@ -757,12 +758,12 @@ fenced_bufmgr_create_buffer(struct pb_manager *mgr,
 
    LIST_ADDTAIL(&fenced_buf->head, &fenced_mgr->unfenced);
    ++fenced_mgr->num_unfenced;
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 
    return &fenced_buf->base;
 
 no_storage:
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
    FREE(fenced_buf);
 no_buffer:
    return NULL;
@@ -774,10 +775,10 @@ fenced_bufmgr_flush(struct pb_manager *mgr)
 {
    struct fenced_manager *fenced_mgr = fenced_manager(mgr);
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
    while(fenced_manager_check_signalled_locked(fenced_mgr, TRUE))
       ;
-   pipe_mutex_unlock(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
 
    assert(fenced_mgr->provider->flush);
    if(fenced_mgr->provider->flush)
@@ -790,15 +791,15 @@ fenced_bufmgr_destroy(struct pb_manager *mgr)
 {
    struct fenced_manager *fenced_mgr = fenced_manager(mgr);
 
-   pipe_mutex_lock(fenced_mgr->mutex);
+   mtx_lock(&fenced_mgr->mutex);
 
    /* Wait on outstanding fences */
    while (fenced_mgr->num_fenced) {
-      pipe_mutex_unlock(fenced_mgr->mutex);
+      mtx_unlock(&fenced_mgr->mutex);
 #if defined(PIPE_OS_LINUX) || defined(PIPE_OS_BSD) || defined(PIPE_OS_SOLARIS)
       sched_yield();
 #endif
-      pipe_mutex_lock(fenced_mgr->mutex);
+      mtx_lock(&fenced_mgr->mutex);
       while(fenced_manager_check_signalled_locked(fenced_mgr, TRUE))
          ;
    }
@@ -807,8 +808,8 @@ fenced_bufmgr_destroy(struct pb_manager *mgr)
    /*assert(!fenced_mgr->num_unfenced);*/
 #endif
 
-   pipe_mutex_unlock(fenced_mgr->mutex);
-   pipe_mutex_destroy(fenced_mgr->mutex);
+   mtx_unlock(&fenced_mgr->mutex);
+   mtx_destroy(&fenced_mgr->mutex);
 
    FREE(fenced_mgr);
 }
@@ -840,7 +841,7 @@ simple_fenced_bufmgr_create(struct pb_manager *provider,
    LIST_INITHEAD(&fenced_mgr->unfenced);
    fenced_mgr->num_unfenced = 0;
 
-   pipe_mutex_init(fenced_mgr->mutex);
+   (void) mtx_init(&fenced_mgr->mutex, mtx_plain);
 
    return &fenced_mgr->base;
 }

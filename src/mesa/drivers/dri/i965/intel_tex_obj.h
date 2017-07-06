@@ -28,6 +28,9 @@
 
 #include "swrast/s_context.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct intel_texture_object
 {
@@ -58,6 +61,8 @@ struct intel_texture_object
     * since the mt is shared across views with differing formats.
     */
    mesa_format _Format;
+
+   const struct intel_image_format *planar_format;
 };
 
 
@@ -87,5 +92,9 @@ intel_texture_image(struct gl_texture_image *img)
 {
    return (struct intel_texture_image *) img;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _INTEL_TEX_OBJ_H */

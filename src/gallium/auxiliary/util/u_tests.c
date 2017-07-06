@@ -129,7 +129,7 @@ static void
 util_set_interleaved_vertex_elements(struct cso_context *cso,
                                      unsigned num_elements)
 {
-   int i;
+   unsigned i;
    struct pipe_vertex_element *velem =
       calloc(1, num_elements * sizeof(struct pipe_vertex_element));
 
@@ -205,7 +205,7 @@ util_probe_rect_rgba_multi(struct pipe_context *ctx, struct pipe_resource *tex,
    struct pipe_transfer *transfer;
    void *map;
    float *pixels = malloc(w * h * 4 * sizeof(float));
-   int x,y,e,c;
+   unsigned x,y,e,c;
    bool pass = true;
 
    map = pipe_transfer_map(ctx, tex, 0, 0, PIPE_TRANSFER_READ,
@@ -304,7 +304,7 @@ tgsi_vs_window_space_position(struct pipe_context *ctx)
       return;
    }
 
-   cso = cso_create_context(ctx);
+   cso = cso_create_context(ctx, 0);
    cb = util_create_texture2d(ctx->screen, 256, 256,
                               PIPE_FORMAT_R8G8B8A8_UNORM);
    util_set_common_states_and_clear(cso, ctx, cb);
@@ -364,7 +364,7 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
       return;
    }
 
-   cso = cso_create_context(ctx);
+   cso = cso_create_context(ctx, 0);
    cb = util_create_texture2d(ctx->screen, 256, 256,
                               PIPE_FORMAT_R8G8B8A8_UNORM);
    util_set_common_states_and_clear(cso, ctx, cb);
@@ -374,7 +374,8 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
    /* Fragment shader. */
    fs = util_make_fragment_tex_shader(ctx, tgsi_tex_target,
                                       TGSI_INTERPOLATE_LINEAR,
-                                      TGSI_RETURN_TYPE_FLOAT);
+                                      TGSI_RETURN_TYPE_FLOAT,
+                                      TGSI_RETURN_TYPE_FLOAT, false, false);
    cso_set_fragment_shader_handle(cso, fs);
 
    /* Vertex shader. */
@@ -396,8 +397,9 @@ null_sampler_view(struct pipe_context *ctx, unsigned tgsi_tex_target)
                              tgsi_texture_names[tgsi_tex_target]);
 }
 
-static void
-null_constant_buffer(struct pipe_context *ctx)
+void
+util_test_constant_buffer(struct pipe_context *ctx,
+                          struct pipe_resource *constbuf)
 {
    struct cso_context *cso;
    struct pipe_resource *cb;
@@ -405,12 +407,12 @@ null_constant_buffer(struct pipe_context *ctx)
    bool pass = true;
    static const float zero[] = {0, 0, 0, 0};
 
-   cso = cso_create_context(ctx);
+   cso = cso_create_context(ctx, 0);
    cb = util_create_texture2d(ctx->screen, 256, 256,
                               PIPE_FORMAT_R8G8B8A8_UNORM);
    util_set_common_states_and_clear(cso, ctx, cb);
 
-   ctx->set_constant_buffer(ctx, PIPE_SHADER_FRAGMENT, 0, NULL);
+   pipe_set_constant_buffer(ctx, PIPE_SHADER_FRAGMENT, 0, constbuf);
 
    /* Fragment shader. */
    {
@@ -422,13 +424,14 @@ null_constant_buffer(struct pipe_context *ctx)
             "MOV OUT[0], CONST[0]\n"
             "END\n";
       struct tgsi_token tokens[1000];
-      struct pipe_shader_state state = {tokens};
+      struct pipe_shader_state state;
 
-      if (!tgsi_text_translate(text, tokens, Elements(tokens))) {
+      if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
          puts("Can't compile a fragment shader.");
          util_report_result(FAIL);
          return;
       }
+      pipe_shader_state_from_tgsi(&state, tokens);
       fs = ctx->create_fs_state(ctx, &state);
       cso_set_fragment_shader_handle(cso, fs);
    }
@@ -450,6 +453,43 @@ null_constant_buffer(struct pipe_context *ctx)
    util_report_result(pass);
 }
 
+static void
+null_fragment_shader(struct pipe_context *ctx)
+{
+   struct cso_context *cso;
+   struct pipe_resource *cb;
+   void *vs;
+   struct pipe_rasterizer_state rs = {0};
+   struct pipe_query *query;
+   union pipe_query_result qresult;
+
+   cso = cso_create_context(ctx, 0);
+   cb = util_create_texture2d(ctx->screen, 256, 256,
+                              PIPE_FORMAT_R8G8B8A8_UNORM);
+   util_set_common_states_and_clear(cso, ctx, cb);
+
+   /* No rasterization. */
+   rs.rasterizer_discard = 1;
+   cso_set_rasterizer(cso, &rs);
+
+   vs = util_set_passthrough_vertex_shader(cso, ctx, false);
+
+   query = ctx->create_query(ctx, PIPE_QUERY_PRIMITIVES_GENERATED, 0);
+   ctx->begin_query(ctx, query);
+   util_draw_fullscreen_quad(cso);
+   ctx->end_query(ctx, query);
+   ctx->get_query_result(ctx, query, true, &qresult);
+
+   /* Cleanup. */
+   cso_destroy_context(cso);
+   ctx->delete_vs_state(ctx, vs);
+   ctx->destroy_query(ctx, query);
+   pipe_resource_reference(&cb, NULL);
+
+   /* Check PRIMITIVES_GENERATED. */
+   util_report_result(qresult.u64 == 2);
+}
+
 /**
  * Run all tests. This should be run with a clean context after
  * context_create.
@@ -459,10 +499,11 @@ util_run_tests(struct pipe_screen *screen)
 {
    struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
 
+   null_fragment_shader(ctx);
    tgsi_vs_window_space_position(ctx);
    null_sampler_view(ctx, TGSI_TEXTURE_2D);
    null_sampler_view(ctx, TGSI_TEXTURE_BUFFER);
-   null_constant_buffer(ctx);
+   util_test_constant_buffer(ctx, NULL);
 
    ctx->destroy(ctx);
 

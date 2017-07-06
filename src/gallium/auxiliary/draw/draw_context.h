@@ -39,7 +39,6 @@
 
 
 #include "pipe/p_state.h"
-#include "tgsi/tgsi_exec.h"
 
 struct pipe_context;
 struct draw_context;
@@ -48,6 +47,8 @@ struct draw_vertex_shader;
 struct draw_geometry_shader;
 struct draw_fragment_shader;
 struct tgsi_sampler;
+struct tgsi_image;
+struct tgsi_buffer;
 
 /*
  * structure to contain driver internal information 
@@ -151,23 +152,33 @@ draw_total_gs_outputs(const struct draw_context *draw);
 
 void
 draw_texture_sampler(struct draw_context *draw,
-                     uint shader_type,
+                     enum pipe_shader_type shader_type,
                      struct tgsi_sampler *sampler);
 
 void
+draw_image(struct draw_context *draw,
+           enum pipe_shader_type shader_type,
+           struct tgsi_image *image);
+
+void
+draw_buffer(struct draw_context *draw,
+           enum pipe_shader_type shader_type,
+           struct tgsi_buffer *buffer);
+
+void
 draw_set_sampler_views(struct draw_context *draw,
-                       unsigned shader_stage,
+                       enum pipe_shader_type shader_stage,
                        struct pipe_sampler_view **views,
                        unsigned num);
 void
 draw_set_samplers(struct draw_context *draw,
-                  unsigned shader_stage,
+                  enum pipe_shader_type shader_stage,
                   struct pipe_sampler_state **samplers,
                   unsigned num);
 
 void
 draw_set_mapped_texture(struct draw_context *draw,
-                        unsigned shader_stage,
+                        enum pipe_shader_type shader_stage,
                         unsigned sview_idx,
                         uint32_t width, uint32_t height, uint32_t depth,
                         uint32_t first_level, uint32_t last_level,
@@ -238,7 +249,7 @@ void draw_set_mapped_vertex_buffer(struct draw_context *draw,
 
 void
 draw_set_mapped_constant_buffer(struct draw_context *draw,
-                                unsigned shader_type,
+                                enum pipe_shader_type shader_type,
                                 unsigned slot,
                                 const void *buffer,
                                 unsigned size);
@@ -288,10 +299,11 @@ boolean draw_need_pipeline(const struct draw_context *draw,
                            unsigned prim );
 
 int
-draw_get_shader_param(unsigned shader, enum pipe_shader_cap param);
+draw_get_shader_param(enum pipe_shader_type shader, enum pipe_shader_cap param);
 
 int
-draw_get_shader_param_no_llvm(unsigned shader, enum pipe_shader_cap param);
+draw_get_shader_param_no_llvm(enum pipe_shader_type shader,
+                              enum pipe_shader_cap param);
 
 boolean
 draw_get_option_use_llvm(void);

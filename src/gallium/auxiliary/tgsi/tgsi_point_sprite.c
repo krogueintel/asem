@@ -96,7 +96,7 @@ struct psprite_transform_context
    unsigned stream_out_point_pos:1; // set if to stream out original point pos
    unsigned aa_point:1;             // set if doing aa point
    unsigned out_tmp_index[PIPE_MAX_SHADER_OUTPUTS];
-   int max_generic;
+   int max_generic;                 // max generic semantic index
 };
 
 static inline struct psprite_transform_context *
@@ -133,7 +133,7 @@ psprite_decl(struct tgsi_transform_context *ctx,
       else if (decl->Semantic.Name == TGSI_SEMANTIC_GENERIC &&
                decl->Semantic.Index < 32) {
          ts->point_coord_decl |= 1 << decl->Semantic.Index;
-         ts->max_generic = MAX2(ts->max_generic, decl->Semantic.Index);
+         ts->max_generic = MAX2(ts->max_generic, (int)decl->Semantic.Index);
       }
       ts->num_out = MAX2(ts->num_out, decl->Range.Last + 1);
    }
@@ -216,7 +216,7 @@ psprite_prolog(struct tgsi_transform_context *ctx)
          if (en & 0x1) {
             tgsi_transform_output_decl(ctx, ts->num_out++,
                                        TGSI_SEMANTIC_GENERIC, i, 0);
-            ts->max_generic = MAX2(ts->max_generic, i);
+            ts->max_generic = MAX2(ts->max_generic, (int)i);
          }
       }
    }
@@ -295,7 +295,7 @@ psprite_emit_vertex_inst(struct tgsi_transform_context *ctx,
    tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_MUL,
                   TGSI_FILE_TEMPORARY, ts->point_scale_tmp, TGSI_WRITEMASK_X,
                   TGSI_FILE_TEMPORARY, ts->point_size_tmp, TGSI_SWIZZLE_X,
-                  TGSI_FILE_TEMPORARY, ts->point_pos_tmp, TGSI_SWIZZLE_W);
+                  TGSI_FILE_TEMPORARY, ts->point_pos_tmp, TGSI_SWIZZLE_W, false);
 
    /* MUL point_scale.xy, point_scale.xx, inverseViewport.xy */
    inst = tgsi_default_full_instruction();
@@ -323,15 +323,15 @@ psprite_emit_vertex_inst(struct tgsi_transform_context *ctx,
                                   TGSI_FILE_IMMEDIATE, ts->point_imm,
                                   TGSI_SWIZZLE_Y,
                                   TGSI_FILE_TEMPORARY, ts->point_size_tmp,
-                                  TGSI_SWIZZLE_X);
+                                  TGSI_SWIZZLE_X, false);
 
-      tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_SUB,
+      tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_ADD,
                                   TGSI_FILE_TEMPORARY, ts->point_coord_k,
                                   TGSI_WRITEMASK_X,
                                   TGSI_FILE_IMMEDIATE, ts->point_imm,
                                   TGSI_SWIZZLE_Z,
                                   TGSI_FILE_TEMPORARY, ts->point_coord_k,
-                                  TGSI_SWIZZLE_X);
+                                  TGSI_SWIZZLE_X, true);
    }
 
 
@@ -442,13 +442,13 @@ psprite_inst(struct tgsi_transform_context *ctx,
       tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_MAX,
                  TGSI_FILE_TEMPORARY, ts->point_size_tmp, TGSI_WRITEMASK_X,
                  TGSI_FILE_TEMPORARY, ts->point_size_tmp, TGSI_SWIZZLE_X,
-                 TGSI_FILE_IMMEDIATE, ts->point_imm, TGSI_SWIZZLE_Y);
+                 TGSI_FILE_IMMEDIATE, ts->point_imm, TGSI_SWIZZLE_Y, false);
 
       /* MIN point_size_tmp.x, point_size_tmp.x, point_ivp.w */
       tgsi_transform_op2_swz_inst(ctx, TGSI_OPCODE_MIN,
                  TGSI_FILE_TEMPORARY, ts->point_size_tmp, TGSI_WRITEMASK_X,
                  TGSI_FILE_TEMPORARY, ts->point_size_tmp, TGSI_SWIZZLE_X,
-                 TGSI_FILE_CONSTANT, ts->point_ivp, TGSI_SWIZZLE_W);
+                 TGSI_FILE_CONSTANT, ts->point_ivp, TGSI_SWIZZLE_W, false);
    }
    else if (inst->Dst[0].Register.File == TGSI_FILE_OUTPUT &&
             inst->Dst[0].Register.Index == ts->point_pos_out) {

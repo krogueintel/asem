@@ -53,8 +53,6 @@ buffers, surfaces) are bound to the driver.
 
 * ``set_vertex_buffers``
 
-* ``set_index_buffer``
-
 
 Non-CSO State
 ^^^^^^^^^^^^^
@@ -79,11 +77,27 @@ objects. They all follow simple, one-method binding calls, e.g.
   should be the same as the number of set viewports and can be up to
   PIPE_MAX_VIEWPORTS.
 * ``set_viewport_states``
+* ``set_window_rectangles`` sets the window rectangles to be used for
+  rendering, as defined by GL_EXT_window_rectangles. There are two
+  modes - include and exclude, which define whether the supplied
+  rectangles are to be used for including fragments or excluding
+  them. All of the rectangles are ORed together, so in exclude mode,
+  any fragment inside any rectangle would be culled, while in include
+  mode, any fragment outside all rectangles would be culled. xmin/ymin
+  are inclusive, while xmax/ymax are exclusive (same as scissor states
+  above). Note that this only applies to draws, not clears or
+  blits. (Blits have their own way to pass the requisite rectangles
+  in.)
 * ``set_tess_state`` configures the default tessellation parameters:
+
   * ``default_outer_level`` is the default value for the outer tessellation
     levels. This corresponds to GL's ``PATCH_DEFAULT_OUTER_LEVEL``.
   * ``default_inner_level`` is the default value for the inner tessellation
     levels. This corresponds to GL's ``PATCH_DEFAULT_INNER_LEVEL``.
+
+* ``set_debug_callback`` sets the callback to be used for reporting
+  various debug messages, eventually reported via KHR_debug and
+  similar mechanisms.
 
 
 Sampler Views
@@ -217,17 +231,48 @@ If a surface includes several layers then all layers will be cleared.
 ``clear_render_target`` clears a single color rendertarget with the specified
 color value. While it is only possible to clear one surface at a time (which can
 include several layers), this surface need not be bound to the framebuffer.
+If render_condition_enabled is false, any current rendering condition is ignored
+and the clear will be unconditional.
 
 ``clear_depth_stencil`` clears a single depth, stencil or depth/stencil surface
 with the specified depth and stencil values (for combined depth/stencil buffers,
-is is also possible to only clear one or the other part). While it is only
+it is also possible to only clear one or the other part). While it is only
 possible to clear one surface at a time (which can include several layers),
 this surface need not be bound to the framebuffer.
+If render_condition_enabled is false, any current rendering condition is ignored
+and the clear will be unconditional.
+
+``clear_texture`` clears a non-PIPE_BUFFER resource's specified level
+and bounding box with a clear value provided in that resource's native
+format.
 
 ``clear_buffer`` clears a PIPE_BUFFER resource with the specified clear value
 (which may be multiple bytes in length). Logically this is a memset with a
 multi-byte element value starting at offset bytes from resource start, going
 for size bytes. It is guaranteed that size % clear_value_size == 0.
+
+
+Uploading
+^^^^^^^^^
+
+For simple single-use uploads, use ``pipe_context::stream_uploader`` or
+``pipe_context::const_uploader``. The latter should be used for uploading
+constants, while the former should be used for uploading everything else.
+PIPE_USAGE_STREAM is implied in both cases, so don't use the uploaders
+for static allocations.
+
+Usage:
+
+Call u_upload_alloc or u_upload_data as many times as you want. After you are
+done, call u_upload_unmap. If the driver doesn't support persistent mappings,
+u_upload_unmap makes sure the previously mapped memory is unmapped.
+
+Gotchas:
+- Always fill the memory immediately after u_upload_alloc. Any following call
+to u_upload_alloc and u_upload_data can unmap memory returned by previous
+u_upload_alloc.
+- Don't interleave calls using stream_uploader and const_uploader. If you use
+one of them, do the upload, unmap, and only then can you use the other one.
 
 
 Drawing
@@ -243,8 +288,8 @@ the mode of the primitive and the vertices to be fetched, in the range between
 Every instance with instanceID in the range between ``start_instance`` and
 ``start_instance``+``instance_count``-1, inclusive, will be drawn.
 
-If there is an index buffer bound, and ``indexed`` field is true, all vertex
-indices will be looked up in the index buffer.
+If  ``index_size`` != 0, all vertex indices will be looked up from the index
+buffer.
 
 In indexed draw, ``min_index`` and ``max_index`` respectively provide a lower
 and upper bound of the indices contained in the index buffer inside the range
@@ -317,6 +362,14 @@ will block until the results of the query are ready (and TRUE will be
 returned).  Otherwise, if the ``wait`` parameter is FALSE, the call
 will not block and the return value will be TRUE if the query has
 completed or FALSE otherwise.
+
+``get_query_result_resource`` is used to store the result of a query into
+a resource without synchronizing with the CPU. This write will optionally
+wait for the query to complete, and will optionally write whether the value
+is available instead of the value itself.
+
+``set_active_query_state`` Set whether all current non-driver queries except
+TIME_ELAPSED are active or paused.
 
 The interface currently includes the following types of queries:
 
@@ -402,9 +455,10 @@ A drawing command can be skipped depending on the outcome of a query
 (typically an occlusion query, or streamout overflow predicate).
 The ``render_condition`` function specifies the query which should be checked
 prior to rendering anything. Functions always honoring render_condition include
-(and are limited to) draw_vbo, clear, clear_render_target, clear_depth_stencil.
-The blit function (but not resource_copy_region, which seems inconsistent)
-can also optionally honor the current render condition.
+(and are limited to) draw_vbo and clear.
+The blit, clear_render_target and clear_depth_stencil functions (but
+not resource_copy_region, which seems inconsistent) can also optionally honor
+the current render condition.
 
 If ``render_condition`` is called with ``query`` = NULL, conditional
 rendering is disabled and drawing takes place normally.
@@ -436,6 +490,14 @@ Flushing
 ^^^^^^^^
 
 ``flush``
+
+PIPE_FLUSH_END_OF_FRAME: Whether the flush marks the end of frame.
+
+PIPE_FLUSH_DEFERRED: It is not required to flush right away, but it is required
+to return a valid fence. If fence_finish is called with the returned fence
+and the context is still unflushed, and the ctx parameter of fence_finish is
+equal to the context where the fence was created, fence_finish will flush
+the context.
 
 
 ``flush_resource``
@@ -477,9 +539,9 @@ This can be considered the equivalent of a CPU memcpy.
 
 ``blit`` blits a region of a resource to a region of another resource, including
 scaling, format conversion, and up-/downsampling, as well as a destination clip
-rectangle (scissors). It can also optionally honor the current render condition
-(but either way the blit itself never contributes anything to queries currently
-gathering data).
+rectangle (scissors) and window rectangles. It can also optionally honor the
+current render condition (but either way the blit itself never contributes
+anything to queries currently gathering data).
 As opposed to manually drawing a textured quad, this lets the pipe driver choose
 the optimal method for blitting (like using a special 2D engine), and usually
 offers, for example, accelerated stencil-only copies even where
@@ -502,8 +564,9 @@ to the transfer object remains unchanged (i.e. it can be non-NULL).
 the transfer object. The pointer into the resource should be considered
 invalid and discarded.
 
-``transfer_inline_write`` performs a simplified transfer for simple writes.
-Basically transfer_map, data write, and transfer_unmap all in one.
+``texture_subdata`` and ``buffer_subdata`` perform a simplified
+transfer for simple writes. Basically transfer_map, data write, and
+transfer_unmap all in one.
 
 
 The box parameter to some of these functions defines a 1D, 2D or 3D
@@ -538,7 +601,8 @@ texture_barrier
 %%%%%%%%%%%%%%%
 
 This function flushes all pending writes to the currently-set surfaces and
-invalidates all read caches of the currently-set samplers.
+invalidates all read caches of the currently-set samplers. This can be used
+for both regular textures as well as for framebuffers read via FBFETCH.
 
 
 
@@ -549,6 +613,31 @@ memory_barrier
 
 This function flushes caches according to which of the PIPE_BARRIER_* flags
 are set.
+
+
+
+.. _resource_commit:
+
+resource_commit
+%%%%%%%%%%%%%%%
+
+This function changes the commit state of a part of a sparse resource. Sparse
+resources are created by setting the ``PIPE_RESOURCE_FLAG_SPARSE`` flag when
+calling ``resource_create``. Initially, sparse resources only reserve a virtual
+memory region that is not backed by memory (i.e., it is uncommitted). The
+``resource_commit`` function can be called to commit or uncommit parts (or all)
+of a resource. The driver manages the underlying backing memory.
+
+The contents of newly committed memory regions are undefined. Calling this
+function to commit an already committed memory region is allowed and leaves its
+content unchanged. Similarly, calling this function to uncommit an already
+uncommitted memory region is allowed.
+
+For buffers, the given box must be aligned to multiples of
+``PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE``. As an exception to this rule, if the size
+of the buffer is not a multiple of the page size, changing the commit state of
+the last (partial) page requires a box that ends at the end of the buffer
+(i.e., box->x + box->width == buffer->width0).
 
 
 
@@ -641,3 +730,72 @@ In addition, normal texture sampling is allowed from the compute
 program: ``bind_sampler_states`` may be used to set up texture
 samplers for the compute stage and ``set_sampler_views`` may
 be used to bind a number of sampler views to it.
+
+Mipmap generation
+^^^^^^^^^^^^^^^^^
+
+If PIPE_CAP_GENERATE_MIPMAP is true, ``generate_mipmap`` can be used
+to generate mipmaps for the specified texture resource.
+It replaces texel image levels base_level+1 through
+last_level for layers range from first_layer through last_layer.
+It returns TRUE if mipmap generation succeeds, otherwise it
+returns FALSE. Mipmap generation may fail when it is not supported
+for particular texture types or formats.
+
+Device resets
+^^^^^^^^^^^^^
+
+The state tracker can query or request notifications of when the GPU
+is reset for whatever reason (application error, driver error). When
+a GPU reset happens, the context becomes unusable and all related state
+should be considered lost and undefined. Despite that, context
+notifications are single-shot, i.e. subsequent calls to
+``get_device_reset_status`` will return PIPE_NO_RESET.
+
+* ``get_device_reset_status`` queries whether a device reset has happened
+  since the last call or since the last notification by callback.
+* ``set_device_reset_callback`` sets a callback which will be called when
+  a device reset is detected. The callback is only called synchronously.
+
+Bindless
+^^^^^^^^
+
+If PIPE_CAP_BINDLESS_TEXTURE is TRUE, the following ``pipe_context`` functions
+are used to create/delete bindless handles, and to make them resident in the
+current context when they are going to be used by shaders.
+
+* ``create_texture_handle`` creates a 64-bit unsigned integer texture handle
+  that is going to be directly used in shaders.
+* ``delete_texture_handle`` deletes a 64-bit unsigned integer texture handle.
+* ``make_texture_handle_resident`` makes a 64-bit unsigned texture handle
+  resident in the current context to be accessible by shaders for texture
+  mapping.
+* ``create_image_handle`` creates a 64-bit unsigned integer image handle that
+  is going to be directly used in shaders.
+* ``delete_image_handle`` deletes a 64-bit unsigned integer image handle.
+* ``make_image_handle_resident`` makes a 64-bit unsigned integer image handle
+  resident in the current context to be accessible by shaders for image loads,
+  stores and atomic operations.
+
+Using several contexts
+----------------------
+
+Several contexts from the same screen can be used at the same time. Objects
+created on one context cannot be used in another context, but the objects
+created by the screen methods can be used by all contexts.
+
+Transfers
+^^^^^^^^^
+A transfer on one context is not expected to synchronize properly with
+rendering on other contexts, thus only areas not yet used for rendering should
+be locked.
+
+A flush is required after transfer_unmap to expect other contexts to see the
+uploaded data, unless:
+
+* Using persistent mapping. Associated with coherent mapping, unmapping the
+  resource is also not required to use it in other contexts. Without coherent
+  mapping, memory_barrier(PIPE_BARRIER_MAPPED_BUFFER) should be called on the
+  context that has mapped the resource. No flush is required.
+
+* Mapping the resource with PIPE_TRANSFER_MAP_DIRECTLY.

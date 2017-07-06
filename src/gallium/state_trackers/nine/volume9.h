@@ -41,19 +41,20 @@ struct NineVolume9
     unsigned level_actual;
 
     uint8_t *data; /* system memory backing */
+    uint8_t *data_conversion; /* for conversions */
 
     D3DVOLUME_DESC desc;
     struct pipe_resource info;
+    enum pipe_format format_conversion;
     unsigned stride;
+    unsigned stride_conversion;
     unsigned layer_stride;
+    unsigned layer_stride_conversion;
 
     struct pipe_transfer *transfer;
     unsigned lock_count;
 
-    struct pipe_context *pipe;
-
-    /* for [GS]etPrivateData/FreePrivateData */
-    struct util_hash_table *pdata;
+    unsigned pending_uploads_counter; /* pending uploads */
 };
 static inline struct NineVolume9 *
 NineVolume9( void *data )
@@ -83,7 +84,7 @@ void
 NineVolume9_AddDirtyRegion( struct NineVolume9 *This,
                             const struct pipe_box *box );
 
-HRESULT
+void
 NineVolume9_CopyMemToDefault( struct NineVolume9 *This,
                               struct NineVolume9 *From,
                               unsigned dstx, unsigned dsty, unsigned dstz,
@@ -96,39 +97,22 @@ NineVolume9_UploadSelf( struct NineVolume9 *This,
 
 /*** Direct3D public ***/
 
-HRESULT WINAPI
-NineVolume9_SetPrivateData( struct NineVolume9 *This,
-                            REFGUID refguid,
-                            const void *pData,
-                            DWORD SizeOfData,
-                            DWORD Flags );
-
-HRESULT WINAPI
-NineVolume9_GetPrivateData( struct NineVolume9 *This,
-                            REFGUID refguid,
-                            void *pData,
-                            DWORD *pSizeOfData );
-
-HRESULT WINAPI
-NineVolume9_FreePrivateData( struct NineVolume9 *This,
-                             REFGUID refguid );
-
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolume9_GetContainer( struct NineVolume9 *This,
                           REFIID riid,
                           void **ppContainer );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolume9_GetDesc( struct NineVolume9 *This,
                      D3DVOLUME_DESC *pDesc );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolume9_LockBox( struct NineVolume9 *This,
                      D3DLOCKED_BOX *pLockedVolume,
                      const D3DBOX *pBox,
                      DWORD Flags );
 
-HRESULT WINAPI
+HRESULT NINE_WINAPI
 NineVolume9_UnlockBox( struct NineVolume9 *This );
 
 #endif /* _NINE_VOLUME9_H_ */

@@ -159,6 +159,9 @@ void
 util_dump_image_view(FILE *stream, const struct pipe_image_view *state);
 
 void
+util_dump_shader_buffer(FILE *stream, const struct pipe_shader_buffer *state);
+
+void
 util_dump_sampler_view(FILE *stream, const struct pipe_sampler_view *state);
 
 void
@@ -168,9 +171,6 @@ util_dump_transfer(FILE *stream,
 void
 util_dump_constant_buffer(FILE *stream,
                           const struct pipe_constant_buffer *state);
-
-void
-util_dump_index_buffer(FILE *stream, const struct pipe_index_buffer *state);
 
 void
 util_dump_vertex_buffer(FILE *stream,
@@ -186,6 +186,9 @@ util_dump_stream_output_target(FILE *stream,
 
 void
 util_dump_draw_info(FILE *stream, const struct pipe_draw_info *state);
+
+void
+util_dump_grid_info(FILE *stream, const struct pipe_grid_info *state);
 
 void
 util_dump_box(FILE *stream, const struct pipe_box *box);

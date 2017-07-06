@@ -243,28 +243,6 @@ _mesa_gl_compressed_format_base_format(GLenum format)
  *        what GL_NUM_COMPRESSED_TEXTURE_FORMATS and
  *        GL_COMPRESSED_TEXTURE_FORMATS return."
  *
- * The KHR_texture_compression_astc_hdr spec says:
- *
- *    "Interactions with OpenGL 4.2
- *
- *        OpenGL 4.2 supports the feature that compressed textures can be
- *        compressed online, by passing the compressed texture format enum as
- *        the internal format when uploading a texture using TexImage1D,
- *        TexImage2D or TexImage3D (see Section 3.9.3, Texture Image
- *        Specification, subsection Encoding of Special Internal Formats).
- *
- *        Due to the complexity of the ASTC compression algorithm, it is not
- *        usually suitable for online use, and therefore ASTC support will be
- *        limited to pre-compressed textures only. Where on-device compression
- *        is required, a domain-specific limited compressor will typically
- *        be used, and this is therefore not suitable for implementation in
- *        the driver.
- *
- *        In particular, the ASTC format specifiers will not be added to
- *        Table 3.14, and thus will not be accepted by the TexImage*D
- *        functions, and will not be returned by the (already deprecated)
- *        COMPRESSED_TEXTURE_FORMATS query."
- *
  * There is no formal spec for GL_ATI_texture_compression_3dc.  Since the
  * formats added by this extension are luminance-alpha formats, it is
  * reasonable to expect them to follow the same rules as
@@ -286,7 +264,8 @@ GLuint
 _mesa_get_compressed_formats(struct gl_context *ctx, GLint *formats)
 {
    GLuint n = 0;
-   if (ctx->Extensions.TDFX_texture_compression_FXT1) {
+   if (_mesa_is_desktop_gl(ctx) &&
+       ctx->Extensions.TDFX_texture_compression_FXT1) {
       if (formats) {
          formats[n++] = GL_COMPRESSED_RGB_FXT1_3DFX;
          formats[n++] = GL_COMPRESSED_RGBA_FXT1_3DFX;
@@ -379,29 +358,127 @@ _mesa_get_compressed_formats(struct gl_context *ctx, GLint *formats)
       }
    }
 
-   if (_mesa_is_gles3(ctx)) {
+   if (_mesa_is_gles3(ctx) || ctx->Extensions.ARB_ES3_compatibility) {
       if (formats) {
          formats[n++] = GL_COMPRESSED_RGB8_ETC2;
-         formats[n++] = GL_COMPRESSED_SRGB8_ETC2;
          formats[n++] = GL_COMPRESSED_RGBA8_ETC2_EAC;
-         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC;
          formats[n++] = GL_COMPRESSED_R11_EAC;
          formats[n++] = GL_COMPRESSED_RG11_EAC;
          formats[n++] = GL_COMPRESSED_SIGNED_R11_EAC;
          formats[n++] = GL_COMPRESSED_SIGNED_RG11_EAC;
          formats[n++] = GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2;
-         formats[n++] = GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2;
-      }
-      else {
-         n += 10;
+      } else {
+         n += 7;
       }
    }
+
+   if (_mesa_is_gles3(ctx)) {
+      if (formats) {
+         formats[n++] = GL_COMPRESSED_SRGB8_ETC2;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC;
+         formats[n++] = GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2;
+      } else {
+         n += 3;
+      }
+   }
+
+   /* The KHR_texture_compression_astc_hdr spec says:
+    *
+    *    "Interactions with OpenGL 4.2
+    *
+    *        OpenGL 4.2 supports the feature that compressed textures can be
+    *        compressed online, by passing the compressed texture format enum as
+    *        the internal format when uploading a texture using TexImage1D,
+    *        TexImage2D or TexImage3D (see Section 3.9.3, Texture Image
+    *        Specification, subsection Encoding of Special Internal Formats).
+    *
+    *        Due to the complexity of the ASTC compression algorithm, it is not
+    *        usually suitable for online use, and therefore ASTC support will be
+    *        limited to pre-compressed textures only. Where on-device compression
+    *        is required, a domain-specific limited compressor will typically
+    *        be used, and this is therefore not suitable for implementation in
+    *        the driver.
+    *
+    *        In particular, the ASTC format specifiers will not be added to
+    *        Table 3.14, and thus will not be accepted by the TexImage*D
+    *        functions, and will not be returned by the (already deprecated)
+    *        COMPRESSED_TEXTURE_FORMATS query."
+    *
+    * The ES and the desktop specs diverge here. In OpenGL ES, the COMPRESSED_TEXTURE_FORMATS
+    * query returns the set of supported specific compressed formats.
+    */
+   if (ctx->API == API_OPENGLES2 &&
+       ctx->Extensions.KHR_texture_compression_astc_ldr) {
+      if (formats) {
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_5x4_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_5x5_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_6x5_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_6x6_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_8x5_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_8x6_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_8x8_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_10x5_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_10x6_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_10x8_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_10x10_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_12x10_KHR;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_12x12_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR;
+      }
+      else {
+         n += 28;
+      }
+   }
+
+   if (_mesa_is_gles3(ctx) &&
+       ctx->Extensions.OES_texture_compression_astc) {
+      if (formats) {
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_3x3x3_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_4x3x3_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_4x4x3_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_4x4x4_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_5x4x4_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_5x5x4_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_5x5x5_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_6x5x5_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_6x6x5_OES;
+         formats[n++] = GL_COMPRESSED_RGBA_ASTC_6x6x6_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES;
+         formats[n++] = GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES;
+      }
+      else {
+         n += 20;
+      }
+   }
+
    return n;
 }
 
 
 /**
- * Convert a compressed MESA_FORMAT_x to a GLenum.
+ * Convert GLenum to a compressed MESA_FORMAT_x.
  */
 mesa_format
 _mesa_glenum_to_compressed_format(GLenum format)
@@ -541,6 +618,46 @@ _mesa_glenum_to_compressed_format(GLenum format)
       return MESA_FORMAT_SRGB8_ALPHA8_ASTC_12x10;
    case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
       return MESA_FORMAT_SRGB8_ALPHA8_ASTC_12x12;
+   case GL_COMPRESSED_RGBA_ASTC_3x3x3_OES:
+      return MESA_FORMAT_RGBA_ASTC_3x3x3;
+   case GL_COMPRESSED_RGBA_ASTC_4x3x3_OES:
+      return MESA_FORMAT_RGBA_ASTC_4x3x3;
+   case GL_COMPRESSED_RGBA_ASTC_4x4x3_OES:
+      return MESA_FORMAT_RGBA_ASTC_4x4x3;
+   case GL_COMPRESSED_RGBA_ASTC_4x4x4_OES:
+      return MESA_FORMAT_RGBA_ASTC_4x4x4;
+   case GL_COMPRESSED_RGBA_ASTC_5x4x4_OES:
+      return MESA_FORMAT_RGBA_ASTC_5x4x4;
+   case GL_COMPRESSED_RGBA_ASTC_5x5x4_OES:
+      return MESA_FORMAT_RGBA_ASTC_5x5x4;
+   case GL_COMPRESSED_RGBA_ASTC_5x5x5_OES:
+      return MESA_FORMAT_RGBA_ASTC_5x5x5;
+   case GL_COMPRESSED_RGBA_ASTC_6x5x5_OES:
+      return MESA_FORMAT_RGBA_ASTC_6x5x5;
+   case GL_COMPRESSED_RGBA_ASTC_6x6x5_OES:
+      return MESA_FORMAT_RGBA_ASTC_6x6x5;
+   case GL_COMPRESSED_RGBA_ASTC_6x6x6_OES:
+      return MESA_FORMAT_RGBA_ASTC_6x6x6;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_3x3x3;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x3x3;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x4x3;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x4x4;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x4x4;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5x4;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5x5;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x5x5;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x6x5;
+   case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES:
+      return MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x6x6;
 
    default:
       return MESA_FORMAT_NONE;
@@ -689,6 +806,46 @@ _mesa_compressed_format_to_glenum(struct gl_context *ctx, mesa_format mesaFormat
    case MESA_FORMAT_SRGB8_ALPHA8_ASTC_12x12:
       return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR;
 
+   case MESA_FORMAT_RGBA_ASTC_3x3x3:
+      return GL_COMPRESSED_RGBA_ASTC_3x3x3_OES;
+   case MESA_FORMAT_RGBA_ASTC_4x3x3:
+      return GL_COMPRESSED_RGBA_ASTC_4x3x3_OES;
+   case MESA_FORMAT_RGBA_ASTC_4x4x3:
+      return GL_COMPRESSED_RGBA_ASTC_4x4x3_OES;
+   case MESA_FORMAT_RGBA_ASTC_4x4x4:
+      return GL_COMPRESSED_RGBA_ASTC_4x4x4_OES;
+   case MESA_FORMAT_RGBA_ASTC_5x4x4:
+      return GL_COMPRESSED_RGBA_ASTC_5x4x4_OES;
+   case MESA_FORMAT_RGBA_ASTC_5x5x4:
+      return GL_COMPRESSED_RGBA_ASTC_5x5x4_OES;
+   case MESA_FORMAT_RGBA_ASTC_5x5x5:
+      return GL_COMPRESSED_RGBA_ASTC_5x5x5_OES;
+   case MESA_FORMAT_RGBA_ASTC_6x5x5:
+      return GL_COMPRESSED_RGBA_ASTC_6x5x5_OES;
+   case MESA_FORMAT_RGBA_ASTC_6x6x5:
+      return GL_COMPRESSED_RGBA_ASTC_6x6x5_OES;
+   case MESA_FORMAT_RGBA_ASTC_6x6x6:
+      return GL_COMPRESSED_RGBA_ASTC_6x6x6_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_3x3x3:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x3x3:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x4x3:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_4x4x4:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x4x4:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5x4:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5x5:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x5x5:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x6x5:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES;
+   case MESA_FORMAT_SRGB8_ALPHA8_ASTC_6x6x6:
+      return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES;
    default:
       _mesa_problem(ctx, "Unexpected mesa texture format in"
                     " _mesa_compressed_format_to_glenum()");

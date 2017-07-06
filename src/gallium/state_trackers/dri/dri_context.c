@@ -58,6 +58,8 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    enum st_context_error ctx_err = 0;
    unsigned allowed_flags = __DRI_CTX_FLAG_DEBUG |
                             __DRI_CTX_FLAG_FORWARD_COMPATIBLE;
+   const __DRIbackgroundCallableExtension *backgroundCallable =
+      screen->sPriv->dri2.backgroundCallable;
 
    if (screen->has_reset_status_query)
       allowed_flags |= __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS;
@@ -156,6 +158,24 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       ctx->hud = hud_create(ctx->st->pipe, ctx->st->cso_context);
    }
 
+   /* Do this last. */
+   if (ctx->st->start_thread &&
+         driQueryOptionb(&screen->optionCache, "mesa_glthread")) {
+
+      if (backgroundCallable && backgroundCallable->base.version >= 2 &&
+            backgroundCallable->isThreadSafe) {
+
+         if (backgroundCallable->isThreadSafe(cPriv->loaderPrivate))
+            ctx->st->start_thread(ctx->st);
+         else
+            fprintf(stderr, "dri_create_context: glthread isn't thread safe "
+                  "- missing call XInitThreads\n");
+      } else {
+         fprintf(stderr, "dri_create_context: requested glthread but driver "
+               "is missing backgroundCallable V2 extension\n");
+      }
+   }
+
    *error = __DRI_CTX_ERROR_SUCCESS;
    return GL_TRUE;
 
@@ -199,6 +219,9 @@ dri_unbind_context(__DRIcontext * cPriv)
 
    if (--ctx->bind_count == 0) {
       if (ctx->st == ctx->stapi->get_current(ctx->stapi)) {
+         if (ctx->st->thread_finish)
+            ctx->st->thread_finish(ctx->st);
+
          /* For conformance, unbind is supposed to flush the context.
           * However, if we do it here we might end up flushing a partially
           * destroyed context. Instead, we flush in dri_make_current and
@@ -221,6 +244,9 @@ dri_make_current(__DRIcontext * cPriv,
    struct dri_drawable *draw = dri_drawable(driDrawPriv);
    struct dri_drawable *read = dri_drawable(driReadPriv);
    struct st_context_iface *old_st = ctx->stapi->get_current(ctx->stapi);
+
+   if (old_st && old_st->thread_finish)
+      old_st->thread_finish(old_st);
 
    /* Flush the old context here so we don't have to flush on unbind() */
    if (old_st && old_st != ctx->st)

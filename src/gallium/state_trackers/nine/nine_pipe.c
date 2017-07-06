@@ -70,7 +70,9 @@ nine_convert_dsa_state(struct pipe_depth_stencil_alpha_state *dsa_state,
 }
 
 void
-nine_convert_rasterizer_state(struct pipe_rasterizer_state *rast_state, const DWORD *rs)
+nine_convert_rasterizer_state(struct NineDevice9 *device,
+                              struct pipe_rasterizer_state *rast_state,
+                              const DWORD *rs)
 {
     struct pipe_rasterizer_state rast;
 
@@ -94,7 +96,7 @@ nine_convert_rasterizer_state(struct pipe_rasterizer_state *rast_state, const DW
     rast.sprite_coord_mode = PIPE_SPRITE_COORD_UPPER_LEFT;
     rast.point_quad_rasterization = 1;
     rast.point_size_per_vertex = rs[NINED3DRS_VSPOINTSIZE];
-    rast.multisample = !!rs[D3DRS_MULTISAMPLEANTIALIAS];
+    rast.multisample = rs[NINED3DRS_MULTISAMPLE];
     rast.line_smooth = !!rs[D3DRS_ANTIALIASEDLINEENABLE];
  /* rast.line_stipple_enable = 0; */
     rast.line_last_pixel = !!rs[D3DRS_LASTPIXEL];
@@ -120,14 +122,12 @@ nine_convert_rasterizer_state(struct pipe_rasterizer_state *rast_state, const DW
     /* offset_units has the ogl/d3d11 meaning.
      * d3d9: offset = scale * dz + bias
      * ogl/d3d11: offset = scale * dz + r * bias
-     * with r implementation dependant and is supposed to be
-     * the smallest value the depth buffer format can hold.
-     * In practice on current and past hw it seems to be 2^-23
-     * for all formats except float formats where it varies depending
-     * on the content.
-     * For now use 1 << 23, but in the future perhaps add a way in gallium
-     * to get r for the format or get the gallium behaviour */
-    rast.offset_units = asfloat(rs[D3DRS_DEPTHBIAS]) * (float)(1 << 23);
+     * with r implementation dependent (+ different formula for float depth
+     * buffers). r=2^-23 is often the right value for gallium drivers.
+     * If possible, use offset_units_unscaled, which gives the d3d9
+     * behaviour, else scale by 1 << 23 */
+    rast.offset_units = asfloat(rs[D3DRS_DEPTHBIAS]) * (device->driver_caps.offset_units_unscaled ? 1.0f : (float)(1 << 23));
+    rast.offset_units_unscaled = device->driver_caps.offset_units_unscaled;
     rast.offset_scale = asfloat(rs[D3DRS_SLOPESCALEDEPTHBIAS]);
  /* rast.offset_clamp = 0.0f; */
 
@@ -162,7 +162,7 @@ nine_convert_blend_state(struct pipe_blend_state *blend_state, const DWORD *rs)
     blend.dither = !!rs[D3DRS_DITHERENABLE];
 
  /* blend.alpha_to_one = 0; */
-    blend.alpha_to_coverage = !!rs[NINED3DRS_ALPHACOVERAGE];
+    blend.alpha_to_coverage = rs[NINED3DRS_ALPHACOVERAGE] & 1;
 
     blend.rt[0].blend_enable = !!rs[D3DRS_ALPHABLENDENABLE];
     if (blend.rt[0].blend_enable) {
@@ -181,6 +181,7 @@ nine_convert_blend_state(struct pipe_blend_state *blend_state, const DWORD *rs)
         }
         nine_convert_blend_state_fixup(&blend, rs); /* for BOTH[INV]SRCALPHA */
     }
+
     blend.rt[0].colormask = rs[D3DRS_COLORWRITEENABLE];
 
     if (rs[D3DRS_COLORWRITEENABLE1] != rs[D3DRS_COLORWRITEENABLE] ||
@@ -219,18 +220,26 @@ nine_convert_sampler_state(struct cso_context *ctx, int idx, const DWORD *ss)
         samp.min_mip_filter = PIPE_TEX_MIPFILTER_NONE;
     }
     samp.max_lod = 15.0f;
-    samp.wrap_s = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSU]);
-    samp.wrap_t = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSV]);
-    samp.wrap_r = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSW]);
-    samp.min_img_filter = ss[D3DSAMP_MINFILTER] == D3DTEXF_POINT ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
-    samp.mag_img_filter = ss[D3DSAMP_MAGFILTER] == D3DTEXF_POINT ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
+
+    if (ss[NINED3DSAMP_CUBETEX]) {
+        /* Cube textures are always clamped to edge on D3D */
+        samp.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+        samp.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+        samp.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+    } else {
+        samp.wrap_s = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSU]);
+        samp.wrap_t = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSV]);
+        samp.wrap_r = d3dtextureaddress_to_pipe_tex_wrap(ss[D3DSAMP_ADDRESSW]);
+    }
+    samp.min_img_filter = (ss[D3DSAMP_MINFILTER] == D3DTEXF_POINT && !ss[NINED3DSAMP_SHADOW]) ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
+    samp.mag_img_filter = (ss[D3DSAMP_MAGFILTER] == D3DTEXF_POINT && !ss[NINED3DSAMP_SHADOW]) ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
     if (ss[D3DSAMP_MINFILTER] == D3DTEXF_ANISOTROPIC ||
         ss[D3DSAMP_MAGFILTER] == D3DTEXF_ANISOTROPIC)
         samp.max_anisotropy = ss[D3DSAMP_MAXANISOTROPY];
     samp.compare_mode = ss[NINED3DSAMP_SHADOW] ? PIPE_TEX_COMPARE_R_TO_TEXTURE : PIPE_TEX_COMPARE_NONE;
     samp.compare_func = PIPE_FUNC_LEQUAL;
     samp.normalized_coords = 1;
-    samp.seamless_cube_map = 1;
+    samp.seamless_cube_map = 0;
     d3dcolor_to_pipe_color_union(&samp.border_color, ss[D3DSAMP_BORDERCOLOR]);
 
     /* see nine_state.h */
@@ -240,32 +249,10 @@ nine_convert_sampler_state(struct cso_context *ctx, int idx, const DWORD *ss)
         cso_single_sampler(ctx, PIPE_SHADER_VERTEX, idx - NINE_SAMPLER_VS(0), &samp);
 }
 
-void
-nine_pipe_context_clear(struct NineDevice9 *This)
-{
-    struct pipe_context *pipe = This->pipe;
-    struct cso_context *cso = This->cso;
-    pipe->bind_vs_state(pipe, NULL);
-    pipe->bind_fs_state(pipe, NULL);
-
-    /* Don't unbind constant buffers, they're device-private and
-     * do not change on Reset.
-     */
-
-    cso_set_samplers(cso, PIPE_SHADER_VERTEX, 0, NULL);
-    cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, 0, NULL);
-
-    cso_set_sampler_views(cso, PIPE_SHADER_VERTEX, 0, NULL);
-    cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, 0, NULL);
-
-    pipe->set_vertex_buffers(pipe, 0, This->caps.MaxStreams, NULL);
-    pipe->set_index_buffer(pipe, NULL);
-}
-
 const enum pipe_format nine_d3d9_to_pipe_format_map[120] =
 {
    [D3DFMT_UNKNOWN]       = PIPE_FORMAT_NONE,
-   [D3DFMT_R8G8B8]        = PIPE_FORMAT_NONE,
+   [D3DFMT_R8G8B8]        = PIPE_FORMAT_R8G8B8_UNORM,
    [D3DFMT_A8R8G8B8]      = PIPE_FORMAT_B8G8R8A8_UNORM,
    [D3DFMT_X8R8G8B8]      = PIPE_FORMAT_B8G8R8X8_UNORM,
    [D3DFMT_R5G6B5]        = PIPE_FORMAT_B5G6R5_UNORM,
@@ -288,8 +275,8 @@ const enum pipe_format nine_d3d9_to_pipe_format_map[120] =
    [D3DFMT_A8L8]          = PIPE_FORMAT_L8A8_UNORM,
    [D3DFMT_A4L4]          = PIPE_FORMAT_L4A4_UNORM,
    [D3DFMT_V8U8]          = PIPE_FORMAT_R8G8_SNORM,
-   [D3DFMT_L6V5U5]        = PIPE_FORMAT_NONE,
-   [D3DFMT_X8L8V8U8]      = PIPE_FORMAT_NONE,
+   [D3DFMT_L6V5U5]        = PIPE_FORMAT_NONE, /* Should be PIPE_FORMAT_R5SG5SB6U_NORM, but interpretation of the data differs a bit. */
+   [D3DFMT_X8L8V8U8]      = PIPE_FORMAT_R8SG8SB8UX8U_NORM,
    [D3DFMT_Q8W8V8U8]      = PIPE_FORMAT_R8G8B8A8_SNORM,
    [D3DFMT_V16U16]        = PIPE_FORMAT_R16G16_SNORM,
    [D3DFMT_A2W10V10U10]   = PIPE_FORMAT_R10SG10SB10SA2U_NORM,
@@ -323,8 +310,8 @@ const enum pipe_format nine_d3d9_to_pipe_format_map[120] =
 const D3DFORMAT nine_pipe_to_d3d9_format_map[PIPE_FORMAT_COUNT] =
 {
    [PIPE_FORMAT_NONE]               = D3DFMT_UNKNOWN,
-
-/* [PIPE_FORMAT_B8G8R8_UNORM]       = D3DFMT_R8G8B8, */
+   /* TODO: rename PIPE_FORMAT_R8G8B8_UNORM to PIPE_FORMAT_B8G8R8_UNORM */
+   [PIPE_FORMAT_R8G8B8_UNORM]       = D3DFMT_R8G8B8,
    [PIPE_FORMAT_B8G8R8A8_UNORM]     = D3DFMT_A8R8G8B8,
    [PIPE_FORMAT_B8G8R8X8_UNORM]     = D3DFMT_X8R8G8B8,
    [PIPE_FORMAT_B5G6R5_UNORM]       = D3DFMT_R5G6B5,

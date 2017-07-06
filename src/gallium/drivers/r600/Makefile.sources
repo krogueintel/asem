@@ -2,6 +2,7 @@ C_SOURCES = \
 	compute_memory_pool.c \
 	compute_memory_pool.h \
 	eg_asm.c \
+	eg_debug.c \
 	eg_sq.h \
 	evergreen_compute.c \
 	evergreen_compute.h \
@@ -65,6 +66,5 @@ CXX_SOURCES = \
 	sb/sb_ssa_builder.cpp \
 	sb/sb_valtable.cpp
 
-LLVM_C_SOURCES = \
-	r600_llvm.c \
-	r600_llvm.h
+R600_GENERATED_FILES = \
+	egd_tables.h

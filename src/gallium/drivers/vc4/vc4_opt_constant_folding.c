@@ -58,7 +58,7 @@ dump_to(struct vc4_compile *c, struct qinst *inst)
 static bool
 constant_fold(struct vc4_compile *c, struct qinst *inst)
 {
-        int nsrc = qir_get_op_nsrc(inst->op);
+        int nsrc = qir_get_nsrc(inst);
         uint32_t ui[nsrc];
 
         for (int i = 0; i < nsrc; i++) {
@@ -99,7 +99,7 @@ qir_opt_constant_folding(struct vc4_compile *c)
 {
         bool progress = false;
 
-        list_for_each_entry(struct qinst, inst, &c->instructions, link) {
+        qir_for_each_inst_inorder(inst, c) {
                 if (constant_fold(c, inst))
                         progress = true;
         }

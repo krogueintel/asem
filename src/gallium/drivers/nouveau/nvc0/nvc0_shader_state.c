@@ -26,40 +26,23 @@
 #include "util/u_inlines.h"
 
 #include "nvc0/nvc0_context.h"
+#include "nvc0/nvc0_query_hw.h"
+
+#include "nvc0/nvc0_compute.xml.h"
 
 static inline void
 nvc0_program_update_context_state(struct nvc0_context *nvc0,
                                   struct nvc0_program *prog, int stage)
 {
-   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-
    if (prog && prog->need_tls) {
       const uint32_t flags = NV_VRAM_DOMAIN(&nvc0->screen->base) | NOUVEAU_BO_RDWR;
       if (!nvc0->state.tls_required)
-         BCTX_REFN_bo(nvc0->bufctx_3d, TLS, flags, nvc0->screen->tls);
+         BCTX_REFN_bo(nvc0->bufctx_3d, 3D_TLS, flags, nvc0->screen->tls);
       nvc0->state.tls_required |= 1 << stage;
    } else {
       if (nvc0->state.tls_required == (1 << stage))
-         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_TLS);
+         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TLS);
       nvc0->state.tls_required &= ~(1 << stage);
-   }
-
-   if (prog && prog->immd_size) {
-      BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      /* NOTE: may overlap code of a different shader */
-      PUSH_DATA (push, align(prog->immd_size, 0x100));
-      PUSH_DATAh(push, nvc0->screen->text->offset + prog->immd_base);
-      PUSH_DATA (push, nvc0->screen->text->offset + prog->immd_base);
-      BEGIN_NVC0(push, NVC0_3D(CB_BIND(stage)), 1);
-      PUSH_DATA (push, (14 << 4) | 1);
-
-      nvc0->state.c14_bound |= 1 << stage;
-   } else
-   if (nvc0->state.c14_bound & (1 << stage)) {
-      BEGIN_NVC0(push, NVC0_3D(CB_BIND(stage)), 1);
-      PUSH_DATA (push, (14 << 4) | 0);
-
-      nvc0->state.c14_bound &= ~(1 << stage);
    }
 }
 
@@ -71,13 +54,13 @@ nvc0_program_validate(struct nvc0_context *nvc0, struct nvc0_program *prog)
 
    if (!prog->translated) {
       prog->translated = nvc0_program_translate(
-         prog, nvc0->screen->base.device->chipset);
+         prog, nvc0->screen->base.device->chipset, &nvc0->base.debug);
       if (!prog->translated)
          return false;
    }
 
    if (likely(prog->code_size))
-      return nvc0_program_upload_code(nvc0, prog);
+      return nvc0_program_upload(nvc0, prog);
    return true; /* stream output info only */
 }
 
@@ -106,8 +89,54 @@ nvc0_fragprog_validate(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_program *fp = nvc0->fragprog;
+   struct pipe_rasterizer_state *rast = &nvc0->rast->pipe;
 
-   fp->fp.sample_interp = nvc0->min_samples > 1;
+   if (fp->fp.force_persample_interp != rast->force_persample_interp) {
+      /* Force the program to be reuploaded, which will trigger interp fixups
+       * to get applied
+       */
+      if (fp->mem)
+         nouveau_heap_free(&fp->mem);
+
+      fp->fp.force_persample_interp = rast->force_persample_interp;
+   }
+
+   /* Shade model works well enough when both colors follow it. However if one
+    * (or both) is explicitly set, then we have to go the patching route.
+    */
+   bool has_explicit_color = fp->fp.colors &&
+      (((fp->fp.colors & 1) && !fp->fp.color_interp[0]) ||
+       ((fp->fp.colors & 2) && !fp->fp.color_interp[1]));
+   bool hwflatshade = false;
+   if (has_explicit_color && fp->fp.flatshade != rast->flatshade) {
+      /* Force re-upload */
+      if (fp->mem)
+         nouveau_heap_free(&fp->mem);
+
+      fp->fp.flatshade = rast->flatshade;
+
+      /* Always smooth-shade in this mode, the shader will decide on its own
+       * when to flat-shade.
+       */
+   } else if (!has_explicit_color) {
+      hwflatshade = rast->flatshade;
+
+      /* No need to binary-patch the shader each time, make sure that it's set
+       * up for the default behaviour.
+       */
+      fp->fp.flatshade = 0;
+   }
+
+   if (hwflatshade != nvc0->state.flatshade) {
+      nvc0->state.flatshade = hwflatshade;
+      BEGIN_NVC0(push, NVC0_3D(SHADE_MODEL), 1);
+      PUSH_DATA (push, hwflatshade ? NVC0_3D_SHADE_MODEL_FLAT :
+                                     NVC0_3D_SHADE_MODEL_SMOOTH);
+   }
+
+   if (fp->mem && !(nvc0->dirty_3d & NVC0_NEW_3D_FRAGPROG)) {
+      return;
+   }
 
    if (!nvc0_program_validate(nvc0, fp))
          return;
@@ -116,6 +145,11 @@ nvc0_fragprog_validate(struct nvc0_context *nvc0)
    if (fp->fp.early_z != nvc0->state.early_z_forced) {
       nvc0->state.early_z_forced = fp->fp.early_z;
       IMMED_NVC0(push, NVC0_3D(FORCE_EARLY_FRAGMENT_TESTS), fp->fp.early_z);
+   }
+   if (fp->fp.post_depth_coverage != nvc0->state.post_depth_coverage) {
+      nvc0->state.post_depth_coverage = fp->fp.post_depth_coverage;
+      IMMED_NVC0(push, NVC0_3D(POST_DEPTH_COVERAGE),
+                 fp->fp.post_depth_coverage);
    }
 
    BEGIN_NVC0(push, NVC0_3D(SP_SELECT(5)), 2);
@@ -189,27 +223,53 @@ nvc0_gmtyprog_validate(struct nvc0_context *nvc0)
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_program *gp = nvc0->gmtyprog;
 
-   if (gp)
-      nvc0_program_validate(nvc0, gp);
-
    /* we allow GPs with no code for specifying stream output state only */
-   if (gp && gp->code_size) {
-      const bool gp_selects_layer = !!(gp->hdr[13] & (1 << 9));
-
+   if (gp && nvc0_program_validate(nvc0, gp) && gp->code_size) {
       BEGIN_NVC0(push, NVC0_3D(MACRO_GP_SELECT), 1);
       PUSH_DATA (push, 0x41);
       BEGIN_NVC0(push, NVC0_3D(SP_START_ID(4)), 1);
       PUSH_DATA (push, gp->code_base);
       BEGIN_NVC0(push, NVC0_3D(SP_GPR_ALLOC(4)), 1);
       PUSH_DATA (push, gp->num_gprs);
-      BEGIN_NVC0(push, NVC0_3D(LAYER), 1);
-      PUSH_DATA (push, gp_selects_layer ? NVC0_3D_LAYER_USE_GP : 0);
    } else {
-      IMMED_NVC0(push, NVC0_3D(LAYER), 0);
       BEGIN_NVC0(push, NVC0_3D(MACRO_GP_SELECT), 1);
       PUSH_DATA (push, 0x40);
    }
    nvc0_program_update_context_state(nvc0, gp, 3);
+}
+
+void
+nvc0_compprog_validate(struct nvc0_context *nvc0)
+{
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   struct nvc0_program *cp = nvc0->compprog;
+
+   if (cp && !nvc0_program_validate(nvc0, cp))
+      return;
+
+   BEGIN_NVC0(push, NVC0_CP(FLUSH), 1);
+   PUSH_DATA (push, NVC0_COMPUTE_FLUSH_CODE);
+}
+
+void
+nvc0_layer_validate(struct nvc0_context *nvc0)
+{
+   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   struct nvc0_program *last;
+   bool prog_selects_layer = false;
+
+   if (nvc0->gmtyprog)
+      last = nvc0->gmtyprog;
+   else if (nvc0->tevlprog)
+      last = nvc0->tevlprog;
+   else
+      last = nvc0->vertprog;
+
+   if (last)
+      prog_selects_layer = !!(last->hdr[13] & (1 << 9));
+
+   BEGIN_NVC0(push, NVC0_3D(LAYER), 1);
+   PUSH_DATA (push, prog_selects_layer ? NVC0_3D_LAYER_USE_GP : 0);
 }
 
 void
@@ -248,9 +308,8 @@ nvc0_tfb_validate(struct nvc0_context *nvc0)
    }
    nvc0->state.tfb = tfb;
 
-   if (!(nvc0->dirty & NVC0_NEW_TFB_TARGETS))
+   if (!(nvc0->dirty_3d & NVC0_NEW_3D_TFB_TARGETS))
       return;
-   nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_TFB);
 
    for (b = 0; b < nvc0->num_tfbbufs; ++b) {
       struct nvc0_so_target *targ = nvc0_so_target(nvc0->tfbbuf[b]);
@@ -266,20 +325,21 @@ nvc0_tfb_validate(struct nvc0_context *nvc0)
 
       buf = nv04_resource(targ->pipe.buffer);
 
-      BCTX_REFN(nvc0->bufctx_3d, TFB, buf, WR);
+      BCTX_REFN(nvc0->bufctx_3d, 3D_TFB, buf, WR);
 
       if (!(nvc0->tfbbuf_dirty & (1 << b)))
          continue;
 
       if (!targ->clean)
-         nvc0_query_fifo_wait(push, targ->pq);
+         nvc0_hw_query_fifo_wait(nvc0, nvc0_query(targ->pq));
+      nouveau_pushbuf_space(push, 0, 0, 1);
       BEGIN_NVC0(push, NVC0_3D(TFB_BUFFER_ENABLE(b)), 5);
       PUSH_DATA (push, 1);
       PUSH_DATAh(push, buf->address + targ->pipe.buffer_offset);
       PUSH_DATA (push, buf->address + targ->pipe.buffer_offset);
       PUSH_DATA (push, targ->pipe.buffer_size);
       if (!targ->clean) {
-         nvc0_query_pushbuf_submit(push, targ->pq, 0x4);
+         nvc0_hw_query_pushbuf_submit(push, nvc0_query(targ->pq), 0x4);
       } else {
          PUSH_DATA(push, 0); /* TFB_BUFFER_OFFSET */
          targ->clean = false;

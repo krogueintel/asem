@@ -25,6 +25,7 @@
 #include "pipe/p_screen.h"
 #include "util/u_sampler.h"
 #include "util/u_format.h"
+#include "util/u_inlines.h"
 
 using namespace clover;
 
@@ -32,9 +33,9 @@ namespace {
    class box {
    public:
       box(const resource::vector &origin, const resource::vector &size) :
-         pipe({ (int)origin[0], (int)origin[1],
-                (int)origin[2], (int)size[0],
-                (int)size[1], (int)size[2] }) {
+        pipe({ (int)origin[0], (int16_t)origin[1],
+               (int16_t)origin[2], (int)size[0],
+               (int16_t)size[1], (int16_t)size[2] }) {
       }
 
       operator const pipe_box *() {
@@ -136,9 +137,7 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
    info.target = translate_target(obj.type());
    info.bind = (PIPE_BIND_SAMPLER_VIEW |
                 PIPE_BIND_COMPUTE_RESOURCE |
-                PIPE_BIND_GLOBAL |
-                PIPE_BIND_TRANSFER_READ |
-                PIPE_BIND_TRANSFER_WRITE);
+                PIPE_BIND_GLOBAL);
 
    if (obj.flags() & CL_MEM_USE_HOST_PTR && user_ptr_support) {
       // Page alignment is normally required for this, just try, hope for the
@@ -161,9 +160,13 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
       box rect { {{ 0, 0, 0 }}, {{ info.width0, info.height0, info.depth0 }} };
       unsigned cpp = util_format_get_blocksize(info.format);
 
-      q.pipe->transfer_inline_write(q.pipe, pipe, 0, PIPE_TRANSFER_WRITE,
-                                    rect, data_ptr, cpp * info.width0,
-                                    cpp * info.width0 * info.height0);
+      if (pipe->target == PIPE_BUFFER)
+         q.pipe->buffer_subdata(q.pipe, pipe, PIPE_TRANSFER_WRITE,
+                                0, info.width0, data_ptr);
+      else
+         q.pipe->texture_subdata(q.pipe, pipe, 0, PIPE_TRANSFER_WRITE,
+                                 rect, data_ptr, cpp * info.width0,
+                                 cpp * info.width0 * info.height0);
    }
 }
 
@@ -174,7 +177,7 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
 }
 
 root_resource::~root_resource() {
-   device().pipe->resource_destroy(device().pipe, pipe);
+   pipe_resource_reference(&this->pipe, NULL);
 }
 
 sub_resource::sub_resource(resource &r, const vector &offset) :
@@ -187,7 +190,7 @@ mapping::mapping(command_queue &q, resource &r,
                  cl_map_flags flags, bool blocking,
                  const resource::vector &origin,
                  const resource::vector &region) :
-   pctx(q.pipe) {
+   pctx(q.pipe), pres(NULL) {
    unsigned usage = ((flags & CL_MAP_WRITE ? PIPE_TRANSFER_WRITE : 0 ) |
                      (flags & CL_MAP_READ ? PIPE_TRANSFER_READ : 0 ) |
                      (flags & CL_MAP_WRITE_INVALIDATE_REGION ?
@@ -200,12 +203,14 @@ mapping::mapping(command_queue &q, resource &r,
       pxfer = NULL;
       throw error(CL_OUT_OF_RESOURCES);
    }
+   pipe_resource_reference(&pres, r.pipe);
 }
 
 mapping::mapping(mapping &&m) :
-   pctx(m.pctx), pxfer(m.pxfer), p(m.p) {
+   pctx(m.pctx), pxfer(m.pxfer), pres(m.pres), p(m.p) {
    m.pctx = NULL;
    m.pxfer = NULL;
+   m.pres = NULL;
    m.p = NULL;
 }
 
@@ -213,12 +218,14 @@ mapping::~mapping() {
    if (pxfer) {
       pctx->transfer_unmap(pctx, pxfer);
    }
+   pipe_resource_reference(&pres, NULL);
 }
 
 mapping &
 mapping::operator=(mapping m) {
    std::swap(pctx, m.pctx);
    std::swap(pxfer, m.pxfer);
+   std::swap(pres, m.pres);
    std::swap(p, m.p);
    return *this;
 }

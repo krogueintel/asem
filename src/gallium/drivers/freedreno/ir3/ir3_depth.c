@@ -74,9 +74,8 @@ int ir3_delayslots(struct ir3_instruction *assigner,
 	if (is_flow(consumer) || is_sfu(consumer) || is_tex(consumer) ||
 			is_mem(consumer)) {
 		return 6;
-	} else if ((consumer->category == 3) &&
-			(is_mad(consumer->opc) || is_madsh(consumer->opc)) &&
-			(n == 2)) {
+	} else if ((is_mad(consumer->opc) || is_madsh(consumer->opc)) &&
+			(n == 3)) {
 		/* special case, 3rd src to cat3 not required on first cycle */
 		return 1;
 	} else {
@@ -118,6 +117,10 @@ ir3_instr_depth(struct ir3_instruction *instr)
 		/* visit child to compute it's depth: */
 		ir3_instr_depth(src);
 
+		/* for array writes, no need to delay on previous write: */
+		if (i == 0)
+			continue;
+
 		sd = ir3_delayslots(src, instr, i) + src->depth;
 
 		instr->depth = MAX2(instr->depth, sd);
@@ -134,12 +137,12 @@ remove_unused_by_block(struct ir3_block *block)
 {
 	list_for_each_entry_safe (struct ir3_instruction, instr, &block->instr_list, node) {
 		if (!ir3_instr_check_mark(instr)) {
-			if (is_flow(instr) && (instr->opc == OPC_END))
+			if (instr->opc == OPC_END)
 				continue;
 			/* mark it, in case it is input, so we can
 			 * remove unused inputs:
 			 */
-			instr->depth = DEPTH_UNUSED;
+			instr->flags |= IR3_INSTR_UNUSED;
 			/* and remove from instruction list: */
 			list_delinit(&instr->node);
 		}
@@ -156,11 +159,11 @@ ir3_depth(struct ir3 *ir)
 		if (ir->outputs[i])
 			ir3_instr_depth(ir->outputs[i]);
 
-	for (i = 0; i < ir->keeps_count; i++)
-		ir3_instr_depth(ir->keeps[i]);
-
-	/* We also need to account for if-condition: */
 	list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+		for (i = 0; i < block->keeps_count; i++)
+			ir3_instr_depth(block->keeps[i]);
+
+		/* We also need to account for if-condition: */
 		if (block->condition)
 			ir3_instr_depth(block->condition);
 	}
@@ -175,14 +178,14 @@ ir3_depth(struct ir3 *ir)
 	 */
 	for (i = 0; i < ir->indirects_count; i++) {
 		struct ir3_instruction *instr = ir->indirects[i];
-		if (instr->depth == DEPTH_UNUSED)
+		if (instr->flags & IR3_INSTR_UNUSED)
 			ir->indirects[i] = NULL;
 	}
 
 	/* cleanup unused inputs: */
 	for (i = 0; i < ir->ninputs; i++) {
 		struct ir3_instruction *in = ir->inputs[i];
-		if (in && (in->depth == DEPTH_UNUSED))
+		if (in && (in->flags & IR3_INSTR_UNUSED))
 			ir->inputs[i] = NULL;
 	}
 }

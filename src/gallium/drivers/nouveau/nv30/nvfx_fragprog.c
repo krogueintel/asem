@@ -5,6 +5,7 @@
 #include "util/u_dynarray.h"
 #include "util/u_inlines.h"
 #include "util/u_debug.h"
+#include "util/u_memory.h"
 
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_parse.h"
@@ -51,7 +52,6 @@ temp(struct nvfx_fpc *fpc)
 
    if (idx >= fpc->max_temps) {
       NOUVEAU_ERR("out of temps!!\n");
-      assert(0);
       return nvfx_reg(NVFXSR_TEMP, 0);
    }
 
@@ -474,10 +474,10 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       switch (fsrc->Register.File) {
       case TGSI_FILE_INPUT:
          if(fpc->fp->info.input_semantic_name[fsrc->Register.Index] == TGSI_SEMANTIC_FOG && (0
-               || fsrc->Register.SwizzleX == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleY == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleZ == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleW == PIPE_SWIZZLE_ALPHA
+               || fsrc->Register.SwizzleX == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleY == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleZ == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleW == PIPE_SWIZZLE_W
                )) {
             /* hardware puts 0 in fogcoord.w, but GL/Gallium want 1 there */
             struct nvfx_src addend = nvfx_src(nvfx_fp_imm(fpc, 0, 0, 0, 1));
@@ -534,9 +534,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
    sat  = finst->Instruction.Saturate;
 
    switch (finst->Instruction.Opcode) {
-   case TGSI_OPCODE_ABS:
-      nvfx_fp_emit(fpc, arith(sat, MOV, dst, mask, abs(src[0]), none, none));
-      break;
    case TGSI_OPCODE_ADD:
       nvfx_fp_emit(fpc, arith(sat, ADD, dst, mask, src[0], src[1], none));
       break;
@@ -754,9 +751,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       }
       break;
    }
-   case TGSI_OPCODE_SUB:
-      nvfx_fp_emit(fpc, arith(sat, ADD, dst, mask, src[0], neg(src[1]), none));
-      break;
    case TGSI_OPCODE_TEX:
       nvfx_fp_emit(fpc, tex(sat, TEX, unit, dst, mask, src[0], none, none));
       break;
@@ -1125,7 +1119,7 @@ _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
       goto out_err;
 
    tgsi_parse_init(&parse, fp->pipe.tokens);
-   util_dynarray_init(&insns);
+   util_dynarray_init(&insns, NULL);
 
    while (!tgsi_parse_end_of_tokens(&parse)) {
       tgsi_parse_token(&parse);
@@ -1186,7 +1180,7 @@ _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
 
 out:
    tgsi_parse_free(&parse);
-   if(fpc)
+   if (fpc)
    {
       FREE(fpc->r_temp);
       FREE(fpc->r_imm);

@@ -208,17 +208,16 @@ nv30_render_release_vertices(struct vbuf_render *render)
 
 static const struct {
    unsigned emit;
-   unsigned interp;
    unsigned vp30;
    unsigned vp40;
    unsigned ow40;
 } vroute [] = {
-   [TGSI_SEMANTIC_POSITION] = { EMIT_4F, INTERP_PERSPECTIVE, 0, 0, 0x00000000 },
-   [TGSI_SEMANTIC_COLOR   ] = { EMIT_4F, INTERP_LINEAR     , 3, 1, 0x00000001 },
-   [TGSI_SEMANTIC_BCOLOR  ] = { EMIT_4F, INTERP_LINEAR     , 1, 3, 0x00000004 },
-   [TGSI_SEMANTIC_FOG     ] = { EMIT_4F, INTERP_PERSPECTIVE, 5, 5, 0x00000010 },
-   [TGSI_SEMANTIC_PSIZE   ] = { EMIT_1F_PSIZE, INTERP_POS  , 6, 6, 0x00000020 },
-   [TGSI_SEMANTIC_TEXCOORD] = { EMIT_4F, INTERP_PERSPECTIVE, 8, 7, 0x00004000 },
+   [TGSI_SEMANTIC_POSITION] = { EMIT_4F, 0, 0, 0x00000000 },
+   [TGSI_SEMANTIC_COLOR   ] = { EMIT_4F, 3, 1, 0x00000001 },
+   [TGSI_SEMANTIC_BCOLOR  ] = { EMIT_4F, 1, 3, 0x00000004 },
+   [TGSI_SEMANTIC_FOG     ] = { EMIT_4F, 5, 5, 0x00000010 },
+   [TGSI_SEMANTIC_PSIZE   ] = { EMIT_1F_PSIZE, 6, 6, 0x00000020 },
+   [TGSI_SEMANTIC_TEXCOORD] = { EMIT_4F, 8, 7, 0x00004000 },
 };
 
 static bool
@@ -247,7 +246,7 @@ vroute_add(struct nv30_render *r, uint attrib, uint sem, uint *idx)
    if (emit == EMIT_OMIT)
       return false;
 
-   draw_emit_vertex_attr(vinfo, emit, vroute[sem].interp, attrib);
+   draw_emit_vertex_attr(vinfo, emit, attrib);
    format = draw_translate_vinfo_format(emit);
 
    r->vtxfmt[attrib] = nv30_vtxfmt(&screen->base.base, format)->hw;
@@ -355,6 +354,9 @@ nv30_render_validate(struct nv30_context *nv30)
    BEGIN_NV04(push, NV30_3D(DEPTH_RANGE_NEAR), 2);
    PUSH_DATAf(push, 0.0);
    PUSH_DATAf(push, 1.0);
+   BEGIN_NV04(push, NV30_3D(VIEWPORT_HORIZ), 2);
+   PUSH_DATA (push, nv30->framebuffer.width << 16);
+   PUSH_DATA (push, nv30->framebuffer.height << 16);
 
    BEGIN_NV04(push, NV30_3D(VTXFMT(0)), 16);
    PUSH_DATAp(push, r->vtxfmt, 16);
@@ -417,25 +419,26 @@ nv30_render_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    }
 
    for (i = 0; i < nv30->num_vtxbufs; i++) {
-      const void *map = nv30->vtxbuf[i].user_buffer;
+      const void *map = nv30->vtxbuf[i].is_user_buffer ?
+                           nv30->vtxbuf[i].buffer.user : NULL;
       if (!map) {
-         if (nv30->vtxbuf[i].buffer)
-            map = pipe_buffer_map(pipe, nv30->vtxbuf[i].buffer,
+         if (nv30->vtxbuf[i].buffer.resource)
+            map = pipe_buffer_map(pipe, nv30->vtxbuf[i].buffer.resource,
                                   PIPE_TRANSFER_UNSYNCHRONIZED |
                                   PIPE_TRANSFER_READ, &transfer[i]);
       }
       draw_set_mapped_vertex_buffer(draw, i, map, ~0);
    }
 
-   if (info->indexed) {
-      const void *map = nv30->idxbuf.user_buffer;
+   if (info->index_size) {
+      const void *map = info->has_user_indices ? info->index.user : NULL;
       if (!map)
-         map = pipe_buffer_map(pipe, nv30->idxbuf.buffer,
+         map = pipe_buffer_map(pipe, info->index.resource,
                                PIPE_TRANSFER_UNSYNCHRONIZED |
                                PIPE_TRANSFER_READ, &transferi);
       draw_set_indexes(draw,
-                       (ubyte *) map + nv30->idxbuf.offset,
-                       nv30->idxbuf.index_size, ~0);
+                       (ubyte *) map,
+                       info->index_size, ~0);
    } else {
       draw_set_indexes(draw, NULL, 0, 0);
    }
@@ -443,7 +446,7 @@ nv30_render_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    draw_vbo(draw, info);
    draw_flush(draw);
 
-   if (info->indexed && transferi)
+   if (info->index_size && transferi)
       pipe_buffer_unmap(pipe, transferi);
    for (i = 0; i < nv30->num_vtxbufs; i++)
       if (transfer[i])

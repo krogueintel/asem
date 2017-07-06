@@ -65,7 +65,7 @@ _glapi_set_context(void *context)
 void
 _glapi_set_dispatch(struct _glapi_table *dispatch)
 {
-   u_current_set_table((const struct mapi_table *) dispatch);
+   u_current_set_table((const struct _glapi_table *) dispatch);
 }
 
 /**
@@ -175,7 +175,7 @@ _glapi_get_stub(const char *name, int generate)
    const struct mapi_stub *stub;
 
 #ifdef USE_MGL_NAMESPACE
-   if (name)
+   if (name && name[0] == 'm')
       name++;
 #endif
 

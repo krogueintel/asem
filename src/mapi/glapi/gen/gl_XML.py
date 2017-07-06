@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 
 # (C) Copyright IBM Corporation 2004, 2005
 # All Rights Reserved.
@@ -130,7 +129,7 @@ class gl_print_base(object):
                 % (self.name)
         print ''
         print '/*'
-        print ' * ' + self.license.replace('\n', '\n * ')
+        print (' * ' + self.license.replace('\n', '\n * ')).replace(' \n', '\n')
         print ' */'
         print ''
         if self.header_tag:
@@ -223,7 +222,7 @@ class gl_print_base(object):
         """
 
         self.undef_list.append(S)
-        print """#  if (defined(__GNUC__) && !defined(__CYGWIN__) && !defined(__MINGW32__)) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590) && defined(__ELF__))
+        print """#  if defined(__GNUC__) && !defined(__CYGWIN__) && !defined(__MINGW32__)
 #    define %s  __attribute__((visibility("%s")))
 #  else
 #    define %s
@@ -243,7 +242,7 @@ class gl_print_base(object):
         """
 
         self.undef_list.append("NOINLINE")
-        print """#  if defined(__GNUC__) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590))
+        print """#  if defined(__GNUC__)
 #    define NOINLINE __attribute__((noinline))
 #  else
 #    define NOINLINE
@@ -576,7 +575,7 @@ class gl_parameter(object):
                 list.append( str(s) )
 
             if len(list) > 1 and use_parens :
-                return "(%s)" % (string.join(list, " * "))
+                return "safe_mul(%s)" % (string.join(list, ", "))
             else:
                 return string.join(list, " * ")
 
@@ -607,6 +606,7 @@ class gl_function( gl_item ):
         self.exec_flavor = 'mesa'
         self.desktop = True
         self.deprecated = None
+        self.has_no_error_variant = False
 
         # self.entry_point_api_map[name][api] is a decimal value
         # indicating the earliest version of the given API in which
@@ -676,6 +676,11 @@ class gl_function( gl_item ):
 
         if not is_attr_true(element, 'desktop', 'true'):
             self.desktop = False
+
+        if self.has_no_error_variant or is_attr_true(element, 'no_error'):
+            self.has_no_error_variant = True
+        else:
+            self.has_no_error_variant = False
 
         if alias:
             true_name = alias

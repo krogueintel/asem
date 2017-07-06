@@ -30,6 +30,7 @@ libXvMCgallium_la_LIBADD = \
 	$(top_builddir)/src/util/libmesautil.la \
 	$(XVMC_LIBS) \
 	$(VL_LIBS) \
+	$(XCB_DRI3_LIBS) \
 	$(LIBDRM_LIBS) \
 	$(GALLIUM_COMMON_LIB_DEPS)
 
@@ -38,7 +39,7 @@ EXTRA_DIST = xvmc.sym
 
 TARGET_DRIVERS =
 TARGET_CPPFLAGS =
-TARGET_LIB_DEPS = $(top_builddir)/src/loader/libloader.la
+TARGET_LIB_DEPS =
 
 include $(top_srcdir)/src/gallium/drivers/nouveau/Automake.inc
 
@@ -48,17 +49,19 @@ if HAVE_GALLIUM_STATIC_TARGETS
 
 libXvMCgallium_la_SOURCES += target.c
 libXvMCgallium_la_CPPFLAGS = $(TARGET_CPPFLAGS)
-libXvMCgallium_la_LIBADD += $(TARGET_LIB_DEPS) \
+libXvMCgallium_la_LIBADD += \
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_static.la \
+	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
+	$(TARGET_LIB_DEPS) \
 	$(TARGET_RADEON_WINSYS) $(TARGET_RADEON_COMMON)
 
 else # HAVE_GALLIUM_STATIC_TARGETS
 libXvMCgallium_la_LIBADD += \
-	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader.la \
-	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS)
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_dynamic.la
 
 endif # HAVE_GALLIUM_STATIC_TARGETS
 
-if HAVE_MESA_LLVM
+if HAVE_GALLIUM_LLVM
 libXvMCgallium_la_LIBADD += $(LLVM_LIBS)
 libXvMCgallium_la_LDFLAGS += $(LLVM_LDFLAGS)
 endif
@@ -80,7 +83,8 @@ install-data-hook:
 		ln -sf $${l}						\
 		       $${dest_dir}/$${k};				\
 	done;								\
-	$(RM) $${dest_dir}/libXvMCgallium.*
+	$(RM) $${dest_dir}/libXvMCgallium.*;				\
+	$(RM) -d $${dest_dir} &>/dev/null || true
 
 uninstall-hook:
 	for i in $(TARGET_DRIVERS); do					\

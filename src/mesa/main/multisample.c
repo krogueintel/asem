@@ -41,11 +41,16 @@ _mesa_SampleCoverage(GLclampf value, GLboolean invert)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0);
+   value = CLAMP(value, 0.0f, 1.0f);
 
-   ctx->Multisample.SampleCoverageValue = CLAMP(value, 0.0f, 1.0f);
+   if (ctx->Multisample.SampleCoverageInvert == invert &&
+       ctx->Multisample.SampleCoverageValue == value)
+      return;
+
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleMask ? 0 : _NEW_MULTISAMPLE);
+   ctx->NewDriverState |= ctx->DriverFlags.NewSampleMask;
+   ctx->Multisample.SampleCoverageValue = value;
    ctx->Multisample.SampleCoverageInvert = invert;
-   ctx->NewState |= _NEW_MULTISAMPLE;
 }
 
 
@@ -115,7 +120,11 @@ _mesa_SampleMaski(GLuint index, GLbitfield mask)
       return;
    }
 
-   FLUSH_VERTICES(ctx, _NEW_MULTISAMPLE);
+   if (ctx->Multisample.SampleMaskValue == mask)
+      return;
+
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleMask ? 0 : _NEW_MULTISAMPLE);
+   ctx->NewDriverState |= ctx->DriverFlags.NewSampleMask;
    ctx->Multisample.SampleMaskValue = mask;
 }
 
@@ -127,15 +136,21 @@ _mesa_MinSampleShading(GLclampf value)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (!ctx->Extensions.ARB_sample_shading || !_mesa_is_desktop_gl(ctx)) {
+   if (!_mesa_has_ARB_sample_shading(ctx) &&
+       !_mesa_has_OES_sample_shading(ctx)) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "glMinSampleShading");
       return;
    }
 
-   FLUSH_VERTICES(ctx, 0);
+   value = CLAMP(value, 0.0f, 1.0f);
 
-   ctx->Multisample.MinSampleShadingValue = CLAMP(value, 0.0f, 1.0f);
-   ctx->NewState |= _NEW_MULTISAMPLE;
+   if (ctx->Multisample.MinSampleShadingValue == value)
+      return;
+
+   FLUSH_VERTICES(ctx,
+                  ctx->DriverFlags.NewSampleShading ? 0 : _NEW_MULTISAMPLE);
+   ctx->NewDriverState |= ctx->DriverFlags.NewSampleShading;
+   ctx->Multisample.MinSampleShadingValue = value;
 }
 
 /**
@@ -174,10 +189,15 @@ _mesa_check_sample_count(struct gl_context *ctx, GLenum target,
     * for <internalformat> then the error INVALID_OPERATION is generated."
     */
    if (ctx->Extensions.ARB_internalformat_query) {
-      GLint buffer[16];
-      int count = ctx->Driver.QuerySamplesForFormat(ctx, target,
-                                                    internalFormat, buffer);
-      int limit = count ? buffer[0] : -1;
+      GLint buffer[16] = {-1};
+      GLint limit;
+
+      ctx->Driver.QueryInternalFormat(ctx, target, internalFormat,
+                                      GL_SAMPLES, buffer);
+      /* since the query returns samples sorted in descending order,
+       * the first element is the greatest supported sample value.
+       */
+      limit = buffer[0];
 
       return samples > limit ? GL_INVALID_OPERATION : GL_NO_ERROR;
    }

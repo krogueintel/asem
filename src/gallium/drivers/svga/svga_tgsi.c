@@ -50,15 +50,6 @@
  */
 static char err_buf[128];
 
-#if 0
-static void
-svga_destroy_shader_emitter(struct svga_shader_emitter *emit)
-{
-   if (emit->buf != err_buf)
-      FREE(emit->buf);
-}
-#endif
-
 
 static boolean
 svga_shader_expand(struct svga_shader_emitter *emit)
@@ -71,7 +62,7 @@ svga_shader_expand(struct svga_shader_emitter *emit)
    else
       new_buf = NULL;
 
-   if (new_buf == NULL) {
+   if (!new_buf) {
       emit->ptr = err_buf;
       emit->buf = err_buf;
       emit->size = sizeof(err_buf);
@@ -175,11 +166,14 @@ svga_shader_emit_header(struct svga_shader_emitter *emit)
  * it is, it will be copied to a hardware buffer for upload.
  */
 struct svga_shader_variant *
-svga_tgsi_vgpu9_translate(const struct svga_shader *shader,
+svga_tgsi_vgpu9_translate(struct svga_context *svga,
+                          const struct svga_shader *shader,
                           const struct svga_compile_key *key, unsigned unit)
 {
    struct svga_shader_variant *variant = NULL;
    struct svga_shader_emitter emit;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_TGSIVGPU9TRANSLATE);
 
    memset(&emit, 0, sizeof(emit));
 
@@ -227,8 +221,8 @@ svga_tgsi_vgpu9_translate(const struct svga_shader *shader,
       goto fail;
    }
 
-   variant = CALLOC_STRUCT(svga_shader_variant);
-   if (variant == NULL)
+   variant = svga_new_shader_variant(svga);
+   if (!variant)
       goto fail;
 
    variant->shader = shader;
@@ -238,6 +232,13 @@ svga_tgsi_vgpu9_translate(const struct svga_shader *shader,
    variant->id = UTIL_BITMASK_INVALID_INDEX;
 
    variant->pstipple_sampler_unit = emit.pstipple_sampler_unit;
+
+   /* If there was exactly one write to a fragment shader output register
+    * and it came from a constant buffer, we know all fragments will have
+    * the same color (except for blending).
+    */
+   variant->constant_color_output =
+      emit.constant_color_output && emit.num_output_writes == 1;
 
 #if 0
    if (!svga_shader_verify(variant->tokens, variant->nr_tokens) ||
@@ -253,10 +254,15 @@ svga_tgsi_vgpu9_translate(const struct svga_shader *shader,
    }
 #endif
 
-   return variant;
+   goto done;
 
- fail:
+fail:
    FREE(variant);
-   FREE(emit.buf);
-   return NULL;
+   if (emit.buf != err_buf)
+      FREE(emit.buf);
+   variant = NULL;
+
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
+   return variant;
 }

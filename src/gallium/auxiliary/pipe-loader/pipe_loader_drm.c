@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "loader.h"
+#include "target-helpers/drm_helper_public.h"
 #include "state_tracker/drm_driver.h"
 #include "pipe_loader_priv.h"
 
@@ -50,13 +51,110 @@
 
 struct pipe_loader_drm_device {
    struct pipe_loader_device base;
+   const struct drm_driver_descriptor *dd;
+#ifndef GALLIUM_STATIC_TARGETS
    struct util_dl_library *lib;
+#endif
    int fd;
 };
 
 #define pipe_loader_drm_device(dev) ((struct pipe_loader_drm_device *)dev)
 
-static struct pipe_loader_ops pipe_loader_drm_ops;
+static const struct pipe_loader_ops pipe_loader_drm_ops;
+
+#ifdef GALLIUM_STATIC_TARGETS
+static const struct drm_conf_ret throttle_ret = {
+   .type = DRM_CONF_INT,
+   .val.val_int = 2,
+};
+
+static const struct drm_conf_ret share_fd_ret = {
+   .type = DRM_CONF_BOOL,
+   .val.val_bool = true,
+};
+
+static inline const struct drm_conf_ret *
+configuration_query(enum drm_conf conf)
+{
+   switch (conf) {
+   case DRM_CONF_THROTTLE:
+      return &throttle_ret;
+   case DRM_CONF_SHARE_FD:
+      return &share_fd_ret;
+   default:
+      break;
+   }
+   return NULL;
+}
+
+static const struct drm_driver_descriptor driver_descriptors[] = {
+    {
+        .driver_name = "i915",
+        .create_screen = pipe_i915_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "nouveau",
+        .create_screen = pipe_nouveau_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "r300",
+        .create_screen = pipe_r300_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "r600",
+        .create_screen = pipe_r600_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "radeonsi",
+        .create_screen = pipe_radeonsi_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "vmwgfx",
+        .create_screen = pipe_vmwgfx_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "kgsl",
+        .create_screen = pipe_freedreno_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "msm",
+        .create_screen = pipe_freedreno_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+       .driver_name = "pl111",
+        .create_screen = pipe_pl111_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "virtio_gpu",
+        .create_screen = pipe_virgl_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "vc4",
+        .create_screen = pipe_vc4_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "etnaviv",
+        .create_screen = pipe_etna_create_screen,
+        .configuration = configuration_query,
+    },
+    {
+        .driver_name = "imx-drm",
+        .create_screen = pipe_imx_drm_create_screen,
+        .configuration = configuration_query,
+    }
+};
+#endif
 
 bool
 pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd)
@@ -77,14 +175,40 @@ pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd)
    ddev->base.ops = &pipe_loader_drm_ops;
    ddev->fd = fd;
 
-   ddev->base.driver_name = loader_get_driver_for_fd(fd, _LOADER_GALLIUM);
+   ddev->base.driver_name = loader_get_driver_for_fd(fd);
    if (!ddev->base.driver_name)
       goto fail;
+
+#ifdef GALLIUM_STATIC_TARGETS
+   for (int i = 0; i < ARRAY_SIZE(driver_descriptors); i++) {
+      if (strcmp(driver_descriptors[i].driver_name, ddev->base.driver_name) == 0) {
+         ddev->dd = &driver_descriptors[i];
+         break;
+      }
+   }
+   if (!ddev->dd)
+      goto fail;
+#else
+   ddev->lib = pipe_loader_find_module(&ddev->base, PIPE_SEARCH_DIR);
+   if (!ddev->lib)
+      goto fail;
+
+   ddev->dd = (const struct drm_driver_descriptor *)
+      util_dl_get_proc_address(ddev->lib, "driver_descriptor");
+
+   /* sanity check on the driver name */
+   if (!ddev->dd || strcmp(ddev->dd->driver_name, ddev->base.driver_name) != 0)
+      goto fail;
+#endif
 
    *dev = &ddev->base;
    return true;
 
   fail:
+#ifndef GALLIUM_STATIC_TARGETS
+   if (ddev->lib)
+      util_dl_close(ddev->lib);
+#endif
    FREE(ddev);
    return false;
 }
@@ -105,8 +229,9 @@ pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev)
 
    for (i = DRM_RENDER_NODE_MIN_MINOR, j = 0;
         i <= DRM_RENDER_NODE_MAX_MINOR; i++) {
-      fd = open_drm_render_node_minor(i);
       struct pipe_loader_device *dev;
+
+      fd = open_drm_render_node_minor(i);
       if (fd < 0)
          continue;
 
@@ -132,8 +257,10 @@ pipe_loader_drm_release(struct pipe_loader_device **dev)
 {
    struct pipe_loader_drm_device *ddev = pipe_loader_drm_device(*dev);
 
+#ifndef GALLIUM_STATIC_TARGETS
    if (ddev->lib)
       util_dl_close(ddev->lib);
+#endif
 
    close(ddev->fd);
    FREE(ddev->base.driver_name);
@@ -146,47 +273,22 @@ pipe_loader_drm_configuration(struct pipe_loader_device *dev,
                               enum drm_conf conf)
 {
    struct pipe_loader_drm_device *ddev = pipe_loader_drm_device(dev);
-   const struct drm_driver_descriptor *dd;
 
-   if (!ddev->lib)
+   if (!ddev->dd->configuration)
       return NULL;
 
-   dd = (const struct drm_driver_descriptor *)
-      util_dl_get_proc_address(ddev->lib, "driver_descriptor");
-
-   /* sanity check on the name */
-   if (!dd || strcmp(dd->name, ddev->base.driver_name) != 0)
-      return NULL;
-
-   if (!dd->configuration)
-      return NULL;
-
-   return dd->configuration(conf);
+   return ddev->dd->configuration(conf);
 }
 
 static struct pipe_screen *
-pipe_loader_drm_create_screen(struct pipe_loader_device *dev,
-                              const char *library_paths)
+pipe_loader_drm_create_screen(struct pipe_loader_device *dev, unsigned flags)
 {
    struct pipe_loader_drm_device *ddev = pipe_loader_drm_device(dev);
-   const struct drm_driver_descriptor *dd;
 
-   if (!ddev->lib)
-      ddev->lib = pipe_loader_find_module(dev, library_paths);
-   if (!ddev->lib)
-      return NULL;
-
-   dd = (const struct drm_driver_descriptor *)
-      util_dl_get_proc_address(ddev->lib, "driver_descriptor");
-
-   /* sanity check on the name */
-   if (!dd || strcmp(dd->name, ddev->base.driver_name) != 0)
-      return NULL;
-
-   return dd->create_screen(ddev->fd);
+   return ddev->dd->create_screen(ddev->fd, flags);
 }
 
-static struct pipe_loader_ops pipe_loader_drm_ops = {
+static const struct pipe_loader_ops pipe_loader_drm_ops = {
    .create_screen = pipe_loader_drm_create_screen,
    .configuration = pipe_loader_drm_configuration,
    .release = pipe_loader_drm_release

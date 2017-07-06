@@ -24,7 +24,6 @@
 #include <sys/errno.h>
 
 #include "main/condrender.h"
-#include "main/glheader.h"
 #include "main/mtypes.h"
 #include "main/state.h"
 #include "brw_context.h"
@@ -36,9 +35,88 @@
 
 
 static void
+prepare_indirect_gpgpu_walker(struct brw_context *brw)
+{
+   GLintptr indirect_offset = brw->compute.num_work_groups_offset;
+   struct brw_bo *bo = brw->compute.num_work_groups_bo;
+
+   brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMX, bo,
+                         I915_GEM_DOMAIN_VERTEX, 0,
+                         indirect_offset + 0);
+   brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMY, bo,
+                         I915_GEM_DOMAIN_VERTEX, 0,
+                         indirect_offset + 4);
+   brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMZ, bo,
+                         I915_GEM_DOMAIN_VERTEX, 0,
+                         indirect_offset + 8);
+
+   if (brw->gen > 7)
+      return;
+
+   /* Clear upper 32-bits of SRC0 and all 64-bits of SRC1 */
+   BEGIN_BATCH(7);
+   OUT_BATCH(MI_LOAD_REGISTER_IMM | (7 - 2));
+   OUT_BATCH(MI_PREDICATE_SRC0 + 4);
+   OUT_BATCH(0u);
+   OUT_BATCH(MI_PREDICATE_SRC1 + 0);
+   OUT_BATCH(0u);
+   OUT_BATCH(MI_PREDICATE_SRC1 + 4);
+   OUT_BATCH(0u);
+   ADVANCE_BATCH();
+
+   /* Load compute_dispatch_indirect_x_size into SRC0 */
+   brw_load_register_mem(brw, MI_PREDICATE_SRC0, bo,
+                         I915_GEM_DOMAIN_INSTRUCTION, 0,
+                         indirect_offset + 0);
+
+   /* predicate = (compute_dispatch_indirect_x_size == 0); */
+   BEGIN_BATCH(1);
+   OUT_BATCH(GEN7_MI_PREDICATE |
+             MI_PREDICATE_LOADOP_LOAD |
+             MI_PREDICATE_COMBINEOP_SET |
+             MI_PREDICATE_COMPAREOP_SRCS_EQUAL);
+   ADVANCE_BATCH();
+
+   /* Load compute_dispatch_indirect_y_size into SRC0 */
+   brw_load_register_mem(brw, MI_PREDICATE_SRC0, bo,
+                         I915_GEM_DOMAIN_INSTRUCTION, 0,
+                         indirect_offset + 4);
+
+   /* predicate |= (compute_dispatch_indirect_y_size == 0); */
+   BEGIN_BATCH(1);
+   OUT_BATCH(GEN7_MI_PREDICATE |
+             MI_PREDICATE_LOADOP_LOAD |
+             MI_PREDICATE_COMBINEOP_OR |
+             MI_PREDICATE_COMPAREOP_SRCS_EQUAL);
+   ADVANCE_BATCH();
+
+   /* Load compute_dispatch_indirect_z_size into SRC0 */
+   brw_load_register_mem(brw, MI_PREDICATE_SRC0, bo,
+                         I915_GEM_DOMAIN_INSTRUCTION, 0,
+                         indirect_offset + 8);
+
+   /* predicate |= (compute_dispatch_indirect_z_size == 0); */
+   BEGIN_BATCH(1);
+   OUT_BATCH(GEN7_MI_PREDICATE |
+             MI_PREDICATE_LOADOP_LOAD |
+             MI_PREDICATE_COMBINEOP_OR |
+             MI_PREDICATE_COMPAREOP_SRCS_EQUAL);
+   ADVANCE_BATCH();
+
+   /* predicate = !predicate; */
+   BEGIN_BATCH(1);
+   OUT_BATCH(GEN7_MI_PREDICATE |
+             MI_PREDICATE_LOADOP_LOADINV |
+             MI_PREDICATE_COMBINEOP_OR |
+             MI_PREDICATE_COMPAREOP_FALSE);
+   ADVANCE_BATCH();
+}
+
+static void
 brw_emit_gpgpu_walker(struct brw_context *brw)
 {
-   const struct brw_cs_prog_data *prog_data = brw->cs.prog_data;
+   const struct brw_cs_prog_data *prog_data =
+      brw_cs_prog_data(brw->cs.base.prog_data);
 
    const GLuint *num_groups = brw->compute.num_work_groups;
    uint32_t indirect_flag;
@@ -46,20 +124,10 @@ brw_emit_gpgpu_walker(struct brw_context *brw)
    if (brw->compute.num_work_groups_bo == NULL) {
       indirect_flag = 0;
    } else {
-      GLintptr indirect_offset = brw->compute.num_work_groups_offset;
-      drm_intel_bo *bo = brw->compute.num_work_groups_bo;
-
-      indirect_flag = GEN7_GPGPU_INDIRECT_PARAMETER_ENABLE;
-
-      brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMX, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
-                            indirect_offset + 0);
-      brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMY, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
-                            indirect_offset + 4);
-      brw_load_register_mem(brw, GEN7_GPGPU_DISPATCHDIMZ, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
-                            indirect_offset + 8);
+      indirect_flag =
+         GEN7_GPGPU_INDIRECT_PARAMETER_ENABLE |
+         (brw->gen == 7 ? GEN7_GPGPU_PREDICATE_ENABLE : 0);
+      prepare_indirect_gpgpu_walker(brw);
    }
 
    const unsigned simd_size = prog_data->simd_size;
@@ -81,7 +149,7 @@ brw_emit_gpgpu_walker(struct brw_context *brw)
       OUT_BATCH(0);                     /* Indirect Data Length */
       OUT_BATCH(0);                     /* Indirect Data Start Address */
    }
-   assert(thread_width_max <= brw->max_cs_threads);
+   assert(thread_width_max <= brw->screen->devinfo.max_cs_threads);
    OUT_BATCH(SET_FIELD(simd_size / 16, GPGPU_WALKER_SIMD_SIZE) |
              SET_FIELD(thread_width_max - 1, GPGPU_WALKER_THREAD_WIDTH_MAX));
    OUT_BATCH(0);                        /* Thread Group ID Starting X */
@@ -144,22 +212,17 @@ brw_dispatch_compute_common(struct gl_context *ctx)
 
    brw->no_batch_wrap = false;
 
-   if (dri_bufmgr_check_aperture_space(&brw->batch.bo, 1)) {
+   if (!brw_batch_has_aperture_space(brw, 0)) {
       if (!fail_next) {
          intel_batchbuffer_reset_to_saved(brw);
          intel_batchbuffer_flush(brw);
          fail_next = true;
          goto retry;
       } else {
-         if (intel_batchbuffer_flush(brw) == -ENOSPC) {
-            static bool warned = false;
-
-            if (!warned) {
-               fprintf(stderr, "i965: Single compute shader dispatch "
-                       "exceeded available aperture space\n");
-               warned = true;
-            }
-         }
+         int ret = intel_batchbuffer_flush(brw);
+         WARN_ONCE(ret == -ENOSPC,
+                   "i965: Single compute shader dispatch "
+                   "exceeded available aperture space\n");
       }
    }
 
@@ -171,7 +234,7 @@ brw_dispatch_compute_common(struct gl_context *ctx)
    if (brw->always_flush_batch)
       intel_batchbuffer_flush(brw);
 
-   brw_state_cache_check_size(brw);
+   brw_program_cache_check_size(brw);
 
    /* Note: since compute shaders can't write to framebuffers, there's no need
     * to call brw_postdraw_set_buffers_need_resolve().
@@ -195,7 +258,7 @@ brw_dispatch_compute_indirect(struct gl_context *ctx, GLintptr indirect)
    struct brw_context *brw = brw_context(ctx);
    static const GLuint indirect_group_counts[3] = { 0, 0, 0 };
    struct gl_buffer_object *indirect_buffer = ctx->DispatchIndirectBuffer;
-   drm_intel_bo *bo =
+   struct brw_bo *bo =
       intel_bufferobj_buffer(brw,
                              intel_buffer_object(indirect_buffer),
                              indirect, 3 * sizeof(GLuint));

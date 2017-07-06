@@ -45,6 +45,10 @@ _mesa_LineWidth( GLfloat width )
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glLineWidth %f\n", width);
 
+   /* If width is unchanged, there can't be an error */
+   if (ctx->Line.Width == width)
+      return;
+
    if (width <= 0.0F) {
       _mesa_error( ctx, GL_INVALID_VALUE, "glLineWidth" );
       return;
@@ -68,10 +72,8 @@ _mesa_LineWidth( GLfloat width )
       return;
    }
 
-   if (ctx->Line.Width == width)
-      return;
-
-   FLUSH_VERTICES(ctx, _NEW_LINE);
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE);
+   ctx->NewDriverState |= ctx->DriverFlags.NewLineState;
    ctx->Line.Width = width;
 
    if (ctx->Driver.LineWidth)
@@ -105,7 +107,8 @@ _mesa_LineStipple( GLint factor, GLushort pattern )
        ctx->Line.StipplePattern == pattern)
       return;
 
-   FLUSH_VERTICES(ctx, _NEW_LINE);
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE);
+   ctx->NewDriverState |= ctx->DriverFlags.NewLineState;
    ctx->Line.StippleFactor = factor;
    ctx->Line.StipplePattern = pattern;
 

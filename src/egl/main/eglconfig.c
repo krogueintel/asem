@@ -37,6 +37,7 @@
 #include <string.h>
 #include <assert.h>
 #include "c99_compat.h"
+#include "util/macros.h"
 
 #include "eglconfig.h"
 #include "egldisplay.h"
@@ -44,7 +45,6 @@
 #include "egllog.h"
 
 
-#define MIN2(A, B)  (((A) < (B)) ? (A) : (B))
 
 
 /**
@@ -246,7 +246,13 @@ static const struct {
    /* extensions */
    { EGL_Y_INVERTED_NOK,            ATTRIB_TYPE_BOOLEAN,
                                     ATTRIB_CRITERION_EXACT,
-                                    EGL_DONT_CARE }
+                                    EGL_DONT_CARE },
+   { EGL_FRAMEBUFFER_TARGET_ANDROID, ATTRIB_TYPE_BOOLEAN,
+                                    ATTRIB_CRITERION_EXACT,
+                                    EGL_DONT_CARE },
+   { EGL_RECORDABLE_ANDROID,        ATTRIB_TYPE_BOOLEAN,
+                                    ATTRIB_CRITERION_EXACT,
+                                    EGL_DONT_CARE },
 };
 
 
@@ -489,6 +495,10 @@ _eglIsConfigAttribValid(_EGLConfig *conf, EGLint attr)
    switch (attr) {
    case EGL_Y_INVERTED_NOK:
       return conf->Display->Extensions.NOK_texture_from_pixmap;
+   case EGL_FRAMEBUFFER_TARGET_ANDROID:
+      return conf->Display->Extensions.ANDROID_framebuffer_target;
+   case EGL_RECORDABLE_ANDROID:
+      return conf->Display->Extensions.ANDROID_recordable;
    default:
       break;
    }
@@ -589,14 +599,14 @@ _eglCompareConfigs(const _EGLConfig *conf1, const _EGLConfig *conf2,
       return 0;
 
    /* the enum values have the desired ordering */
-   assert(EGL_NONE < EGL_SLOW_CONFIG);
-   assert(EGL_SLOW_CONFIG < EGL_NON_CONFORMANT_CONFIG);
+   STATIC_ASSERT(EGL_NONE < EGL_SLOW_CONFIG);
+   STATIC_ASSERT(EGL_SLOW_CONFIG < EGL_NON_CONFORMANT_CONFIG);
    val1 = conf1->ConfigCaveat - conf2->ConfigCaveat;
    if (val1)
       return val1;
 
    /* the enum values have the desired ordering */
-   assert(EGL_RGB_BUFFER < EGL_LUMINANCE_BUFFER);
+   STATIC_ASSERT(EGL_RGB_BUFFER < EGL_LUMINANCE_BUFFER);
    val1 = conf1->ColorBufferType - conf2->ColorBufferType;
    if (val1)
       return val1;
@@ -718,7 +728,7 @@ _eglFilterConfigArray(_EGLArray *array, EGLConfig *configs,
    EGLint i, count;
 
    if (!num_configs)
-      return _eglError(EGL_BAD_PARAMETER, "eglChooseConfigs");
+      return _eglError(EGL_BAD_PARAMETER, "eglChooseConfig");
 
    /* get the number of matched configs */
    count = _eglFilterArray(array, NULL, 0,

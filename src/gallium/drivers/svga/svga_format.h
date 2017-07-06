@@ -52,6 +52,10 @@ struct svga_screen;
 #define VF_PUINT_TO_USCALED (1 << 6)  /* 10_10_10_2 to uscaled */
 #define VF_PUINT_TO_SSCALED (1 << 7)  /* 10_10_10_2 to sscaled */
 
+/**
+ * Texture format flags.
+ */
+#define TF_GEN_MIPS         (1 << 8)  /* supports hw generate mipmap */
 
 void
 svga_translate_vertex_format_vgpu10(enum pipe_format format,
@@ -59,7 +63,7 @@ svga_translate_vertex_format_vgpu10(enum pipe_format format,
                                     unsigned *vf_flags);
 
 enum SVGA3dSurfaceFormat
-svga_translate_format(struct svga_screen *ss,
+svga_translate_format(const struct svga_screen *ss,
                       enum pipe_format format,
                       unsigned bind);
 
@@ -80,6 +84,9 @@ svga_format_name(SVGA3dSurfaceFormat format);
 boolean
 svga_format_is_integer(SVGA3dSurfaceFormat format);
 
+boolean
+svga_format_support_gen_mips(enum pipe_format format);
+
 enum tgsi_return_type
 svga_get_texture_datatype(enum pipe_format format);
 
@@ -93,4 +100,24 @@ SVGA3dSurfaceFormat
 svga_typeless_format(SVGA3dSurfaceFormat format);
 
 
+SVGA3dSurfaceFormat
+svga_sampler_format(SVGA3dSurfaceFormat format);
+
+
+bool
+svga_format_is_uncompressed_snorm(SVGA3dSurfaceFormat format);
+
+
+bool
+svga_format_is_typeless(SVGA3dSurfaceFormat format);
+
+bool
+svga_format_is_shareable(const struct svga_screen *ss,
+                         enum pipe_format pformat,
+                         SVGA3dSurfaceFormat sformat,
+                         unsigned bind,
+                         bool verbose);
+
+SVGA3dSurfaceFormat
+svga_linear_to_srgb(SVGA3dSurfaceFormat format);
 #endif /* SVGA_FORMAT_H_ */
