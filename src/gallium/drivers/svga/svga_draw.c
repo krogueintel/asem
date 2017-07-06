@@ -38,6 +38,7 @@
 #include "svga_resource.h"
 #include "svga_resource_buffer.h"
 #include "svga_resource_texture.h"
+#include "svga_sampler_view.h"
 #include "svga_shader.h"
 #include "svga_surface.h"
 #include "svga_winsys.h"
@@ -198,6 +199,24 @@ draw_vgpu9(struct svga_hwtnl *hwtnl)
    SVGA3dVertexDecl *vdecl;
    SVGA3dPrimitiveRange *prim;
    unsigned i;
+
+   /* Re-validate those sampler views with backing copy
+    * of texture whose original copy has been updated.
+    * This is done here at draw time because the texture binding might not
+    * have modified, hence validation is not triggered at state update time,
+    * and yet the texture might have been updated in another context, so
+    * we need to re-validate the sampler view in order to update the backing
+    * copy of the updated texture.
+    */
+   if (svga->state.hw_draw.num_backed_views) {
+      for (i = 0; i < svga->state.hw_draw.num_views; i++) {
+         struct svga_hw_view_state *view = &svga->state.hw_draw.views[i];
+         struct svga_texture *tex = svga_texture(view->texture);
+         struct svga_sampler_view *sv = view->v;
+         if (sv && tex && sv->handle != tex->handle && sv->age < tex->age)
+            svga_validate_sampler_view(svga, view->v);
+      }
+   }
 
    for (i = 0; i < hwtnl->cmd.vdecl_count; i++) {
       unsigned j = hwtnl->cmd.vdecl_buffer_index[i];
@@ -529,9 +548,9 @@ draw_vgpu10(struct svga_hwtnl *hwtnl,
       struct svga_buffer *sbuf = svga_buffer(hwtnl->cmd.vbufs[i].buffer.resource);
 
       if (sbuf) {
-         assert(sbuf->key.flags & SVGA3D_SURFACE_BIND_VERTEX_BUFFER);
          vbuffer_handles[i] = svga_buffer_handle(svga, &sbuf->b.b,
                                                  PIPE_BIND_VERTEX_BUFFER);
+         assert(sbuf->key.flags & SVGA3D_SURFACE_BIND_VERTEX_BUFFER);
          if (vbuffer_handles[i] == NULL)
             return PIPE_ERROR_OUT_OF_MEMORY;
          vbuffers[i] = &sbuf->b.b;

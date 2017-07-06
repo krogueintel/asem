@@ -351,6 +351,7 @@ swr_create_vs_state(struct pipe_context *pipe,
       for (uint32_t i = 0; i < MAX_SO_STREAMS; i++) {
         swr_vs->soState.streamNumEntries[i] =
              _mm_popcnt_u32(swr_vs->soState.streamMasks[i]);
+        swr_vs->soState.vertexAttribOffset[i] = VERTEX_ATTRIB_START_SLOT; // TODO: optimize
        }
    }
 
@@ -1212,37 +1213,18 @@ swr_update_derived(struct pipe_context *pipe,
       SwrSetViewports(ctx->swrContext, 1, vp, vpm);
    }
 
-   /* Set vertex & index buffers */
-   /* (using draw info if called by swr_draw_vbo) */
-   /* TODO: This is always true, because the index buffer comes from
+   /* Set vertex & index buffers
+    * (using draw info if called by swr_draw_vbo)
+    * If indexed draw, revalidate since index buffer comes from
     * pipe_draw_info.
     */
-   if (1 || ctx->dirty & SWR_NEW_VERTEX) {
-      uint32_t scratch_total;
-      uint8_t *scratch = NULL;
+   if (ctx->dirty & SWR_NEW_VERTEX ||
+      (p_draw_info && p_draw_info->index_size)) {
 
       /* If being called by swr_draw_vbo, copy draw details */
       struct pipe_draw_info info = {0};
       if (p_draw_info)
          info = *p_draw_info;
-
-      /* We must get all the scratch space in one go */
-      scratch_total = 0;
-      for (UINT i = 0; i < ctx->num_vertex_buffers; i++) {
-         struct pipe_vertex_buffer *vb = &ctx->vertex_buffer[i];
-
-         if (!vb->is_user_buffer)
-            continue;
-
-         uint32_t elems, base, size;
-         swr_user_vbuf_range(&info, ctx->velems, vb, i, &elems, &base, &size);
-         scratch_total += AlignUp(size, 4);
-      }
-
-      if (scratch_total) {
-         scratch = (uint8_t *)swr_copy_to_scratch_space(
-               ctx, &ctx->scratch->vertex_buffer, NULL, scratch_total);
-      }
 
       /* vertex buffers */
       SWR_VERTEX_BUFFER_STATE swrVertexBuffers[PIPE_MAX_ATTRIBS];
@@ -1288,9 +1270,8 @@ swr_update_derived(struct pipe_context *pipe,
             /* Copy only needed vertices to scratch space */
             size = AlignUp(size, 4);
             const void *ptr = (const uint8_t *) vb->buffer.user + base;
-            memcpy(scratch, ptr, size);
-            ptr = scratch;
-            scratch += size;
+            ptr = (uint8_t *)swr_copy_to_scratch_space(
+               ctx, &ctx->scratch->vertex_buffer, ptr, size);
             p_data = (const uint8_t *)ptr - base;
          }
 
@@ -1313,7 +1294,7 @@ swr_update_derived(struct pipe_context *pipe,
          const uint8_t *p_data;
          uint32_t size, pitch;
 
-         pitch = p_draw_info->index_size ? p_draw_info->index_size : sizeof(uint32_t);
+         pitch = info.index_size ? info.index_size : sizeof(uint32_t);
          index_type = swr_convert_index_type(pitch);
 
          if (!info.has_user_indices) {
@@ -1339,7 +1320,7 @@ swr_update_derived(struct pipe_context *pipe,
          }
 
          SWR_INDEX_BUFFER_STATE swrIndexBuffer;
-         swrIndexBuffer.format = swr_convert_index_type(p_draw_info->index_size);
+         swrIndexBuffer.format = swr_convert_index_type(info.index_size);
          swrIndexBuffer.pIndices = p_data;
          swrIndexBuffer.size = size;
 
@@ -1767,6 +1748,7 @@ swr_update_derived(struct pipe_context *pipe,
       &ctx->vs->info.base;
    backendState.readRenderTargetArrayIndex = pLastFE->writes_layer;
    backendState.readViewportArrayIndex = pLastFE->writes_viewport_index;
+   backendState.vertexAttribOffset = VERTEX_ATTRIB_START_SLOT; // TODO: optimize
 
    SwrSetBackendState(ctx->swrContext, &backendState);
 

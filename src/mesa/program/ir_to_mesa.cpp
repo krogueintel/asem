@@ -2409,10 +2409,8 @@ namespace {
 class add_uniform_to_shader : public program_resource_visitor {
 public:
    add_uniform_to_shader(struct gl_shader_program *shader_program,
-			 struct gl_program_parameter_list *params,
-                         gl_shader_stage shader_type)
-      : shader_program(shader_program), params(params), idx(-1),
-        shader_type(shader_type)
+			 struct gl_program_parameter_list *params)
+      : shader_program(shader_program), params(params), idx(-1)
    {
       /* empty */
    }
@@ -2435,7 +2433,6 @@ private:
    struct gl_program_parameter_list *params;
    int idx;
    ir_variable *var;
-   gl_shader_stage shader_type;
 };
 
 } /* anonymous namespace */
@@ -2453,13 +2450,12 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
    if (type->contains_opaque() && !var->data.bindless)
       return;
 
-   int index = _mesa_lookup_parameter_index(params, name);
-   if (index < 0) {
-      unsigned size = type_size(type) * 4;
+   assert(_mesa_lookup_parameter_index(params, name) < 0);
 
-      index = _mesa_add_parameter(params, PROGRAM_UNIFORM, name, size,
-                                  type->gl_type, NULL, NULL);
-   }
+   unsigned size = type_size(type) * 4;
+
+   int index = _mesa_add_parameter(params, PROGRAM_UNIFORM, name, size,
+                                   type->gl_type, NULL, NULL);
 
    /* The first part of the uniform that's processed determines the base
     * location of the whole uniform (for structures).
@@ -2483,7 +2479,7 @@ _mesa_generate_parameters_list_for_uniforms(struct gl_shader_program
 					    struct gl_program_parameter_list
 					    *params)
 {
-   add_uniform_to_shader add(shader_program, params, sh->Stage);
+   add_uniform_to_shader add(shader_program, params);
 
    foreach_in_list(ir_instruction, node, sh->ir) {
       ir_variable *var = node->as_variable();
