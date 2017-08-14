@@ -42,7 +42,7 @@ namespace {
 
 device::device(clover::platform &platform, pipe_loader_device *ldev) :
    platform(platform), ldev(ldev) {
-   pipe = pipe_loader_create_screen(ldev, 0);
+   pipe = pipe_loader_create_screen(ldev);
    if (!pipe || !pipe->get_param(pipe, PIPE_CAP_COMPUTE)) {
       if (pipe)
          pipe->destroy(pipe);
@@ -239,4 +239,14 @@ device::ir_target() const {
 enum pipe_endian
 device::endianness() const {
    return (enum pipe_endian)pipe->get_param(pipe, PIPE_CAP_ENDIANNESS);
+}
+
+std::string
+device::device_version() const {
+    return "1.1";
+}
+
+std::string
+device::device_clc_version() const {
+    return "1.1";
 }

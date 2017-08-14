@@ -40,21 +40,23 @@ static void ac_init_llvm_target()
 	LLVMInitializeAMDGPUTargetMC();
 	LLVMInitializeAMDGPUAsmPrinter();
 
-	/*
-	 * Workaround for bug in llvm 4.0 that causes image intrinsics
+	/* For inline assembly. */
+	LLVMInitializeAMDGPUAsmParser();
+
+	/* Workaround for bug in llvm 4.0 that causes image intrinsics
 	 * to disappear.
 	 * https://reviews.llvm.org/D26348
 	 */
-#if HAVE_LLVM >= 0x0400
-	const char *argv[2] = {"mesa", "-simplifycfg-sink-common=false"};
-	LLVMParseCommandLineOptions(2, argv, NULL);
-#endif
-
+	if (HAVE_LLVM >= 0x0400) {
+		/* "mesa" is the prefix for error messages */
+		const char *argv[2] = { "mesa", "-simplifycfg-sink-common=false" };
+		LLVMParseCommandLineOptions(2, argv, NULL);
+	}
 }
 
 static once_flag ac_init_llvm_target_once_flag = ONCE_FLAG_INIT;
 
-static LLVMTargetRef ac_get_llvm_target(const char *triple)
+LLVMTargetRef ac_get_llvm_target(const char *triple)
 {
 	LLVMTargetRef target = NULL;
 	char *err_message = NULL;
@@ -118,17 +120,22 @@ static const char *ac_get_llvm_processor_name(enum radeon_family family)
 	}
 }
 
-LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family, bool supports_spill)
+LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family, enum ac_target_machine_options tm_options)
 {
 	assert(family >= CHIP_TAHITI);
-
-	const char *triple = supports_spill ? "amdgcn-mesa-mesa3d" : "amdgcn--";
+	char features[256];
+	const char *triple = (tm_options & AC_TM_SUPPORTS_SPILL) ? "amdgcn-mesa-mesa3d" : "amdgcn--";
 	LLVMTargetRef target = ac_get_llvm_target(triple);
+
+	snprintf(features, sizeof(features),
+		 "+DumpCode,+vgpr-spilling,-fp32-denormals%s",
+		 tm_options & AC_TM_SISCHED ? ",+si-scheduler" : "");
+	
 	LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
 	                             target,
 	                             triple,
 	                             ac_get_llvm_processor_name(family),
-	                             "+DumpCode,+vgpr-spilling,-fp32-denormals,-xnack",
+				     features,
 	                             LLVMCodeGenLevelDefault,
 	                             LLVMRelocDefault,
 	                             LLVMCodeModelDefault);

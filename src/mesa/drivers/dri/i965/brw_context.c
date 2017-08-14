@@ -194,8 +194,6 @@ intel_update_state(struct gl_context * ctx)
    if (new_state & _NEW_POLYGON)
       brw->polygon_front_bit = _mesa_polygon_get_front_bit(ctx);
 
-   intel_prepare_render(brw);
-
    if (new_state & _NEW_BUFFERS) {
       intel_update_framebuffer(ctx, ctx->DrawBuffer);
       if (ctx->DrawBuffer != ctx->ReadBuffer)
@@ -256,7 +254,7 @@ intel_finish(struct gl_context * ctx)
    intel_glFlush(ctx);
 
    if (brw->batch.last_bo)
-      brw_bo_wait_rendering(brw, brw->batch.last_bo);
+      brw_bo_wait_rendering(brw->batch.last_bo);
 }
 
 static void
@@ -614,8 +612,11 @@ brw_initialize_context_constants(struct brw_context *brw)
     *      the element in the buffer."
     *
     * However, unaligned accesses are slower, so enforce buffer alignment.
+    *
+    * In order to push UBO data, 3DSTATE_CONSTANT_XS imposes an additional
+    * restriction: the start of the buffer needs to be 32B aligned.
     */
-   ctx->Const.UniformBufferOffsetAlignment = 16;
+   ctx->Const.UniformBufferOffsetAlignment = 32;
 
    /* ShaderStorageBufferOffsetAlignment should be a cacheline (64 bytes) so
     * that we can safely have the CPU and GPU writing the same SSBO on
@@ -744,6 +745,9 @@ brw_process_driconf_options(struct brw_context *brw)
           brw->has_separate_stencil = false;
    }
 
+   if (driQueryOptionb(options, "mesa_no_error"))
+      ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR;
+
    if (driQueryOptionb(options, "always_flush_batch")) {
       fprintf(stderr, "flushing batchbuffer before/after each draw call\n");
       brw->always_flush_batch = true;
@@ -810,8 +814,9 @@ brwCreateContext(gl_api api,
    /* Only allow the __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS flag if the kernel
     * provides us with context reset notifications.
     */
-   uint32_t allowed_flags = __DRI_CTX_FLAG_DEBUG
-      | __DRI_CTX_FLAG_FORWARD_COMPATIBLE;
+   uint32_t allowed_flags = __DRI_CTX_FLAG_DEBUG |
+                            __DRI_CTX_FLAG_FORWARD_COMPATIBLE |
+                            __DRI_CTX_FLAG_NO_ERROR;
 
    if (screen->has_context_reset_notification)
       allowed_flags |= __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS;
@@ -853,7 +858,7 @@ brwCreateContext(gl_api api,
    brw->must_use_separate_stencil = devinfo->must_use_separate_stencil;
    brw->has_swizzling = screen->hw_has_swizzling;
 
-   isl_device_init(&brw->isl_dev, devinfo, screen->hw_has_swizzling);
+   brw->isl_dev = screen->isl_dev;
 
    brw->vs.base.stage = MESA_SHADER_VERTEX;
    brw->tcs.base.stage = MESA_SHADER_TESS_CTRL;
@@ -1214,7 +1219,7 @@ intel_resolve_for_dri2_flush(struct brw_context *brw,
       rb = intel_get_renderbuffer(fb, buffers[i]);
       if (rb == NULL || rb->mt == NULL)
          continue;
-      if (rb->mt->num_samples <= 1) {
+      if (rb->mt->surf.samples == 1) {
          assert(rb->mt_layer == 0 && rb->mt_level == 0 &&
                 rb->layer_count == 1);
          intel_miptree_prepare_access(brw, rb->mt, 0, 1, 0, 1, false, false);
@@ -1504,9 +1509,34 @@ intel_process_dri2_buffer(struct brw_context *brw,
       return;
    }
 
-   intel_update_winsys_renderbuffer_miptree(brw, rb, bo,
-                                            drawable->w, drawable->h,
-                                            buffer->pitch);
+   struct intel_mipmap_tree *mt =
+      intel_miptree_create_for_bo(brw,
+                                  bo,
+                                  intel_rb_format(rb),
+                                  0,
+                                  drawable->w,
+                                  drawable->h,
+                                  1,
+                                  buffer->pitch,
+                                  MIPTREE_CREATE_DEFAULT);
+   if (!mt) {
+      brw_bo_unreference(bo);
+      return;
+   }
+
+   /* We got this BO from X11.  We cana't assume that we have coherent texture
+    * access because X may suddenly decide to use it for scan-out which would
+    * destroy coherency.
+    */
+   bo->cache_coherent = false;
+
+   if (!intel_update_winsys_renderbuffer_miptree(brw, rb, mt,
+                                                 drawable->w, drawable->h,
+                                                 buffer->pitch)) {
+      brw_bo_unreference(bo);
+      intel_miptree_release(&mt);
+      return;
+   }
 
    if (_mesa_is_front_buffer_drawing(fb) &&
        (buffer->attachment == __DRI_BUFFER_FRONT_LEFT ||
@@ -1562,9 +1592,30 @@ intel_update_image_buffer(struct brw_context *intel,
    if (last_mt && last_mt->bo == buffer->bo)
       return;
 
-   intel_update_winsys_renderbuffer_miptree(intel, rb, buffer->bo,
-                                            buffer->width, buffer->height,
-                                            buffer->pitch);
+   enum isl_colorspace colorspace;
+   switch (_mesa_get_format_color_encoding(intel_rb_format(rb))) {
+   case GL_SRGB:
+      colorspace = ISL_COLORSPACE_SRGB;
+      break;
+   case GL_LINEAR:
+      colorspace = ISL_COLORSPACE_LINEAR;
+      break;
+   default:
+      unreachable("Invalid color encoding");
+   }
+
+   struct intel_mipmap_tree *mt =
+      intel_miptree_create_for_dri_image(intel, buffer, GL_TEXTURE_2D,
+                                         colorspace, true);
+   if (!mt)
+      return;
+
+   if (!intel_update_winsys_renderbuffer_miptree(intel, rb, mt,
+                                                 buffer->width, buffer->height,
+                                                 buffer->pitch)) {
+      intel_miptree_release(&mt);
+      return;
+   }
 
    if (_mesa_is_front_buffer_drawing(fb) &&
        buffer_type == __DRI_IMAGE_BUFFER_FRONT &&

@@ -382,6 +382,11 @@ void radv_CmdResolveImage(
 	radv_meta_save_graphics_reset_vport_scissor_novertex(&saved_state, cmd_buffer);
 
 	assert(src_image->info.samples > 1);
+	if (src_image->info.samples <= 1) {
+		/* this causes GPU hangs if we get past here */
+		fprintf(stderr, "radv: Illegal resolve operation (src not multisampled), will hang GPU.");
+		return;
+	}
 	assert(dest_image->info.samples == 1);
 
 	if (src_image->info.samples >= 16) {
@@ -560,6 +565,11 @@ radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 	for (uint32_t i = 0; i < subpass->color_count; ++i) {
 		VkAttachmentReference src_att = subpass->color_attachments[i];
 		VkAttachmentReference dest_att = subpass->resolve_attachments[i];
+
+		if (src_att.attachment == VK_ATTACHMENT_UNUSED ||
+		    dest_att.attachment == VK_ATTACHMENT_UNUSED)
+			continue;
+
 		struct radv_image *dst_img = cmd_buffer->state.framebuffer->attachments[dest_att.attachment].attachment->image;
 		struct radv_image *src_img = cmd_buffer->state.framebuffer->attachments[src_att.attachment].attachment->image;
 
@@ -582,9 +592,12 @@ radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 	for (uint32_t i = 0; i < subpass->color_count; ++i) {
 		VkAttachmentReference src_att = subpass->color_attachments[i];
 		VkAttachmentReference dest_att = subpass->resolve_attachments[i];
-		struct radv_image *dst_img = cmd_buffer->state.framebuffer->attachments[dest_att.attachment].attachment->image;
-		if (dest_att.attachment == VK_ATTACHMENT_UNUSED)
+
+		if (src_att.attachment == VK_ATTACHMENT_UNUSED ||
+		    dest_att.attachment == VK_ATTACHMENT_UNUSED)
 			continue;
+
+		struct radv_image *dst_img = cmd_buffer->state.framebuffer->attachments[dest_att.attachment].attachment->image;
 
 		if (dst_img->surface.dcc_size) {
 			radv_initialize_dcc(cmd_buffer, dst_img, 0xffffffff);

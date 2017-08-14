@@ -1539,8 +1539,8 @@ check_compatible(const struct gl_context *ctx,
  * Check if the viewport/scissor size has not yet been initialized.
  * Initialize the size if the given width and height are non-zero.
  */
-void
-_mesa_check_init_viewport(struct gl_context *ctx, GLuint width, GLuint height)
+static void
+check_init_viewport(struct gl_context *ctx, GLuint width, GLuint height)
 {
    if (!ctx->ViewportInitialized && width > 0 && height > 0) {
       unsigned i;
@@ -1663,8 +1663,9 @@ _mesa_make_current( struct gl_context *newCtx,
        /* make sure this context is valid for flushing */
        curCtx != newCtx &&
        curCtx->Const.ContextReleaseBehavior ==
-       GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH)
+       GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH) {
       _mesa_flush(curCtx);
+   }
 
    /* We used to call _glapi_check_multithread() here.  Now do it in drivers */
 
@@ -1723,8 +1724,7 @@ _mesa_make_current( struct gl_context *newCtx,
           */
          newCtx->NewState |= _NEW_BUFFERS;
 
-         _mesa_check_init_viewport(newCtx,
-                                   drawBuffer->Width, drawBuffer->Height);
+         check_init_viewport(newCtx, drawBuffer->Width, drawBuffer->Height);
       }
 
       if (newCtx->FirstTimeCurrent) {

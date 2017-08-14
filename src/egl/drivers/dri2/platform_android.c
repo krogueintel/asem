@@ -329,7 +329,7 @@ droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
    if (type == EGL_WINDOW_BIT) {
       int format;
 
-      if (!window || window->common.magic != ANDROID_NATIVE_WINDOW_MAGIC) {
+      if (window->common.magic != ANDROID_NATIVE_WINDOW_MAGIC) {
          _eglError(EGL_BAD_NATIVE_WINDOW, "droid_create_surface");
          goto cleanup_surface;
       }
@@ -1003,17 +1003,26 @@ droid_get_buffers_with_format(__DRIdrawable * driDrawable,
    if (update_buffers(dri2_surf) < 0)
       return NULL;
 
-   dri2_surf->buffer_count =
-      droid_get_buffers_parse_attachments(dri2_surf, attachments, count);
+   *out_count = droid_get_buffers_parse_attachments(dri2_surf, attachments, count);
 
    if (width)
       *width = dri2_surf->base.Width;
    if (height)
       *height = dri2_surf->base.Height;
 
-   *out_count = dri2_surf->buffer_count;
-
    return dri2_surf->buffers;
+}
+
+static unsigned
+droid_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
+{
+   /* Note: loaderPrivate is _EGLDisplay* */
+   switch (cap) {
+   case DRI_LOADER_CAP_RGBA_ORDERING:
+      return 1;
+   default:
+      return 0;
+   }
 }
 
 static EGLBoolean
@@ -1128,18 +1137,20 @@ static const struct dri2_egl_display_vtbl droid_display_vtbl = {
 };
 
 static const __DRIdri2LoaderExtension droid_dri2_loader_extension = {
-   .base = { __DRI_DRI2_LOADER, 3 },
+   .base = { __DRI_DRI2_LOADER, 4 },
 
    .getBuffers           = NULL,
    .flushFrontBuffer     = droid_flush_front_buffer,
    .getBuffersWithFormat = droid_get_buffers_with_format,
+   .getCapability        = droid_get_capability,
 };
 
 static const __DRIimageLoaderExtension droid_image_loader_extension = {
-   .base = { __DRI_IMAGE_LOADER, 1 },
+   .base = { __DRI_IMAGE_LOADER, 2 },
 
    .getBuffers          = droid_image_get_buffers,
    .flushFrontBuffer    = droid_flush_front_buffer,
+   .getCapability       = droid_get_capability,
 };
 
 static const __DRIextension *droid_dri2_loader_extensions[] = {

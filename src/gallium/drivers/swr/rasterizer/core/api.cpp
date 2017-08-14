@@ -108,7 +108,7 @@ HANDLE SwrCreateContext(
     CreateThreadPool(pContext, &pContext->threadPool);
 
     pContext->ppScratch = new uint8_t*[pContext->NumWorkerThreads];
-    pContext->pStats = new SWR_STATS[pContext->NumWorkerThreads];
+    pContext->pStats = (SWR_STATS*)AlignedMalloc(sizeof(SWR_STATS) * pContext->NumWorkerThreads, 64);
 
 #if defined(KNOB_ENABLE_AR)
     // Setup ArchRast thread contexts which includes +1 for API thread.
@@ -189,7 +189,7 @@ void QueueWork(SWR_CONTEXT *pContext)
 
     if (IsDraw)
     {
-        InterlockedIncrement((volatile LONG*)&pContext->drawsOutstandingFE);
+        InterlockedIncrement((volatile long*)&pContext->drawsOutstandingFE);
     }
 
     _ReadWriteBarrier();
@@ -363,7 +363,7 @@ void SwrDestroyContext(HANDLE hContext)
     // free the fifos
     for (uint32_t i = 0; i < KNOB_MAX_DRAWS_IN_FLIGHT; ++i)
     {
-        delete[] pContext->dcRing[i].dynState.pStats;
+        AlignedFree(pContext->dcRing[i].dynState.pStats);
         delete pContext->dcRing[i].pArena;
         delete pContext->dsRing[i].pArena;
         pContext->pMacroTileManagerArray[i].~MacroTileMgr();
@@ -388,7 +388,7 @@ void SwrDestroyContext(HANDLE hContext)
     }
 
     delete[] pContext->ppScratch;
-    delete[] pContext->pStats;
+    AlignedFree(pContext->pStats);
 
     delete(pContext->pHotTileMgr);
 
@@ -957,19 +957,30 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
                                           (pState->state.depthStencilState.stencilTestEnable  ||
                                            pState->state.depthStencilState.stencilWriteEnable)) ? true : false;
 
-    uint32_t numRTs = pState->state.psState.numRenderTargets;
-    pState->state.colorHottileEnable = 0;
+
+    uint32_t hotTileEnable = pState->state.psState.renderTargetMask;
+
+    // Disable hottile for surfaces with no writes
     if (psState.pfnPixelShader != nullptr)
     {
-        for (uint32_t rt = 0; rt < numRTs; ++rt)
+        DWORD rt;
+        uint32_t rtMask = pState->state.psState.renderTargetMask;
+        while (_BitScanForward(&rt, rtMask))
         {
-            pState->state.colorHottileEnable |=  
-                (!pState->state.blendState.renderTarget[rt].writeDisableAlpha ||
-                 !pState->state.blendState.renderTarget[rt].writeDisableRed ||
-                 !pState->state.blendState.renderTarget[rt].writeDisableGreen ||
-                 !pState->state.blendState.renderTarget[rt].writeDisableBlue) ? (1 << rt) : 0;
+            rtMask &= ~(1 << rt);
+
+            if (pState->state.blendState.renderTarget[rt].writeDisableAlpha &&
+                pState->state.blendState.renderTarget[rt].writeDisableRed &&
+                pState->state.blendState.renderTarget[rt].writeDisableGreen &&
+                pState->state.blendState.renderTarget[rt].writeDisableBlue)
+            {
+                hotTileEnable &= ~(1 << rt);
+            }
         }
     }
+
+    pState->state.colorHottileEnable = hotTileEnable;
+
 
     // Setup depth quantization function
     if (pState->state.depthHottileEnable)

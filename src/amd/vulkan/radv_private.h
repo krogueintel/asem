@@ -84,7 +84,7 @@ typedef uint32_t xcb_window_t;
 #define MAX_PUSH_DESCRIPTORS 32
 #define MAX_DYNAMIC_BUFFERS 16
 #define MAX_SAMPLES_LOG2 4
-#define NUM_META_FS_KEYS 11
+#define NUM_META_FS_KEYS 13
 #define RADV_MAX_DRM_DEVICES 8
 
 #define NUM_DEPTH_CLEAR_PIPELINES 3
@@ -267,8 +267,9 @@ struct radv_physical_device {
 	struct radeon_info rad_info;
 	char                                        path[20];
 	const char *                                name;
-	uint8_t                                     uuid[VK_UUID_SIZE];
+	uint8_t                                     driver_uuid[VK_UUID_SIZE];
 	uint8_t                                     device_uuid[VK_UUID_SIZE];
+	uint8_t                                     cache_uuid[VK_UUID_SIZE];
 
 	int local_fd;
 	struct wsi_device                       wsi_device;
@@ -433,8 +434,6 @@ struct radv_meta_state {
 		VkPipelineLayout                          p_layout;
 
 		struct {
-			VkRenderPass srgb_render_pass;
-			VkPipeline   srgb_pipeline;
 			VkRenderPass render_pass[NUM_META_FS_KEYS];
 			VkPipeline   pipeline[NUM_META_FS_KEYS];
 		} rc[MAX_SAMPLES_LOG2];
@@ -444,7 +443,7 @@ struct radv_meta_state {
 		VkPipeline                                decompress_pipeline;
 		VkPipeline                                resummarize_pipeline;
 		VkRenderPass                              pass;
-	} depth_decomp;
+	} depth_decomp[1 + MAX_SAMPLES_LOG2];
 
 	struct {
 		VkPipeline                                cmask_eliminate_pipeline;
@@ -547,6 +546,15 @@ struct radv_device {
 
 	/* Backup in-memory cache to be used if the app doesn't provide one */
 	struct radv_pipeline_cache *                mem_cache;
+
+	/*
+	 * use different counters so MSAA MRTs get consecutive surface indices,
+	 * even if MASK is allocated in between.
+	 */
+	uint32_t image_mrt_offset_counter;
+	uint32_t fmask_mrt_offset_counter;
+	struct list_head shader_slabs;
+	mtx_t shader_slab_mutex;
 };
 
 struct radv_device_memory {
@@ -869,7 +877,7 @@ void si_cs_emit_cache_flush(struct radeon_winsys_cs *cs,
 			    bool is_mec,
 			    enum radv_cmd_flush_bits flush_bits);
 void si_emit_cache_flush(struct radv_cmd_buffer *cmd_buffer);
-void si_emit_set_pred(struct radv_cmd_buffer *cmd_buffer, uint64_t va);
+void si_emit_set_predication_state(struct radv_cmd_buffer *cmd_buffer, uint64_t va);
 void si_cp_dma_buffer_copy(struct radv_cmd_buffer *cmd_buffer,
 			   uint64_t src_va, uint64_t dest_va,
 			   uint64_t size);
@@ -912,6 +920,9 @@ void radv_set_color_clear_regs(struct radv_cmd_buffer *cmd_buffer,
 			       struct radv_image *image,
 			       int idx,
 			       uint32_t color_values[2]);
+void radv_set_dcc_need_cmask_elim_pred(struct radv_cmd_buffer *cmd_buffer,
+				       struct radv_image *image,
+				       bool value);
 void radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer,
 		      struct radeon_winsys_bo *bo,
 		      uint64_t offset, uint64_t size, uint32_t value);
@@ -976,16 +987,34 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 	     stage = __builtin_ffs(__tmp) - 1, __tmp;			\
 	     __tmp &= ~(1 << (stage)))
 
+
+struct radv_shader_slab {
+	struct list_head slabs;
+	struct list_head shaders;
+	struct radeon_winsys_bo *bo;
+	uint64_t size;
+	char *ptr;
+};
+
 struct radv_shader_variant {
 	uint32_t ref_count;
 
 	struct radeon_winsys_bo *bo;
+	uint64_t bo_offset;
 	struct ac_shader_config config;
 	struct ac_shader_variant_info info;
 	unsigned rsrc1;
 	unsigned rsrc2;
 	uint32_t code_size;
+
+	struct list_head slab_list;
 };
+
+
+void *radv_alloc_shader_memory(struct radv_device *device,
+                              struct radv_shader_variant *shader);
+
+void radv_destroy_shader_slabs(struct radv_device *device);
 
 struct radv_depth_stencil_state {
 	uint32_t db_depth_control;
@@ -1168,6 +1197,7 @@ struct radv_fmask_info {
 	unsigned bank_height;
 	unsigned slice_tile_max;
 	unsigned tile_mode_index;
+	unsigned tile_swizzle;
 };
 
 struct radv_cmask_info {
@@ -1205,6 +1235,8 @@ struct radv_image {
 	bool exclusive;
 	unsigned queue_family_mask;
 
+	bool shareable;
+
 	/* Set when bound */
 	struct radeon_winsys_bo *bo;
 	VkDeviceSize offset;
@@ -1215,6 +1247,7 @@ struct radv_image {
 	struct radv_fmask_info fmask;
 	struct radv_cmask_info cmask;
 	uint32_t clear_value_offset;
+	uint32_t dcc_pred_offset;
 };
 
 /* Whether the image has a htile that is known consistent with the contents of
@@ -1276,6 +1309,12 @@ struct radv_image_view {
 
 	uint32_t descriptor[8];
 	uint32_t fmask_descriptor[8];
+
+	/* Descriptor for use as a storage image as opposed to a sampled image.
+	 * This has a few differences for cube maps (e.g. type).
+	 */
+	uint32_t storage_descriptor[8];
+	uint32_t storage_fmask_descriptor[8];
 };
 
 struct radv_image_create_info {
@@ -1456,6 +1495,20 @@ struct radv_query_pool {
 	uint32_t pipeline_stats_mask;
 };
 
+struct radv_semaphore {
+	/* use a winsys sem for non-exportable */
+	struct radeon_winsys_sem *sem;
+	uint32_t syncobj;
+	uint32_t temp_syncobj;
+};
+
+VkResult radv_alloc_sem_info(struct radv_winsys_sem_info *sem_info,
+			     int num_wait_sems,
+			     const VkSemaphore *wait_sems,
+			     int num_signal_sems,
+			     const VkSemaphore *signal_sems);
+void radv_free_sem_info(struct radv_winsys_sem_info *sem_info);
+
 void
 radv_update_descriptor_sets(struct radv_device *device,
                             struct radv_cmd_buffer *cmd_buffer,
@@ -1549,6 +1602,6 @@ RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_query_pool, VkQueryPool)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_render_pass, VkRenderPass)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_sampler, VkSampler)
 RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_shader_module, VkShaderModule)
-RADV_DEFINE_NONDISP_HANDLE_CASTS(radeon_winsys_sem, VkSemaphore)
+RADV_DEFINE_NONDISP_HANDLE_CASTS(radv_semaphore, VkSemaphore)
 
 #endif /* RADV_PRIVATE_H */

@@ -30,6 +30,7 @@
 #include "amdgpu_id.h"
 #include "ac_gpu_info.h"
 #include "util/macros.h"
+#include "util/u_atomic.h"
 #include "util/u_math.h"
 
 #include <errno.h>
@@ -150,12 +151,14 @@ static ADDR_E_RETURNCODE ADDR_API freeSysMem(const ADDR_FREESYSMEM_INPUT * pInpu
 }
 
 ADDR_HANDLE amdgpu_addr_create(const struct radeon_info *info,
-			       const struct amdgpu_gpu_info *amdinfo)
+			       const struct amdgpu_gpu_info *amdinfo,
+			       uint64_t *max_alignment)
 {
 	ADDR_CREATE_INPUT addrCreateInput = {0};
 	ADDR_CREATE_OUTPUT addrCreateOutput = {0};
 	ADDR_REGISTER_VALUE regValue = {0};
 	ADDR_CREATE_FLAGS createFlags = {{0}};
+	ADDR_GET_MAX_ALIGNMENTS_OUTPUT addrGetMaxAlignmentsOutput = {0};
 	ADDR_E_RETURNCODE addrRet;
 
 	addrCreateInput.size = sizeof(ADDR_CREATE_INPUT);
@@ -202,6 +205,12 @@ ADDR_HANDLE amdgpu_addr_create(const struct radeon_info *info,
 	if (addrRet != ADDR_OK)
 		return NULL;
 
+	if (max_alignment) {
+		addrRet = AddrGetMaxAlignments(addrCreateOutput.hLib, &addrGetMaxAlignmentsOutput);
+		if (addrRet == ADDR_OK){
+			*max_alignment = addrGetMaxAlignmentsOutput.baseAlign;
+		}
+	}
 	return addrCreateOutput.hLib;
 }
 
@@ -248,6 +257,18 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib,
 	AddrSurfInfoIn->mipLevel = level;
 	AddrSurfInfoIn->width = u_minify(config->info.width, level);
 	AddrSurfInfoIn->height = u_minify(config->info.height, level);
+
+	/* Make GFX6 linear surfaces compatible with GFX9 for hybrid graphics,
+	 * because GFX9 needs linear alignment of 256 bytes.
+	 */
+	if (config->info.levels == 1 &&
+	    AddrSurfInfoIn->tileMode == ADDR_TM_LINEAR_ALIGNED &&
+	    AddrSurfInfoIn->bpp) {
+		unsigned alignment = 256 / (AddrSurfInfoIn->bpp / 8);
+
+		assert(util_is_power_of_two(AddrSurfInfoIn->bpp));
+		AddrSurfInfoIn->width = align(AddrSurfInfoIn->width, alignment);
+	}
 
 	if (config->is_3d)
 		AddrSurfInfoIn->numSlices = u_minify(config->info.depth, level);
@@ -386,12 +407,16 @@ static unsigned cik_get_macro_tile_index(struct radeon_surf *surf)
 }
 
 /**
+ * This must be called after the first level is computed.
+ *
  * Copy surface-global settings like pipe/bank config from level 0 surface
- * computation.
+ * computation, and compute tile swizzle.
  */
-static void gfx6_surface_settings(const struct radeon_info* info,
-				  ADDR_COMPUTE_SURFACE_INFO_OUTPUT* csio,
-				  struct radeon_surf *surf)
+static int gfx6_surface_settings(ADDR_HANDLE addrlib,
+				 const struct radeon_info *info,
+				 const struct ac_surf_config *config,
+				 ADDR_COMPUTE_SURFACE_INFO_OUTPUT* csio,
+				 struct radeon_surf *surf)
 {
 	surf->surf_alignment = csio->baseAlign;
 	surf->u.legacy.pipe_config = csio->pTileInfo->pipeConfig - 1;
@@ -408,6 +433,36 @@ static void gfx6_surface_settings(const struct radeon_info* info,
 	} else {
 		surf->u.legacy.macro_tile_index = 0;
 	}
+
+	/* Compute tile swizzle. */
+	/* TODO: fix tile swizzle with mipmapping for SI */
+	if ((info->chip_class >= CIK || config->info.levels == 1) &&
+	    config->info.surf_index &&
+	    surf->u.legacy.level[0].mode == RADEON_SURF_MODE_2D &&
+	    !(surf->flags & (RADEON_SURF_Z_OR_SBUFFER | RADEON_SURF_SHAREABLE)) &&
+	    (config->info.samples > 1 || !(surf->flags & RADEON_SURF_SCANOUT))) {
+		ADDR_COMPUTE_BASE_SWIZZLE_INPUT AddrBaseSwizzleIn = {0};
+		ADDR_COMPUTE_BASE_SWIZZLE_OUTPUT AddrBaseSwizzleOut = {0};
+
+		AddrBaseSwizzleIn.size = sizeof(ADDR_COMPUTE_BASE_SWIZZLE_INPUT);
+		AddrBaseSwizzleOut.size = sizeof(ADDR_COMPUTE_BASE_SWIZZLE_OUTPUT);
+
+		AddrBaseSwizzleIn.surfIndex = p_atomic_inc_return(config->info.surf_index) - 1;
+		AddrBaseSwizzleIn.tileIndex = csio->tileIndex;
+		AddrBaseSwizzleIn.macroModeIndex = csio->macroModeIndex;
+		AddrBaseSwizzleIn.pTileInfo = csio->pTileInfo;
+		AddrBaseSwizzleIn.tileMode = csio->tileMode;
+
+		int r = AddrComputeBaseSwizzle(addrlib, &AddrBaseSwizzleIn,
+					       &AddrBaseSwizzleOut);
+		if (r != ADDR_OK)
+			return r;
+
+		assert(AddrBaseSwizzleOut.tileSwizzle <=
+		       u_bit_consecutive(0, sizeof(surf->tile_swizzle) * 8));
+		surf->tile_swizzle = AddrBaseSwizzleOut.tileSwizzle;
+	}
+	return 0;
 }
 
 /**
@@ -623,7 +678,10 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib,
 			if (level > 0)
 				continue;
 
-			gfx6_surface_settings(info, &AddrSurfInfoOut, surf);
+			r = gfx6_surface_settings(addrlib, info, config,
+						  &AddrSurfInfoOut, surf);
+			if (r)
+				return r;
 		}
 	}
 
@@ -655,8 +713,12 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib,
 			}
 
 			if (level == 0) {
-				if (only_stencil)
-					gfx6_surface_settings(info, &AddrSurfInfoOut, surf);
+				if (only_stencil) {
+					r = gfx6_surface_settings(addrlib, info, config,
+								  &AddrSurfInfoOut, surf);
+					if (r)
+						return r;
+				}
 
 				/* For 2D modes only. */
 				if (AddrSurfInfoOut.tileMode >= ADDR_TM_2D_TILED_THIN1) {
@@ -672,9 +734,16 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib,
 	 * complicated.
 	 */
 	if (surf->dcc_size && config->info.levels > 1) {
+		/* The smallest miplevels that are never compressed by DCC
+		 * still read the DCC buffer via TC if the base level uses DCC,
+		 * and for some reason the DCC buffer needs to be larger if
+		 * the miptree uses non-zero tile_swizzle. Otherwise there are
+		 * VM faults.
+		 *
+		 * "dcc_alignment * 4" was determined by trial and error.
+		 */
 		surf->dcc_size = align64(surf->surf_size >> 8,
-					 info->pipe_interleave_bytes *
-					 info->num_tile_pipes);
+					 surf->dcc_alignment * 4);
 	}
 
 	/* Make sure HTILE covers the whole miptree, because the shader reads
@@ -939,7 +1008,9 @@ static int gfx9_compute_surface(ADDR_HANDLE addrlib,
 	AddrSurfInfoIn.flags.color = !(surf->flags & RADEON_SURF_Z_OR_SBUFFER);
 	AddrSurfInfoIn.flags.depth = (surf->flags & RADEON_SURF_ZBUFFER) != 0;
 	AddrSurfInfoIn.flags.display = (surf->flags & RADEON_SURF_SCANOUT) != 0;
-	AddrSurfInfoIn.flags.texture = 1;
+	/* flags.texture currently refers to TC-compatible HTILE */
+	AddrSurfInfoIn.flags.texture = AddrSurfInfoIn.flags.color ||
+				       surf->flags & RADEON_SURF_TC_COMPATIBLE_HTILE;
 	AddrSurfInfoIn.flags.opt4space = 1;
 
 	AddrSurfInfoIn.numMipLevels = config->info.levels;

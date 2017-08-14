@@ -35,6 +35,7 @@
 #include "util/ralloc.h"
 
 #include <xf86drm.h>
+#include "drm_fourcc.h"
 #include "vc4_drm.h"
 #include "vc4_screen.h"
 #include "vc4_context.h"
@@ -43,6 +44,8 @@
 static const struct debug_named_value debug_options[] = {
         { "cl",       VC4_DEBUG_CL,
           "Dump command list during creation" },
+        { "surf",       VC4_DEBUG_SURFACE,
+          "Dump surface layouts" },
         { "qpu",      VC4_DEBUG_QPU,
           "Dump generated QPU instructions" },
         { "qir",      VC4_DEBUG_QIR,
@@ -258,6 +261,9 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX:
         case PIPE_CAP_POST_DEPTH_COVERAGE:
         case PIPE_CAP_BINDLESS_TEXTURE:
+        case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
+        case PIPE_CAP_QUERY_SO_OVERFLOW:
+	case PIPE_CAP_MEMOBJ:
                 return 0;
 
                 /* Stream output. */
@@ -532,6 +538,34 @@ vc4_screen_is_format_supported(struct pipe_screen *pscreen,
         return retval == usage;
 }
 
+static void
+vc4_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
+                                  enum pipe_format format, int max,
+                                  uint64_t *modifiers,
+                                  unsigned int *external_only,
+                                  int *count)
+{
+        if (!modifiers) {
+                *count = 2;
+                return;
+        }
+
+        *count = MIN2(max, 2);
+
+        /* We support both modifiers (tiled and linear) for all sampler
+         * formats.
+         */
+        modifiers[0] = DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED;
+        if (external_only)
+                external_only[0] = false;
+        if (max < 2)
+                return;
+
+        modifiers[1] = DRM_FORMAT_MOD_LINEAR;
+        if (external_only)
+                external_only[1] = false;
+}
+
 #define PTR_TO_UINT(x) ((unsigned)((intptr_t)(x)))
 
 static unsigned handle_hash(void *key)
@@ -664,6 +698,7 @@ vc4_screen_create(int fd, struct renderonly *ro)
         pscreen->get_vendor = vc4_screen_get_vendor;
         pscreen->get_device_vendor = vc4_screen_get_vendor;
         pscreen->get_compiler_options = vc4_screen_get_compiler_options;
+        pscreen->query_dmabuf_modifiers = vc4_screen_query_dmabuf_modifiers;
 
         return pscreen;
 

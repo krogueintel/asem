@@ -3,22 +3,22 @@ BLORP_FILES = \
 	blorp/blorp.h \
 	blorp/blorp_blit.c \
 	blorp/blorp_clear.c \
+	blorp/blorp_nir_builder.h \
 	blorp/blorp_genX_exec.h \
 	blorp/blorp_priv.h
 
 COMMON_FILES = \
+	common/gen_clflush.h \
 	common/gen_debug.c \
 	common/gen_debug.h \
+	common/gen_decoder.c \
+	common/gen_decoder.h \
 	common/gen_device_info.c \
 	common/gen_device_info.h \
 	common/gen_l3_config.c \
 	common/gen_l3_config.h \
 	common/gen_urb_config.c \
 	common/gen_sample_positions.h
-
-DECODER_FILES = \
-	common/gen_decoder.h \
-	common/gen_decoder.c
 
 COMPILER_FILES = \
 	compiler/brw_cfg.cpp \
@@ -73,6 +73,7 @@ COMPILER_FILES = \
 	compiler/brw_nir.h \
 	compiler/brw_nir.c \
 	compiler/brw_nir_analyze_boolean_resolves.c \
+	compiler/brw_nir_analyze_ubo_ranges.c \
 	compiler/brw_nir_attribute_workarounds.c \
 	compiler/brw_nir_intrinsics.c \
 	compiler/brw_nir_opt_peephole_ffma.c \
@@ -117,12 +118,6 @@ COMPILER_FILES = \
 COMPILER_GENERATED_FILES = \
 	compiler/brw_nir_trig_workarounds.c
 
-DRM_INTEL_FILES = \
-	drm/drm.h \
-	drm/drm_fourcc.h \
-	drm/drm_mode.h \
-	drm/i915_drm.h
-
 GENXML_XML_FILES = \
 	genxml/gen4.xml \
 	genxml/gen45.xml \
@@ -153,6 +148,7 @@ GENXML_GENERATED_FILES = \
 ISL_FILES = \
 	isl/isl.c \
 	isl/isl.h \
+	isl/isl_drm.c \
 	isl/isl_format.c \
 	isl/isl_priv.h \
 	isl/isl_storage_image.c
@@ -242,7 +238,8 @@ VULKAN_GEM_STUB_FILES := \
 
 VULKAN_GENERATED_FILES := \
 	vulkan/anv_entrypoints.c \
-	vulkan/anv_entrypoints.h
+	vulkan/anv_entrypoints.h \
+	vulkan/anv_extensions.c
 
 VULKAN_GENX_FILES := \
 	vulkan/genX_blorp_exec.c \

@@ -50,7 +50,7 @@ static const __m256 vULOffsetsY = __m256{0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0}
 #define MASK 0xff
 #endif
 
-static INLINE simdmask ComputeUserClipMask(uint8_t clipMask, float* pUserClipBuffer, simdscalar vI, simdscalar vJ)
+static INLINE simdmask ComputeUserClipMask(uint8_t clipMask, float* pUserClipBuffer, simdscalar const &vI, simdscalar const &vJ)
 {
     simdscalar vClipMask = _simd_setzero_ps();
     uint32_t numClipDistance = _mm_popcnt_u32(clipMask);
@@ -338,7 +338,7 @@ struct generateInputCoverage<T, SWR_INPUT_COVERAGE_INNER_CONSERVATIVE>
 template<typename T>
 INLINE void CalcCentroidPos(SWR_PS_CONTEXT &psContext, const SWR_MULTISAMPLE_POS& samplePos,
                             const uint64_t *const coverageMask, const uint32_t sampleMask,
-                            const simdscalar vXSamplePosUL, const simdscalar vYSamplePosUL)
+                            simdscalar const &vXSamplePosUL, simdscalar const &vYSamplePosUL)
 {
     uint32_t inputMask[KNOB_SIMD_WIDTH];
     generateInputCoverage<T, T::InputCoverage>(coverageMask, inputMask, sampleMask);
@@ -412,7 +412,7 @@ INLINE void CalcCentroidPos(SWR_PS_CONTEXT &psContext, const SWR_MULTISAMPLE_POS
 }
 
 INLINE void CalcCentroidBarycentrics(const BarycentricCoeffs& coeffs, SWR_PS_CONTEXT &psContext,
-                                     const simdscalar vXSamplePosUL, const simdscalar vYSamplePosUL)
+                                     const simdscalar &vXSamplePosUL, const simdscalar &vYSamplePosUL)
 {
     // evaluate I,J
     psContext.vI.centroid = vplaneps(coeffs.vIa, coeffs.vIb, coeffs.vIc, psContext.vX.centroid, psContext.vY.centroid);
@@ -424,7 +424,7 @@ INLINE void CalcCentroidBarycentrics(const BarycentricCoeffs& coeffs, SWR_PS_CON
     psContext.vOneOverW.centroid = vplaneps(coeffs.vAOneOverW, coeffs.vBOneOverW, coeffs.vCOneOverW, psContext.vI.centroid, psContext.vJ.centroid);
 }
 
-INLINE simdmask CalcDepthBoundsAcceptMask(simdscalar z, float minz, float maxz)
+INLINE simdmask CalcDepthBoundsAcceptMask(simdscalar const &z, float minz, float maxz)
 {
     const simdscalar minzMask = _simd_cmpge_ps(z, _simd_set1_ps(minz));
     const simdscalar maxzMask = _simd_cmple_ps(z, _simd_set1_ps(maxz));
@@ -475,16 +475,15 @@ inline void SetupBarycentricCoeffs(BarycentricCoeffs *coeffs, const SWR_TRIANGLE
     coeffs->vCOneOverW = _simd_broadcast_ss(&work.OneOverW[2]);
 }
 
-inline void SetupRenderBuffers(uint8_t *pColorBuffer[SWR_NUM_RENDERTARGETS], uint8_t **pDepthBuffer, uint8_t **pStencilBuffer, uint32_t colorBufferCount, RenderOutputBuffers &renderBuffers)
+inline void SetupRenderBuffers(uint8_t *pColorBuffer[SWR_NUM_RENDERTARGETS], uint8_t **pDepthBuffer, uint8_t **pStencilBuffer, uint32_t colorHotTileMask, RenderOutputBuffers &renderBuffers)
 {
-    assert(colorBufferCount <= SWR_NUM_RENDERTARGETS);
-
-    if (pColorBuffer)
+    
+    DWORD index;
+    while (_BitScanForward(&index, colorHotTileMask))
     {
-        for (uint32_t index = 0; index < colorBufferCount; index += 1)
-        {
-            pColorBuffer[index] = renderBuffers.pColor[index];
-        }
+        assert(index < SWR_NUM_RENDERTARGETS);
+        colorHotTileMask &= ~(1 << index);
+        pColorBuffer[index] = renderBuffers.pColor[index];
     }
 
     if (pDepthBuffer)
@@ -577,7 +576,7 @@ struct PixelRateZTestLoop
         for(uint32_t sample = 0; sample < T::MultisampleT::numCoverageSamples; sample++)
         {
             const uint8_t *pCoverageMask = (uint8_t*)&work.coverageMask[sample];
-            vCoverageMask[sample] = _simd_and_ps(activeLanes, vMask(pCoverageMask[currentSimdIn8x8] & MASK));
+            vCoverageMask[sample] = _simd_and_ps(activeLanes, _simd_vmask_ps(pCoverageMask[currentSimdIn8x8] & MASK));
 
             if(!_simd_movemask_ps(vCoverageMask[sample]))
             {
@@ -598,7 +597,7 @@ struct PixelRateZTestLoop
                 const float minz = state.depthBoundsState.depthBoundsTestMinValue;
                 const float maxz = state.depthBoundsState.depthBoundsTestMaxValue;
 
-                vCoverageMask[sample] = _simd_and_ps(vCoverageMask[sample], vMask(CalcDepthBoundsAcceptMask(z, minz, maxz)));
+                vCoverageMask[sample] = _simd_and_ps(vCoverageMask[sample], _simd_vmask_ps(CalcDepthBoundsAcceptMask(z, minz, maxz)));
             }
 
             AR_BEGIN(BEBarycentric, pDC->drawId);
@@ -631,7 +630,7 @@ struct PixelRateZTestLoop
             {
                 uint8_t clipMask = ComputeUserClipMask(clipDistanceMask, work.pUserClipBuffer, psContext.vI.sample, psContext.vJ.sample);
 
-                vCoverageMask[sample] = _simd_and_ps(vCoverageMask[sample], vMask(~clipMask));
+                vCoverageMask[sample] = _simd_and_ps(vCoverageMask[sample], _simd_vmask_ps(~clipMask));
             }
 
             // ZTest for this sample
@@ -712,14 +711,16 @@ static INLINE void CalcSampleBarycentrics(const BarycentricCoeffs& coeffs, SWR_P
 
 // Merge Output to 4x2 SIMD Tile Format
 INLINE void OutputMerger4x2(SWR_PS_CONTEXT &psContext, uint8_t* (&pColorBase)[SWR_NUM_RENDERTARGETS], uint32_t sample, const SWR_BLEND_STATE *pBlendState,
-    const PFN_BLEND_JIT_FUNC (&pfnBlendFunc)[SWR_NUM_RENDERTARGETS], simdscalar &coverageMask, simdscalar depthPassMask, const uint32_t NumRT)
+    const PFN_BLEND_JIT_FUNC (&pfnBlendFunc)[SWR_NUM_RENDERTARGETS], simdscalar &coverageMask, simdscalar const &depthPassMask, uint32_t renderTargetMask)
 {
     // type safety guaranteed from template instantiation in BEChooser<>::GetFunc
     const uint32_t rasterTileColorOffset = RasterTileColorOffset(sample);
     simdvector blendOut;
 
-    for(uint32_t rt = 0; rt < NumRT; ++rt)
+    DWORD rt = 0;
+    while (_BitScanForward(&rt, renderTargetMask))
     {
+        renderTargetMask &= ~(1 << rt);
         uint8_t *pColorSample = pColorBase[rt] + rasterTileColorOffset;
 
         const SWR_RENDER_TARGET_BLEND_STATE *pRTBlend = &pBlendState->renderTarget[rt];
@@ -776,7 +777,7 @@ INLINE void OutputMerger4x2(SWR_PS_CONTEXT &psContext, uint8_t* (&pColorBase)[SW
 #if USE_8x2_TILE_BACKEND
 // Merge Output to 8x2 SIMD16 Tile Format
 INLINE void OutputMerger8x2(SWR_PS_CONTEXT &psContext, uint8_t* (&pColorBase)[SWR_NUM_RENDERTARGETS], uint32_t sample, const SWR_BLEND_STATE *pBlendState,
-    const PFN_BLEND_JIT_FUNC(&pfnBlendFunc)[SWR_NUM_RENDERTARGETS], simdscalar &coverageMask, simdscalar depthPassMask, const uint32_t NumRT, const uint32_t colorBufferEnableMask, bool useAlternateOffset)
+    const PFN_BLEND_JIT_FUNC(&pfnBlendFunc)[SWR_NUM_RENDERTARGETS], simdscalar &coverageMask, simdscalar const &depthPassMask, uint32_t renderTargetMask, bool useAlternateOffset)
 {
     // type safety guaranteed from template instantiation in BEChooser<>::GetFunc
     uint32_t rasterTileColorOffset = RasterTileColorOffset(sample);
@@ -789,19 +790,26 @@ INLINE void OutputMerger8x2(SWR_PS_CONTEXT &psContext, uint8_t* (&pColorBase)[SW
     simdvector blendSrc;
     simdvector blendOut;
 
-    uint32_t colorBufferBit = 1;
-    for (uint32_t rt = 0; rt < NumRT; rt += 1, colorBufferBit <<= 1)
+    DWORD rt;
+    while (_BitScanForward(&rt, renderTargetMask))
     {
-        simdscalar *pColorSample = reinterpret_cast<simdscalar *>(pColorBase[rt] + rasterTileColorOffset);
+        renderTargetMask &= ~(1 << rt);
 
         const SWR_RENDER_TARGET_BLEND_STATE *pRTBlend = &pBlendState->renderTarget[rt];
 
-        if (colorBufferBit & colorBufferEnableMask)
+        simdscalar* pColorSample;
+        bool hotTileEnable = !pRTBlend->writeDisableAlpha || !pRTBlend->writeDisableRed || !pRTBlend->writeDisableGreen || !pRTBlend->writeDisableBlue;
+        if (hotTileEnable)
         {
+            pColorSample = reinterpret_cast<simdscalar *>(pColorBase[rt] + rasterTileColorOffset);
             blendSrc[0] = pColorSample[0];
             blendSrc[1] = pColorSample[2];
             blendSrc[2] = pColorSample[4];
             blendSrc[3] = pColorSample[6];
+        }
+        else
+        {
+            pColorSample = nullptr;
         }
 
         {
@@ -874,7 +882,7 @@ void BackendPixelRate(DRAW_CONTEXT *pDC, uint32_t workerId, uint32_t x, uint32_t
     SetupPixelShaderContext<T>(&psContext, samplePos, work);
 
     uint8_t *pDepthBuffer, *pStencilBuffer;
-    SetupRenderBuffers(psContext.pColorBuffer, &pDepthBuffer, &pStencilBuffer, state.psState.numRenderTargets, renderBuffers);
+    SetupRenderBuffers(psContext.pColorBuffer, &pDepthBuffer, &pStencilBuffer, state.colorHottileEnable, renderBuffers);
 
     AR_END(BESetup, 0);
 
@@ -899,7 +907,7 @@ void BackendPixelRate(DRAW_CONTEXT *pDC, uint32_t workerId, uint32_t x, uint32_t
 #endif
             simdscalar activeLanes;
             if(!(work.anyCoveredSamples & MASK)) {goto Endtile;};
-            activeLanes = vMask(work.anyCoveredSamples & MASK);
+            activeLanes = _simd_vmask_ps(work.anyCoveredSamples & MASK);
 
             if (T::InputCoverage != SWR_INPUT_COVERAGE_NONE)
             {
@@ -994,9 +1002,9 @@ void BackendPixelRate(DRAW_CONTEXT *pDC, uint32_t workerId, uint32_t x, uint32_t
                 
                 // broadcast the results of the PS to all passing pixels
 #if USE_8x2_TILE_BACKEND
-                OutputMerger8x2(psContext, psContext.pColorBuffer, sample, &state.blendState,state.pfnBlendFunc, coverageMask, depthMask, state.psState.numRenderTargets, state.colorHottileEnable, useAlternateOffset);
+                OutputMerger8x2(psContext, psContext.pColorBuffer, sample, &state.blendState,state.pfnBlendFunc, coverageMask, depthMask, state.psState.renderTargetMask, useAlternateOffset);
 #else // USE_8x2_TILE_BACKEND
-                OutputMerger4x2(psContext, psContext.pColorBuffer, sample, &state.blendState, state.pfnBlendFunc, coverageMask, depthMask, state.psState.numRenderTargets);
+                OutputMerger4x2(psContext, psContext.pColorBuffer, sample, &state.blendState, state.pfnBlendFunc, coverageMask, depthMask, state.psState.renderTargetMask);
 #endif // USE_8x2_TILE_BACKEND
 
                 if(!state.psState.forceEarlyZ && !T::bForcedSampleCount)
@@ -1026,14 +1034,20 @@ Endtile:
 #if USE_8x2_TILE_BACKEND
             if (useAlternateOffset)
             {
-                for (uint32_t rt = 0; rt < state.psState.numRenderTargets; ++rt)
+                DWORD rt;
+                uint32_t rtMask = state.colorHottileEnable;
+                while (_BitScanForward(&rt, rtMask))
                 {
+                    rtMask &= ~(1 << rt);
                     psContext.pColorBuffer[rt] += (2 * KNOB_SIMD_WIDTH * FormatTraits<KNOB_COLOR_HOT_TILE_FORMAT>::bpp) / 8;
                 }
             }
 #else
-            for(uint32_t rt = 0; rt < state.psState.numRenderTargets; ++rt)
+            DWORD rt;
+            uint32_t rtMask = state.colorHottileEnable;
+            while (_BitScanForward(&rt, rtMask))
             {
+                rtMask &= ~(1 << rt);
                 psContext.pColorBuffer[rt] += (KNOB_SIMD_WIDTH * FormatTraits<KNOB_COLOR_HOT_TILE_FORMAT>::bpp) / 8;
             }
 #endif

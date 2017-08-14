@@ -442,7 +442,7 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
 	}
 
 	if (check_vm)
-		radeon_save_cs(rctx->ws, cs, &saved);
+		radeon_save_cs(rctx->ws, cs, &saved, true);
 
 	rctx->ws->cs_flush(cs, flags, &rctx->last_sdma_fence);
 	if (fence)
@@ -464,7 +464,7 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
  * list in \p saved.
  */
 void radeon_save_cs(struct radeon_winsys *ws, struct radeon_winsys_cs *cs,
-		    struct radeon_saved_cs *saved)
+		    struct radeon_saved_cs *saved, bool get_buffer_list)
 {
 	void *buf;
 	unsigned i;
@@ -481,6 +481,9 @@ void radeon_save_cs(struct radeon_winsys *ws, struct radeon_winsys_cs *cs,
 		buf += cs->prev[i].cdw;
 	}
 	memcpy(buf, cs->current.buf, cs->current.cdw * 4);
+
+	if (!get_buffer_list)
+		return;
 
 	/* Save the buffer list. */
 	saved->bo_count = ws->cs_get_buffer_list(cs, NULL);
@@ -730,6 +733,7 @@ void r600_common_context_cleanup(struct r600_common_context *rctx)
 static const struct debug_named_value common_debug_options[] = {
 	/* logging */
 	{ "tex", DBG_TEX, "Print texture info" },
+	{ "nir", DBG_NIR, "Enable experimental NIR shaders" },
 	{ "compute", DBG_COMPUTE, "Print compute info" },
 	{ "vm", DBG_VM, "Print virtual addresses when creating resources" },
 	{ "info", DBG_INFO, "Print driver information" },
@@ -1024,6 +1028,25 @@ const char *r600_get_llvm_processor_name(enum radeon_family family)
 	}
 }
 
+static unsigned get_max_threads_per_block(struct r600_common_screen *screen,
+					  enum pipe_shader_ir ir_type)
+{
+	if (ir_type != PIPE_SHADER_IR_TGSI)
+		return 256;
+
+	/* Only 16 waves per thread-group on gfx9. */
+	if (screen->chip_class >= GFX9)
+		return 1024;
+
+	/* Up to 40 waves per thread-group on GCN < gfx9. Expose a nice
+	 * round number.
+	 */
+	if (screen->chip_class >= SI)
+		return 2048;
+
+	return 256;
+}
+
 static int r600_get_compute_param(struct pipe_screen *screen,
         enum pipe_shader_ir ir_type,
         enum pipe_compute_cap param,
@@ -1078,27 +1101,17 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 	case PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE:
 		if (ret) {
 			uint64_t *block_size = ret;
-			if (rscreen->chip_class >= SI &&
-			    ir_type == PIPE_SHADER_IR_TGSI) {
-				block_size[0] = 2048;
-				block_size[1] = 2048;
-				block_size[2] = 2048;
-			} else {
-				block_size[0] = 256;
-				block_size[1] = 256;
-				block_size[2] = 256;
-			}
+			unsigned threads_per_block = get_max_threads_per_block(rscreen, ir_type);
+			block_size[0] = threads_per_block;
+			block_size[1] = threads_per_block;
+			block_size[2] = threads_per_block;
 		}
 		return 3 * sizeof(uint64_t);
 
 	case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
 		if (ret) {
 			uint64_t *max_threads_per_block = ret;
-			if (rscreen->chip_class >= SI &&
-			    ir_type == PIPE_SHADER_IR_TGSI)
-				*max_threads_per_block = 2048;
-			else
-				*max_threads_per_block = 256;
+			*max_threads_per_block = get_max_threads_per_block(rscreen, ir_type);
 		}
 		return sizeof(uint64_t);
 	case PIPE_COMPUTE_CAP_ADDRESS_BITS:
@@ -1322,7 +1335,7 @@ struct pipe_resource *r600_resource_create_common(struct pipe_screen *screen,
 }
 
 bool r600_common_screen_init(struct r600_common_screen *rscreen,
-			     struct radeon_winsys *ws, unsigned flags)
+			     struct radeon_winsys *ws)
 {
 	char family_name[32] = {}, llvm_string[32] = {}, kernel_version[128] = {};
 	struct utsname uname_data;
@@ -1332,7 +1345,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	rscreen->ws = ws;
 
 	if ((chip_name = r600_get_marketing_name(ws)))
-		snprintf(family_name, sizeof(family_name), "%s / ", r600_get_family_name(rscreen));
+		snprintf(family_name, sizeof(family_name), "%s / ",
+			 r600_get_family_name(rscreen) + 4);
 	else
 		chip_name = r600_get_family_name(rscreen);
 
@@ -1378,14 +1392,9 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 
 	rscreen->family = rscreen->info.family;
 	rscreen->chip_class = rscreen->info.chip_class;
-	rscreen->debug_flags = debug_get_flags_option("R600_DEBUG", common_debug_options, 0);
+	rscreen->debug_flags |= debug_get_flags_option("R600_DEBUG", common_debug_options, 0);
 	rscreen->has_rbplus = false;
 	rscreen->rbplus_allowed = false;
-
-	/* Set the flag in debug_flags, so that the shader cache takes it
-	 * into account. */
-	if (flags & PIPE_SCREEN_ENABLE_CORRECT_TGSI_DERIVATIVES_AFTER_KILL)
-		rscreen->debug_flags |= DBG_FS_CORRECT_DERIVS_AFTER_KILL;
 
 	r600_disk_cache_create(rscreen);
 
@@ -1403,28 +1412,39 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	(void) mtx_init(&rscreen->gpu_load_mutex, mtx_plain);
 
 	if (rscreen->debug_flags & DBG_INFO) {
+		printf("pci (domain:bus:dev.func): %04x:%02x:%02x.%x\n",
+		       rscreen->info.pci_domain, rscreen->info.pci_bus,
+		       rscreen->info.pci_dev, rscreen->info.pci_func);
 		printf("pci_id = 0x%x\n", rscreen->info.pci_id);
 		printf("family = %i (%s)\n", rscreen->info.family,
 		       r600_get_family_name(rscreen));
 		printf("chip_class = %i\n", rscreen->info.chip_class);
+		printf("pte_fragment_size = %u\n", rscreen->info.pte_fragment_size);
+		printf("gart_page_size = %u\n", rscreen->info.gart_page_size);
 		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size, 1024*1024));
 		printf("vram_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_size, 1024*1024));
 		printf("vram_vis_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_vis_size, 1024*1024));
 		printf("max_alloc_size = %i MB\n",
 		       (int)DIV_ROUND_UP(rscreen->info.max_alloc_size, 1024*1024));
+		printf("min_alloc_size = %u\n", rscreen->info.min_alloc_size);
+		printf("has_dedicated_vram = %u\n", rscreen->info.has_dedicated_vram);
 		printf("has_virtual_memory = %i\n", rscreen->info.has_virtual_memory);
 		printf("gfx_ib_pad_with_type2 = %i\n", rscreen->info.gfx_ib_pad_with_type2);
+		printf("has_hw_decode = %u\n", rscreen->info.has_hw_decode);
 		printf("num_sdma_rings = %i\n", rscreen->info.num_sdma_rings);
-		printf("has_hw_decode = %i\n", rscreen->info.has_hw_decode);
+		printf("num_compute_rings = %u\n", rscreen->info.num_compute_rings);
+		printf("uvd_fw_version = %u\n", rscreen->info.uvd_fw_version);
+		printf("vce_fw_version = %u\n", rscreen->info.vce_fw_version);
 		printf("me_fw_version = %i\n", rscreen->info.me_fw_version);
 		printf("pfp_fw_version = %i\n", rscreen->info.pfp_fw_version);
 		printf("ce_fw_version = %i\n", rscreen->info.ce_fw_version);
-		printf("vce_fw_version = %i\n", rscreen->info.vce_fw_version);
 		printf("vce_harvest_config = %i\n", rscreen->info.vce_harvest_config);
 		printf("clock_crystal_freq = %i\n", rscreen->info.clock_crystal_freq);
+		printf("tcc_cache_line_size = %u\n", rscreen->info.tcc_cache_line_size);
 		printf("drm = %i.%i.%i\n", rscreen->info.drm_major,
 		       rscreen->info.drm_minor, rscreen->info.drm_patchlevel);
 		printf("has_userptr = %i\n", rscreen->info.has_userptr);
+		printf("has_syncobj = %u\n", rscreen->info.has_syncobj);
 
 		printf("r600_max_quad_pipes = %i\n", rscreen->info.r600_max_quad_pipes);
 		printf("max_shader_clock = %i\n", rscreen->info.max_shader_clock);
@@ -1439,6 +1459,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("num_tile_pipes = %i\n", rscreen->info.num_tile_pipes);
 		printf("pipe_interleave_bytes = %i\n", rscreen->info.pipe_interleave_bytes);
 		printf("enabled_rb_mask = 0x%x\n", rscreen->info.enabled_rb_mask);
+		printf("max_alignment = %u\n", (unsigned)rscreen->info.max_alignment);
 	}
 	return true;
 }

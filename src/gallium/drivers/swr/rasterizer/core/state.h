@@ -577,6 +577,12 @@ struct SWR_FETCH_CONTEXT
     uint32_t StartInstance;                     // IN: start instance
     simdscalari VertexID;                       // OUT: vector of vertex IDs
     simdscalari CutMask;                        // OUT: vector mask of indices which have the cut index value
+#if USE_SIMD16_SHADERS
+//    simd16scalari VertexID;                     // OUT: vector of vertex IDs
+//    simd16scalari CutMask;                      // OUT: vector mask of indices which have the cut index value
+    simdscalari VertexID2;                      // OUT: vector of vertex IDs
+    simdscalari CutMask2;                       // OUT: vector mask of indices which have the cut index value
+#endif
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -830,7 +836,11 @@ static_assert(sizeof(SWR_BLEND_STATE) == 36, "Invalid SWR_BLEND_STATE size");
 //////////////////////////////////////////////////////////////////////////
 /// FUNCTION POINTERS FOR SHADERS
 
+#if USE_SIMD16_SHADERS
+typedef void(__cdecl *PFN_FETCH_FUNC)(SWR_FETCH_CONTEXT& fetchInfo, simd16vertex& out);
+#else
 typedef void(__cdecl *PFN_FETCH_FUNC)(SWR_FETCH_CONTEXT& fetchInfo, simdvertex& out);
+#endif
 typedef void(__cdecl *PFN_VERTEX_FUNC)(HANDLE hPrivateData, SWR_VS_CONTEXT* pVsContext);
 typedef void(__cdecl *PFN_HS_FUNC)(HANDLE hPrivateData, SWR_HS_CONTEXT* pHsContext);
 typedef void(__cdecl *PFN_DS_FUNC)(HANDLE hPrivateData, SWR_DS_CONTEXT* pDsContext);
@@ -842,7 +852,7 @@ typedef void(__cdecl *PFN_CPIXEL_KERNEL)(HANDLE hPrivateData, SWR_PS_CONTEXT *pC
 typedef void(__cdecl *PFN_BLEND_JIT_FUNC)(const SWR_BLEND_STATE*, 
     simdvector& vSrc, simdvector& vSrc1, simdscalar& vSrc0Alpha, uint32_t sample, 
     uint8_t* pDst, simdvector& vResult, simdscalari* vOMask, simdscalari* vCoverageMask);
-typedef simdscalar(*PFN_QUANTIZE_DEPTH)(simdscalar);
+typedef simdscalar(*PFN_QUANTIZE_DEPTH)(simdscalar const &);
 
 
 
@@ -1139,11 +1149,12 @@ struct SWR_PS_STATE
     uint32_t writesODepth           : 1;    // pixel shader writes to depth
     uint32_t usesSourceDepth        : 1;    // pixel shader reads depth
     uint32_t shadingRate            : 2;    // shading per pixel / sample / coarse pixel
-    uint32_t numRenderTargets       : 4;    // number of render target outputs in use (0-8)
     uint32_t posOffset              : 2;    // type of offset (none, sample, centroid) to add to pixel position
     uint32_t barycentricsMask       : 3;    // which type(s) of barycentric coords does the PS interpolate attributes with
     uint32_t usesUAV                : 1;    // pixel shader accesses UAV 
     uint32_t forceEarlyZ            : 1;    // force execution of early depth/stencil test
+
+    uint8_t renderTargetMask;               // Mask of render targets written
 };
 
 // depth bounds state

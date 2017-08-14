@@ -42,7 +42,6 @@ extern "C" {
 enum intel_msaa_layout;
 
 extern const struct brw_tracked_state brw_blend_constant_color;
-extern const struct brw_tracked_state brw_cc_unit;
 extern const struct brw_tracked_state brw_clip_unit;
 extern const struct brw_tracked_state brw_vs_pull_constants;
 extern const struct brw_tracked_state brw_tcs_pull_constants;
@@ -53,7 +52,6 @@ extern const struct brw_tracked_state brw_cs_pull_constants;
 extern const struct brw_tracked_state brw_constant_buffer;
 extern const struct brw_tracked_state brw_curbe_offsets;
 extern const struct brw_tracked_state brw_invariant_state;
-extern const struct brw_tracked_state brw_gs_unit;
 extern const struct brw_tracked_state brw_binding_table_pointers;
 extern const struct brw_tracked_state brw_depthbuffer;
 extern const struct brw_tracked_state brw_recalculate_urb_fence;
@@ -85,7 +83,6 @@ extern const struct brw_tracked_state brw_wm_image_surfaces;
 extern const struct brw_tracked_state brw_cs_ubo_surfaces;
 extern const struct brw_tracked_state brw_cs_abo_surfaces;
 extern const struct brw_tracked_state brw_cs_image_surfaces;
-extern const struct brw_tracked_state brw_wm_unit;
 
 extern const struct brw_tracked_state brw_psp_urb_cbs;
 
@@ -219,7 +216,7 @@ void brw_emit_buffer_surface_state(struct brw_context *brw,
                                    unsigned surface_format,
                                    unsigned buffer_size,
                                    unsigned pitch,
-                                   bool rw);
+                                   unsigned reloc_flags);
 
 void brw_update_texture_surface(struct gl_context *ctx,
                                 unsigned unit, uint32_t *surf_offset,
@@ -355,8 +352,6 @@ void gen75_init_atoms(struct brw_context *brw);
 void gen8_init_atoms(struct brw_context *brw);
 void gen9_init_atoms(struct brw_context *brw);
 void gen10_init_atoms(struct brw_context *brw);
-
-void upload_gs_state_for_tf(struct brw_context *brw);
 
 /* Memory Object Control State:
  * Specifying zero for L3 means "uncached in L3", at least on Haswell

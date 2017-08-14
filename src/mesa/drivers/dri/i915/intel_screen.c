@@ -39,7 +39,7 @@
 #include "swrast/s_renderbuffer.h"
 
 #include "utils.h"
-#include "xmlpool.h"
+#include "util/xmlpool.h"
 
 static const __DRIconfigOptionsExtension i915_config_options = {
    .base = { __DRI_CONFIG_OPTIONS, 1 },
@@ -47,7 +47,6 @@ static const __DRIconfigOptionsExtension i915_config_options = {
 
 DRI_CONF_BEGIN
    DRI_CONF_SECTION_PERFORMANCE
-      DRI_CONF_VBLANK_MODE(DRI_CONF_VBLANK_ALWAYS_SYNC)
       /* Options correspond to DRI_CONF_BO_REUSE_DISABLED,
        * DRI_CONF_BO_REUSE_ALL
        */
@@ -802,6 +801,7 @@ static const __DRIextension *intelScreenExtensions[] = {
     &intelImageExtension.base,
     &intelRendererQueryExtension.base,
     &dri2ConfigQueryExtension.base,
+    &dri2NoErrorExtension.base,
     NULL
 };
 
@@ -971,7 +971,7 @@ intelCreateContext(gl_api api,
    __DRIscreen *sPriv = driContextPriv->driScreenPriv;
    struct intel_screen *intelScreen = sPriv->driverPrivate;
 
-   if (flags & ~__DRI_CTX_FLAG_DEBUG) {
+   if (flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_NO_ERROR)) {
       *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
       return false;
    }
@@ -1060,7 +1060,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
 
    /* GLX_SWAP_COPY_OML is not supported due to page flipping. */
    static const GLenum back_buffer_modes[] = {
-       GLX_SWAP_UNDEFINED_OML, GLX_NONE,
+      __DRI_ATTRIB_SWAP_UNDEFINED, __DRI_ATTRIB_SWAP_NONE
    };
 
    static const uint8_t singlesample_samples[1] = {0};

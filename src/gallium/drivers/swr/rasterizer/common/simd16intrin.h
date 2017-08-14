@@ -126,7 +126,7 @@ typedef SIMD512                             SIMD16;
 #define _simd16_add_epi8                    SIMD16::add_epi8
 #define _simd16_shuffle_epi8                SIMD16::shuffle_epi8
 
-#define _simd16_i32gather_ps(m, index, scale)               SIMD16::i32gather_ps<SIMD16::ScaleFactor(scale)>(index, m)
+#define _simd16_i32gather_ps(m, index, scale)               SIMD16::i32gather_ps<SIMD16::ScaleFactor(scale)>(m, index)
 #define _simd16_mask_i32gather_ps(a, m, index, mask, scale) SIMD16::mask_i32gather_ps<SIMD16::ScaleFactor(scale)>(a, m, index, mask)
 
 #define _simd16_abs_epi32                   SIMD16::abs_epi32
@@ -159,8 +159,10 @@ typedef SIMD512                             SIMD16;
 #define _simd16_packus_epi32                SIMD16::packus_epi32
 #define _simd16_packs_epi32                 SIMD16::packs_epi32
 #define _simd16_cmplt_ps_mask               SIMD16::cmp_ps_mask<SIMD16::CompareType::LT_OQ>
+#define _simd16_cmpeq_ps_mask               SIMD16::cmp_ps_mask<SIMD16::CompareType::EQ_OQ>
 #define _simd16_int2mask(mask)              simd16mask(mask)
 #define _simd16_mask2int(mask)              int(mask)
+#define _simd16_vmask_ps                    SIMD16::vmask_ps
 
 #endif//ENABLE_AVX512_SIMD16
 

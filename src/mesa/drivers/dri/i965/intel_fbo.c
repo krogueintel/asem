@@ -143,7 +143,7 @@ intel_map_renderbuffer(struct gl_context *ctx,
          irb->singlesample_mt =
             intel_miptree_create_for_renderbuffer(brw, irb->mt->format,
                                                   rb->Width, rb->Height,
-                                                  0 /*num_samples*/);
+                                                  1 /*num_samples*/);
          if (!irb->singlesample_mt)
             goto fail;
          irb->singlesample_mt_is_tmp = true;
@@ -303,7 +303,7 @@ intel_alloc_private_renderbuffer_storage(struct gl_context * ctx, struct gl_rend
 
    irb->mt = intel_miptree_create_for_renderbuffer(brw, rb->Format,
 						   width, height,
-                                                   rb->NumSamples);
+                                                   MAX2(rb->NumSamples, 1));
    if (!irb->mt)
       return false;
 
@@ -362,30 +362,10 @@ intel_image_target_renderbuffer_storage(struct gl_context *ctx,
     * buffer's content to the main buffer nor for invalidating the aux buffer's
     * content.
     */
-   irb->mt = intel_miptree_create_for_bo(brw,
-                                         image->bo,
-                                         image->format,
-                                         image->offset,
-                                         image->width,
-                                         image->height,
-                                         1,
-                                         image->pitch,
-                                         MIPTREE_LAYOUT_DISABLE_AUX);
+   irb->mt = intel_miptree_create_for_dri_image(brw, image, GL_TEXTURE_2D,
+                                                ISL_COLORSPACE_NONE, false);
    if (!irb->mt)
       return;
-
-   /* Adjust the miptree's upper-left coordinate.
-    *
-    * FIXME: Adjusting the miptree's layout outside of
-    * intel_miptree_create_layout() is fragile. Plumb the adjustment through
-    * intel_miptree_create_layout() and brw_tex_layout().
-    */
-   irb->mt->level[0].level_x = image->tile_x;
-   irb->mt->level[0].level_y = image->tile_y;
-   irb->mt->level[0].slice[0].x_offset = image->tile_x;
-   irb->mt->level[0].slice[0].y_offset = image->tile_y;
-   irb->mt->total_width += image->tile_x;
-   irb->mt->total_height += image->tile_y;
 
    rb->InternalFormat = image->internal_format;
    rb->Width = image->width;
@@ -550,37 +530,21 @@ intel_renderbuffer_update_wrapper(struct brw_context *brw,
 
    intel_miptree_check_level_layer(mt, level, layer);
    irb->mt_level = level;
-
-   int layer_multiplier;
-   switch (mt->msaa_layout) {
-      case INTEL_MSAA_LAYOUT_UMS:
-      case INTEL_MSAA_LAYOUT_CMS:
-         layer_multiplier = MAX2(mt->num_samples, 1);
-         break;
-
-      default:
-         layer_multiplier = 1;
-   }
-
-   irb->mt_layer = layer_multiplier * layer;
+   irb->mt_layer = layer;
 
    if (!layered) {
       irb->layer_count = 1;
    } else if (mt->target != GL_TEXTURE_3D && image->TexObject->NumLayers > 0) {
       irb->layer_count = image->TexObject->NumLayers;
    } else {
-      irb->layer_count = mt->level[level].depth / layer_multiplier;
+      irb->layer_count = mt->surf.dim == ISL_SURF_DIM_3D ?
+                            minify(mt->surf.logical_level0_px.depth, level) :
+                            mt->surf.logical_level0_px.array_len;
    }
 
    intel_miptree_reference(&irb->mt, mt);
 
    intel_renderbuffer_set_draw_offset(irb);
-
-   if (mt->aux_usage == ISL_AUX_USAGE_HIZ && !mt->hiz_buf) {
-      intel_miptree_alloc_hiz(brw, mt);
-      if (!mt->hiz_buf)
-	 return false;
-   }
 
    return true;
 }
@@ -691,32 +655,17 @@ intel_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
 
    if (depth_mt && stencil_mt) {
       if (brw->gen >= 6) {
-         unsigned d_width, d_height, d_depth;
-         unsigned s_width, s_height, s_depth;
+         const unsigned d_width = depth_mt->surf.phys_level0_sa.width;
+         const unsigned d_height = depth_mt->surf.phys_level0_sa.height;
+         const unsigned d_depth = depth_mt->surf.dim == ISL_SURF_DIM_3D ?
+                                     depth_mt->surf.phys_level0_sa.depth :
+                                     depth_mt->surf.phys_level0_sa.array_len;
 
-         if (depth_mt->surf.size > 0) {
-             d_width = depth_mt->surf.phys_level0_sa.width;
-             d_height = depth_mt->surf.phys_level0_sa.height;
-             d_depth = depth_mt->surf.dim == ISL_SURF_DIM_3D ?
-                          depth_mt->surf.phys_level0_sa.depth :
-                          depth_mt->surf.phys_level0_sa.array_len;
-         } else {
-             d_width = depth_mt->physical_width0;
-             d_height = depth_mt->physical_height0;
-             d_depth = depth_mt->physical_depth0;
-         }
-
-         if (stencil_mt->surf.size > 0) {
-             s_width = stencil_mt->surf.phys_level0_sa.width;
-             s_height = stencil_mt->surf.phys_level0_sa.height;
-             s_depth = stencil_mt->surf.dim == ISL_SURF_DIM_3D ?
-                          stencil_mt->surf.phys_level0_sa.depth :
-                          stencil_mt->surf.phys_level0_sa.array_len;
-         } else {
-             s_width = stencil_mt->physical_width0;
-             s_height = stencil_mt->physical_height0;
-             s_depth = stencil_mt->physical_depth0;
-         }
+         const unsigned s_width = stencil_mt->surf.phys_level0_sa.width;
+         const unsigned s_height = stencil_mt->surf.phys_level0_sa.height;
+         const unsigned s_depth = stencil_mt->surf.dim == ISL_SURF_DIM_3D ?
+                                     stencil_mt->surf.phys_level0_sa.depth :
+                                     stencil_mt->surf.phys_level0_sa.array_len;
 
          /* For gen >= 6, we are using the lod/minimum-array-element fields
           * and supporting layered rendering. This means that we must restrict
@@ -995,9 +944,6 @@ intel_renderbuffer_move_to_temp(struct brw_context *brw,
    struct intel_mipmap_tree *new_mt;
    int width, height, depth;
 
-   uint32_t layout_flags = MIPTREE_LAYOUT_ACCELERATED_UPLOAD |
-                           MIPTREE_LAYOUT_TILING_ANY;
-
    intel_get_image_dims(rb->TexImage, &width, &height, &depth);
 
    assert(irb->align_wa_mt == NULL);
@@ -1005,8 +951,8 @@ intel_renderbuffer_move_to_temp(struct brw_context *brw,
                                  intel_image->base.Base.TexFormat,
                                  0, 0,
                                  width, height, 1,
-                                 irb->mt->num_samples,
-                                 layout_flags);
+                                 irb->mt->surf.samples,
+                                 MIPTREE_CREATE_BUSY);
 
    if (!invalidate)
       intel_miptree_copy_slice(brw, intel_image->mt,

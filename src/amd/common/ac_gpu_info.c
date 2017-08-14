@@ -84,6 +84,14 @@ static unsigned cik_get_num_tile_pipes(struct amdgpu_gpu_info *info)
    }
 }
 
+static bool has_syncobj(int fd)
+{
+	uint64_t value;
+	if (drmGetCap(fd, DRM_CAP_SYNCOBJ, &value))
+		return false;
+	return value ? true : false;
+}
+
 bool ac_query_gpu_info(int fd, amdgpu_device_handle dev,
 		       struct radeon_info *info,
 		       struct amdgpu_gpu_info *amdinfo)
@@ -258,8 +266,13 @@ bool ac_query_gpu_info(int fd, amdgpu_device_handle dev,
 	info->vce_fw_version =
 		vce.available_rings ? vce_version : 0;
 	info->has_userptr = true;
+	info->has_syncobj = has_syncobj(fd);
 	info->num_render_backends = amdinfo->rb_pipes;
 	info->clock_crystal_freq = amdinfo->gpu_counter_freq;
+	if (!info->clock_crystal_freq) {
+		fprintf(stderr, "amdgpu: clock crystal frequency is 0, timestamps will be wrong\n");
+		info->clock_crystal_freq = 1;
+	}
 	info->tcc_cache_line_size = 64; /* TC L2 line size on GCN */
 	if (info->chip_class == GFX9) {
 		info->num_tile_pipes = 1 << G_0098F8_NUM_PIPES(amdinfo->gb_addr_cfg);
@@ -301,3 +314,30 @@ bool ac_query_gpu_info(int fd, amdgpu_device_handle dev,
 	return true;
 }
 
+void ac_compute_driver_uuid(char *uuid, size_t size)
+{
+	char amd_uuid[] = "AMD-MESA-DRV";
+
+	assert(size >= sizeof(amd_uuid));
+
+	memset(uuid, 0, size);
+	strncpy(uuid, amd_uuid, size);
+}
+
+void ac_compute_device_uuid(struct radeon_info *info, char *uuid, size_t size)
+{
+	uint32_t *uint_uuid = (uint32_t*)uuid;
+
+	assert(size >= sizeof(uint32_t)*4);
+
+	/**
+	 * Use the device info directly instead of using a sha1. GL/VK UUIDs
+	 * are 16 byte vs 20 byte for sha1, and the truncation that would be
+	 * required would get rid of part of the little entropy we have.
+	 * */
+	memset(uuid, 0, size);
+	uint_uuid[0] = info->pci_domain;
+	uint_uuid[1] = info->pci_bus;
+	uint_uuid[2] = info->pci_dev;
+	uint_uuid[3] = info->pci_func;
+}

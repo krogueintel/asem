@@ -30,30 +30,7 @@ import xml.etree.cElementTree as et
 
 from mako.template import Template
 
-MAX_API_VERSION = 1.0
-
-SUPPORTED_EXTENSIONS = [
-    'VK_KHR_descriptor_update_template',
-    'VK_KHR_get_physical_device_properties2',
-    'VK_KHR_get_surface_capabilities2',
-    'VK_KHR_incremental_present',
-    'VK_KHR_maintenance1',
-    'VK_KHR_push_descriptor',
-    'VK_KHR_sampler_mirror_clamp_to_edge',
-    'VK_KHR_shader_draw_parameters',
-    'VK_KHR_surface',
-    'VK_KHR_swapchain',
-    'VK_KHR_wayland_surface',
-    'VK_KHR_xcb_surface',
-    'VK_KHR_xlib_surface',
-    'VK_KHX_external_memory',
-    'VK_KHX_external_memory_capabilities',
-    'VK_KHX_external_memory_fd',
-    'VK_KHX_external_semaphore',
-    'VK_KHX_external_semaphore_capabilities',
-    'VK_KHX_external_semaphore_fd',
-    'VK_KHX_multiview',
-]
+from anv_extensions import *
 
 # We generate a static hash table for entry point lookup
 # (vkGetProcAddress). We use a linear congruential generator for our hash
@@ -283,14 +260,15 @@ def get_entrypoints(doc, entrypoints_to_defines):
     enabled_commands = set()
     for feature in doc.findall('./feature'):
         assert feature.attrib['api'] == 'vulkan'
-        if float(feature.attrib['number']) > MAX_API_VERSION:
+        if VkVersion(feature.attrib['number']) > MAX_API_VERSION:
             continue
 
         for command in feature.findall('./require/command'):
             enabled_commands.add(command.attrib['name'])
 
+    supported = set(ext.name for ext in EXTENSIONS)
     for extension in doc.findall('.extensions/extension'):
-        if extension.attrib['name'] not in SUPPORTED_EXTENSIONS:
+        if extension.attrib['name'] not in supported:
             continue
 
         assert extension.attrib['supported'] == 'vulkan'

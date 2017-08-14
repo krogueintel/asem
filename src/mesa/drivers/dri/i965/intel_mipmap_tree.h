@@ -100,21 +100,6 @@ struct intel_mipmap_level
    GLuint level_y;
 
    /**
-    * \brief Number of 2D slices in this miplevel.
-    *
-    * The exact semantics of depth varies according to the texture target:
-    *    - For GL_TEXTURE_CUBE_MAP, depth is 6.
-    *    - For GL_TEXTURE_2D_ARRAY, depth is the number of array slices. It is
-    *      identical for all miplevels in the texture.
-    *    - For GL_TEXTURE_3D, it is the texture's depth at this miplevel. Its
-    *      value, like width and height, varies with miplevel.
-    *    - For other texture types, depth is 1.
-    *    - Additionally, for UMS and CMS miptrees, depth is multiplied by
-    *      sample count.
-    */
-   GLuint depth;
-
-   /**
     * \brief Is HiZ enabled for this level?
     *
     * If \c mt->level[l].has_hiz is set, then (1) \c mt->hiz_mt has been
@@ -131,160 +116,11 @@ struct intel_mipmap_level
     */
    struct intel_mipmap_slice {
       /**
-       * \name Offset to slice
-       * \{
-       *
-       * Hardware formats are so diverse that that there is no unified way to
-       * compute the slice offsets, so we store them in this table.
-       *
-       * The (x, y) offset to slice \c s at level \c l relative the miptrees
-       * base address is
-       * \code
-       *     x = mt->level[l].slice[s].x_offset
-       *     y = mt->level[l].slice[s].y_offset
-       *
-       * On some hardware generations, we program these offsets into
-       * RENDER_SURFACE_STATE.XOffset and RENDER_SURFACE_STATE.YOffset.
-       */
-      GLuint x_offset;
-      GLuint y_offset;
-      /** \} */
-
-      /**
        * Mapping information. Persistent for the duration of
        * intel_miptree_map/unmap on this slice.
        */
       struct intel_miptree_map *map;
    } *slice;
-};
-
-/**
- * Enum for keeping track of the different MSAA layouts supported by Gen7.
- */
-enum intel_msaa_layout
-{
-   /**
-    * Ordinary surface with no MSAA.
-    */
-   INTEL_MSAA_LAYOUT_NONE,
-
-   /**
-    * Interleaved Multisample Surface.  The additional samples are
-    * accommodated by scaling up the width and the height of the surface so
-    * that all the samples corresponding to a pixel are located at nearby
-    * memory locations.
-    *
-    * @see PRM section "Interleaved Multisampled Surfaces"
-    */
-   INTEL_MSAA_LAYOUT_IMS,
-
-   /**
-    * Uncompressed Multisample Surface.  The surface is stored as a 2D array,
-    * with array slice n containing all pixel data for sample n.
-    *
-    * @see PRM section "Uncompressed Multisampled Surfaces"
-    */
-   INTEL_MSAA_LAYOUT_UMS,
-
-   /**
-    * Compressed Multisample Surface.  The surface is stored as in
-    * INTEL_MSAA_LAYOUT_UMS, but there is an additional buffer called the MCS
-    * (Multisample Control Surface) buffer.  Each pixel in the MCS buffer
-    * indicates the mapping from sample number to array slice.  This allows
-    * the common case (where all samples constituting a pixel have the same
-    * color value) to be stored efficiently by just using a single array
-    * slice.
-    *
-    * @see PRM section "Compressed Multisampled Surfaces"
-    */
-   INTEL_MSAA_LAYOUT_CMS,
-};
-
-enum miptree_array_layout {
-   /* Each array slice contains all miplevels packed together.
-    *
-    * Gen hardware usually wants multilevel miptrees configured this way.
-    *
-    * A 2D Array texture with 2 slices and multiple LODs using
-    * ALL_LOD_IN_EACH_SLICE would look somewhat like this:
-    *
-    *   +----------+
-    *   |          |
-    *   |          |
-    *   +----------+
-    *   +---+ +-+
-    *   |   | +-+
-    *   +---+ *
-    *   +----------+
-    *   |          |
-    *   |          |
-    *   +----------+
-    *   +---+ +-+
-    *   |   | +-+
-    *   +---+ *
-    */
-   ALL_LOD_IN_EACH_SLICE,
-
-   /* Each LOD contains all slices of that LOD packed together.
-    *
-    * In some situations, Gen7+ hardware can use the array_spacing_lod0
-    * feature to save space when the surface only contains LOD 0.
-    *
-    * Gen6 uses this for separate stencil and hiz since gen6 does not support
-    * multiple LODs for separate stencil and hiz.
-    *
-    * A 2D Array texture with 2 slices and multiple LODs using
-    * ALL_SLICES_AT_EACH_LOD would look somewhat like this:
-    *
-    *   +----------+
-    *   |          |
-    *   |          |
-    *   +----------+
-    *   |          |
-    *   |          |
-    *   +----------+
-    *   +---+ +-+
-    *   |   | +-+
-    *   +---+ +-+
-    *   |   | :
-    *   +---+
-    */
-   ALL_SLICES_AT_EACH_LOD,
-
-   /* On Sandy Bridge, HiZ and stencil buffers work the same as on Ivy Bridge
-    * except that they don't technically support mipmapping.  That does not,
-    * however, stop us from doing it.  As far as Sandy Bridge hardware is
-    * concerned, HiZ and stencil always operates on a single miplevel 2D
-    * (possibly array) image.  The dimensions of that image are NOT minified.
-    *
-    * In order to implement HiZ and stencil on Sandy Bridge, we create one
-    * full-sized 2D (possibly array) image for every LOD with every image
-    * aligned to a page boundary.  In order to save memory, we pretend that
-    * the width of each miplevel is minified and we place LOD1 and above below
-    * LOD0 but horizontally adjacent to each other.  When considered as
-    * full-sized images, LOD1 and above technically overlap.  However, since
-    * we only write to part of that image, the hardware will never notice the
-    * overlap.
-    *
-    * This layout looks something like this:
-    *
-    *   +---------+
-    *   |         |
-    *   |         |
-    *   +---------+
-    *   |         |
-    *   |         |
-    *   +---------+
-    *
-    *   +----+ +-+ .
-    *   |    | +-+
-    *   +----+
-    *
-    *   +----+ +-+ .
-    *   |    | +-+
-    *   +----+
-    */
-   GEN6_HIZ_STENCIL,
 };
 
 /**
@@ -362,25 +198,6 @@ struct intel_mipmap_tree
    struct brw_bo *bo;
 
    /**
-    * Pitch in bytes.
-    *
-    * @see RENDER_SURFACE_STATE.SurfacePitch
-    * @see RENDER_SURFACE_STATE.AuxiliarySurfacePitch
-    * @see 3DSTATE_DEPTH_BUFFER.SurfacePitch
-    * @see 3DSTATE_HIER_DEPTH_BUFFER.SurfacePitch
-    * @see 3DSTATE_STENCIL_BUFFER.SurfacePitch
-    */
-   uint32_t pitch;
-
-   /**
-    * One of the I915_TILING_* flags.
-    *
-    * @see RENDER_SURFACE_STATE.TileMode
-    * @see 3DSTATE_DEPTH_BUFFER.TileMode
-    */
-   uint32_t tiling;
-
-   /**
     * @brief One of GL_TEXTURE_2D, GL_TEXTURE_2D_ARRAY, etc.
     *
     * @see RENDER_SURFACE_STATE.SurfaceType
@@ -415,120 +232,13 @@ struct intel_mipmap_tree
     */
    mesa_format etc_format;
 
-   /**
-    * @name Surface Alignment
-    * @{
-    *
-    * This defines the alignment of the upperleft pixel of each "slice" in the
-    * surface. The alignment is in pixel coordinates relative to the surface's
-    * most upperleft pixel, which is the pixel at (x=0, y=0, layer=0,
-    * level=0).
-    *
-    * The hardware docs do not use the term "slice".  We use "slice" to mean
-    * the pixels at a given miplevel and layer. For 2D surfaces, the layer is
-    * the array slice; for 3D surfaces, the layer is the z offset.
-    *
-    * In the surface layout equations found in the hardware docs, the
-    * horizontal and vertical surface alignments often appear as variables 'i'
-    * and 'j'.
-    */
-
-   /** @see RENDER_SURFACE_STATE.SurfaceHorizontalAlignment */
-   uint32_t halign;
-
-   /** @see RENDER_SURFACE_STATE.SurfaceVerticalAlignment */
-   uint32_t valign;
-   /** @} */
-
    GLuint first_level;
    GLuint last_level;
-
-   /**
-    * Level zero image dimensions.  These dimensions correspond to the
-    * physical layout of data in memory.  Accordingly, they account for the
-    * extra width, height, and or depth that must be allocated in order to
-    * accommodate multisample formats, and they account for the extra factor
-    * of 6 in depth that must be allocated in order to accommodate cubemap
-    * textures.
-    */
-   GLuint physical_width0, physical_height0, physical_depth0;
 
    /** Bytes per pixel (or bytes per block if compressed) */
    GLuint cpp;
 
-   /**
-    * @see RENDER_SURFACE_STATE.NumberOfMultisamples
-    * @see 3DSTATE_MULTISAMPLE.NumberOfMultisamples
-    */
-   GLuint num_samples;
-
    bool compressed;
-
-   /**
-    * @name Level zero image dimensions
-    * @{
-    *
-    * These dimensions correspond to the
-    * logical width, height, and depth of the texture as seen by client code.
-    * Accordingly, they do not account for the extra width, height, and/or
-    * depth that must be allocated in order to accommodate multisample
-    * formats, nor do they account for the extra factor of 6 in depth that
-    * must be allocated in order to accommodate cubemap textures.
-    */
-
-   /**
-    * @see RENDER_SURFACE_STATE.Width
-    * @see 3DSTATE_DEPTH_BUFFER.Width
-    */
-   uint32_t logical_width0;
-
-   /**
-    * @see RENDER_SURFACE_STATE.Height
-    * @see 3DSTATE_DEPTH_BUFFER.Height
-    */
-   uint32_t logical_height0;
-
-   /**
-    * @see RENDER_SURFACE_STATE.Depth
-    * @see 3DSTATE_DEPTH_BUFFER.Depth
-    */
-   uint32_t logical_depth0;
-   /** @} */
-
-   /**
-    * Indicates if we use the standard miptree layout (ALL_LOD_IN_EACH_SLICE),
-    * or if we tightly pack array slices at each LOD (ALL_SLICES_AT_EACH_LOD).
-    */
-   enum miptree_array_layout array_layout;
-
-   /**
-    * The distance in between array slices.
-    *
-    * The value is the one that is sent in the surface state. The actual
-    * meaning depends on certain criteria. Usually it is simply the number of
-    * uncompressed rows between each slice. However on Gen9+ for compressed
-    * surfaces it is the number of blocks. For 1D array surfaces that have the
-    * mipmap tree stored horizontally it is the number of pixels between each
-    * slice.
-    *
-    * @see RENDER_SURFACE_STATE.SurfaceQPitch
-    * @see 3DSTATE_DEPTH_BUFFER.SurfaceQPitch
-    * @see 3DSTATE_HIER_DEPTH_BUFFER.SurfaceQPitch
-    * @see 3DSTATE_STENCIL_BUFFER.SurfaceQPitch
-    */
-   uint32_t qpitch;
-
-   /**
-    * MSAA layout used by this buffer.
-    *
-    * @see RENDER_SURFACE_STATE.MultisampledSurfaceStorageFormat
-    */
-   enum intel_msaa_layout msaa_layout;
-
-   /* Derived from the above:
-    */
-   GLuint total_width;
-   GLuint total_height;
 
    /* Includes image offset tables: */
    struct intel_mipmap_level level[MAX_TEXTURE_LEVELS];
@@ -629,39 +339,38 @@ struct intel_mipmap_tree
     */
    union isl_color_value fast_clear_color;
 
-   /**
-    * Tells if the underlying buffer is to be also consumed by entities other
-    * than the driver. This allows logic to turn off features such as lossless
-    * compression which is not currently understood by client applications.
-    */
-   bool is_scanout;
-
    /* These are also refcounted:
     */
    GLuint refcount;
 };
 
 bool
-intel_miptree_is_lossless_compressed(const struct brw_context *brw,
-                                     const struct intel_mipmap_tree *mt);
-
-bool
 intel_miptree_alloc_ccs(struct brw_context *brw,
                         struct intel_mipmap_tree *mt);
 
-enum {
-   MIPTREE_LAYOUT_ACCELERATED_UPLOAD       = 1 << 0,
-   MIPTREE_LAYOUT_GEN6_HIZ_STENCIL         = 1 << 1,
-   MIPTREE_LAYOUT_FOR_BO                   = 1 << 2,
-   MIPTREE_LAYOUT_DISABLE_AUX              = 1 << 3,
-   MIPTREE_LAYOUT_FORCE_HALIGN16           = 1 << 4,
+enum intel_miptree_create_flags {
+   /** No miptree create flags */
+   MIPTREE_CREATE_DEFAULT  = 0,
 
-   MIPTREE_LAYOUT_TILING_Y                 = 1 << 5,
-   MIPTREE_LAYOUT_TILING_NONE              = 1 << 6,
-   MIPTREE_LAYOUT_TILING_ANY               = MIPTREE_LAYOUT_TILING_Y |
-                                             MIPTREE_LAYOUT_TILING_NONE,
+   /** Miptree creation should try to allocate a currently busy BO
+    *
+    * This may be advantageous if we know the next thing to touch the BO will
+    * be the GPU because the BO will likely already be in the GTT and maybe
+    * even in some caches.  If there is a chance that the next thing to touch
+    * the miptree BO will be the CPU, this flag should not be set.
+    */
+   MIPTREE_CREATE_BUSY     = 1 << 0,
 
-   MIPTREE_LAYOUT_FOR_SCANOUT              = 1 << 7,
+   /** Create a linear (not tiled) miptree */
+   MIPTREE_CREATE_LINEAR   = 1 << 1,
+
+   /** Create the miptree with auxiliary compression disabled
+    *
+    * This does not prevent the caller of intel_miptree_create from coming
+    * along later and turning auxiliary compression back on but it does mean
+    * that the miptree will be created with mt->aux_usage == NONE.
+    */
+   MIPTREE_CREATE_NO_AUX   = 1 << 2,
 };
 
 struct intel_mipmap_tree *intel_miptree_create(struct brw_context *brw,
@@ -673,7 +382,7 @@ struct intel_mipmap_tree *intel_miptree_create(struct brw_context *brw,
                                                GLuint height0,
                                                GLuint depth0,
                                                GLuint num_samples,
-                                               uint32_t flags);
+                                               enum intel_miptree_create_flags flags);
 
 struct intel_mipmap_tree *
 intel_miptree_create_for_bo(struct brw_context *brw,
@@ -684,12 +393,19 @@ intel_miptree_create_for_bo(struct brw_context *brw,
                             uint32_t height,
                             uint32_t depth,
                             int pitch,
-                            uint32_t layout_flags);
+                            enum intel_miptree_create_flags flags);
 
-void
+struct intel_mipmap_tree *
+intel_miptree_create_for_dri_image(struct brw_context *brw,
+                                   __DRIimage *image,
+                                   GLenum target,
+                                   enum isl_colorspace colorspace,
+                                   bool is_winsys_image);
+
+bool
 intel_update_winsys_renderbuffer_miptree(struct brw_context *intel,
                                          struct intel_renderbuffer *irb,
-                                         struct brw_bo *bo,
+                                         struct intel_mipmap_tree *singlesample_mt,
                                          uint32_t width, uint32_t height,
                                          uint32_t pitch);
 
@@ -712,6 +428,9 @@ intel_depth_format_for_depthstencil_format(mesa_format format);
 
 mesa_format
 intel_lower_compressed_format(struct brw_context *brw, mesa_format format);
+
+unsigned
+brw_get_num_logical_layers(const struct intel_mipmap_tree *mt, unsigned level);
 
 /** \brief Assert that the level and layer are valid for the miptree. */
 void
@@ -738,16 +457,8 @@ enum isl_surf_dim
 get_isl_surf_dim(GLenum target);
 
 enum isl_dim_layout
-get_isl_dim_layout(const struct gen_device_info *devinfo, uint32_t tiling,
-                   GLenum target, enum miptree_array_layout array_layout);
-
-enum isl_tiling
-intel_miptree_get_isl_tiling(const struct intel_mipmap_tree *mt);
-
-void
-intel_miptree_get_isl_surf(struct brw_context *brw,
-                           const struct intel_mipmap_tree *mt,
-                           struct isl_surf *surf);
+get_isl_dim_layout(const struct gen_device_info *devinfo,
+                   enum isl_tiling tiling, GLenum target);
 
 enum isl_aux_usage
 intel_miptree_get_aux_isl_usage(const struct brw_context *brw,
@@ -758,11 +469,11 @@ intel_get_image_dims(struct gl_texture_image *image,
                      int *width, int *height, int *depth);
 
 void
-intel_get_tile_masks(uint32_t tiling, uint32_t cpp,
+intel_get_tile_masks(enum isl_tiling tiling, uint32_t cpp,
                      uint32_t *mask_x, uint32_t *mask_y);
 
 void
-intel_get_tile_dims(uint32_t tiling, uint32_t cpp,
+intel_get_tile_dims(enum isl_tiling tiling, uint32_t cpp,
                     uint32_t *tile_w, uint32_t *tile_h);
 
 uint32_t
@@ -773,14 +484,6 @@ intel_miptree_get_tile_offsets(const struct intel_mipmap_tree *mt,
 uint32_t
 intel_miptree_get_aligned_offset(const struct intel_mipmap_tree *mt,
                                  uint32_t x, uint32_t y);
-
-void intel_miptree_set_level_info(struct intel_mipmap_tree *mt,
-                                  GLuint level,
-                                  GLuint x, GLuint y, GLuint d);
-
-void intel_miptree_set_image_offset(struct intel_mipmap_tree *mt,
-                                    GLuint level,
-                                    GLuint img, GLuint x, GLuint y);
 
 void
 intel_miptree_copy_slice(struct brw_context *brw,
@@ -855,7 +558,8 @@ intel_miptree_prepare_access(struct brw_context *brw,
                              struct intel_mipmap_tree *mt,
                              uint32_t start_level, uint32_t num_levels,
                              uint32_t start_layer, uint32_t num_layers,
-                             bool aux_supported, bool fast_clear_supported);
+                             enum isl_aux_usage aux_usage,
+                             bool fast_clear_supported);
 
 /** Complete a write operation
  *
@@ -881,7 +585,7 @@ void
 intel_miptree_finish_write(struct brw_context *brw,
                            struct intel_mipmap_tree *mt, uint32_t level,
                            uint32_t start_layer, uint32_t num_layers,
-                           bool written_with_aux);
+                           enum isl_aux_usage aux_usage);
 
 /** Get the auxiliary compression state of a miptree slice */
 enum isl_aux_state
@@ -920,10 +624,14 @@ intel_miptree_access_raw(struct brw_context *brw,
       intel_miptree_finish_write(brw, mt, level, layer, 1, false);
 }
 
+enum isl_aux_usage
+intel_miptree_texture_aux_usage(struct brw_context *brw,
+                                struct intel_mipmap_tree *mt,
+                                enum isl_format view_format);
 void
 intel_miptree_prepare_texture(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
-                              mesa_format view_format,
+                              enum isl_format view_format,
                               bool *aux_supported_out);
 void
 intel_miptree_prepare_image(struct brw_context *brw,
@@ -932,15 +640,20 @@ void
 intel_miptree_prepare_fb_fetch(struct brw_context *brw,
                                struct intel_mipmap_tree *mt, uint32_t level,
                                uint32_t start_layer, uint32_t num_layers);
+enum isl_aux_usage
+intel_miptree_render_aux_usage(struct brw_context *brw,
+                               struct intel_mipmap_tree *mt,
+                               bool srgb_enabled, bool blend_enabled);
 void
 intel_miptree_prepare_render(struct brw_context *brw,
                              struct intel_mipmap_tree *mt, uint32_t level,
                              uint32_t start_layer, uint32_t layer_count,
-                             bool srgb_enabled);
+                             bool srgb_enabled, bool blend_enabled);
 void
 intel_miptree_finish_render(struct brw_context *brw,
                             struct intel_mipmap_tree *mt, uint32_t level,
-                            uint32_t start_layer, uint32_t layer_count);
+                            uint32_t start_layer, uint32_t layer_count,
+                            bool srgb_enabled, bool blend_enabled);
 void
 intel_miptree_prepare_depth(struct brw_context *brw,
                             struct intel_mipmap_tree *mt, uint32_t level,
@@ -963,29 +676,6 @@ intel_miptree_updownsample(struct brw_context *brw,
 void
 intel_update_r8stencil(struct brw_context *brw,
                        struct intel_mipmap_tree *mt);
-
-/**
- * Horizontal distance from one slice to the next in the two-dimensional
- * miptree layout.
- */
-unsigned
-brw_miptree_get_horizontal_slice_pitch(const struct brw_context *brw,
-                                       const struct intel_mipmap_tree *mt,
-                                       unsigned level);
-
-/**
- * Vertical distance from one slice to the next in the two-dimensional miptree
- * layout.
- */
-unsigned
-brw_miptree_get_vertical_slice_pitch(const struct brw_context *brw,
-                                     const struct intel_mipmap_tree *mt,
-                                     unsigned level);
-
-bool
-brw_miptree_layout(struct brw_context *brw,
-                   struct intel_mipmap_tree *mt,
-                   uint32_t layout_flags);
 
 void
 intel_miptree_map(struct brw_context *brw,

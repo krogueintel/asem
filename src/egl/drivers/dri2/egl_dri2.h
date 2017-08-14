@@ -45,6 +45,8 @@
 #ifdef HAVE_WAYLAND_PLATFORM
 #include <wayland-client.h>
 #include "wayland-egl-priv.h"
+/* forward declarations of protocol elements */
+struct zwp_linux_dmabuf_v1;
 #endif
 
 #include <GL/gl.h>
@@ -72,6 +74,8 @@
 #include "eglsurface.h"
 #include "eglimage.h"
 #include "eglsync.h"
+
+#include "util/u_vector.h"
 
 struct wl_buffer;
 
@@ -170,6 +174,7 @@ struct dri2_egl_display
    const __DRItexBufferExtension  *tex_buffer;
    const __DRIimageExtension      *image;
    const __DRIrobustnessExtension *robustness;
+   const __DRInoErrorExtension    *no_error;
    const __DRI2configQueryExtension *config;
    const __DRI2fenceExtension *fence;
    const __DRI2rendererQueryExtension *rendererQuery;
@@ -211,6 +216,12 @@ struct dri2_egl_display
    struct wl_drm            *wl_drm;
    struct wl_shm            *wl_shm;
    struct wl_event_queue    *wl_queue;
+   struct zwp_linux_dmabuf_v1 *wl_dmabuf;
+   struct {
+      struct u_vector        xrgb8888;
+      struct u_vector        argb8888;
+      struct u_vector        rgb565;
+   } wl_modifiers;
    bool                      authenticated;
    int                       formats;
    uint32_t                  capabilities;
@@ -245,7 +256,6 @@ struct dri2_egl_surface
    _EGLSurface          base;
    __DRIdrawable       *dri_drawable;
    __DRIbuffer          buffers[5];
-   int                  buffer_count;
    bool                 have_fake_front;
 
 #ifdef HAVE_X11_PLATFORM
@@ -359,6 +369,9 @@ dri2_load_driver(_EGLDisplay *disp);
 /* Helper for platforms not using dri2_create_screen */
 void
 dri2_setup_screen(_EGLDisplay *disp);
+
+void
+dri2_setup_swap_interval(_EGLDisplay *disp, int max_swap_interval);
 
 EGLBoolean
 dri2_load_driver_swrast(_EGLDisplay *disp);

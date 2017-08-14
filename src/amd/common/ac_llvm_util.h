@@ -54,8 +54,13 @@ enum ac_func_attr {
 	AC_FUNC_ATTR_LEGACY       = (1u << 31),
 };
 
-LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family, bool supports_spill);
+enum ac_target_machine_options {
+	AC_TM_SUPPORTS_SPILL = (1 << 0),
+	AC_TM_SISCHED = (1 << 1),
+};
+LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family, enum ac_target_machine_options tm_options);
 
+LLVMTargetRef ac_get_llvm_target(const char *triple);
 void ac_add_attr_dereferenceable(LLVMValueRef val, uint64_t bytes);
 bool ac_is_sgpr_param(LLVMValueRef param);
 void ac_add_function_attr(LLVMContextRef ctx, LLVMValueRef function,

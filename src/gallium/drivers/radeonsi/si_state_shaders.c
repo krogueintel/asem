@@ -1740,6 +1740,7 @@ static int si_shader_select(struct pipe_context *ctx,
 }
 
 static void si_parse_next_shader_property(const struct tgsi_shader_info *info,
+					  bool streamout,
 					  struct si_shader_key *key)
 {
 	unsigned next_shader = info->properties[TGSI_PROPERTY_NEXT_SHADER];
@@ -1755,11 +1756,12 @@ static void si_parse_next_shader_property(const struct tgsi_shader_info *info,
 			key->as_ls = 1;
 			break;
 		default:
-			/* If POSITION isn't written, it can't be a HW VS.
-			 * Assume that it's a HW LS. (the next shader is TCS)
+			/* If POSITION isn't written, it can only be a HW VS
+			 * if streamout is used. If streamout isn't used,
+			 * assume that it's a HW LS. (the next shader is TCS)
 			 * This heuristic is needed for separate shader objects.
 			 */
-			if (!info->writes_position)
+			if (!info->writes_position && !streamout)
 				key->as_ls = 1;
 		}
 		break;
@@ -1800,7 +1802,7 @@ void si_init_shader_selector_async(void *job, int thread_index)
 	 */
 	if (!sscreen->use_monolithic_shaders) {
 		struct si_shader *shader = CALLOC_STRUCT(si_shader);
-		void *tgsi_binary;
+		void *tgsi_binary = NULL;
 
 		if (!shader) {
 			fprintf(stderr, "radeonsi: can't allocate a main shader part\n");
@@ -1808,9 +1810,12 @@ void si_init_shader_selector_async(void *job, int thread_index)
 		}
 
 		shader->selector = sel;
-		si_parse_next_shader_property(&sel->info, &shader->key);
+		si_parse_next_shader_property(&sel->info,
+					      sel->so.num_outputs != 0,
+					      &shader->key);
 
-		tgsi_binary = si_get_tgsi_binary(sel);
+		if (sel->tokens)
+			tgsi_binary = si_get_tgsi_binary(sel);
 
 		/* Try to load the shader from the shader cache. */
 		mtx_lock(&sscreen->shader_cache_mutex);
@@ -1889,7 +1894,9 @@ void si_init_shader_selector_async(void *job, int thread_index)
 		struct si_shader_key key;
 
 		memset(&key, 0, sizeof(key));
-		si_parse_next_shader_property(&sel->info, &key);
+		si_parse_next_shader_property(&sel->info,
+					      sel->so.num_outputs != 0,
+					      &key);
 
 		/* Set reasonable defaults, so that the shader key doesn't
 		 * cause any code to be eliminated.
@@ -1971,14 +1978,27 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 	sel->compiler_ctx_state.tm = sctx->tm;
 	sel->compiler_ctx_state.debug = sctx->b.debug;
 	sel->compiler_ctx_state.is_debug_context = sctx->is_debug;
-	sel->tokens = tgsi_dup_tokens(state->tokens);
-	if (!sel->tokens) {
-		FREE(sel);
-		return NULL;
-	}
 
 	sel->so = state->stream_output;
-	tgsi_scan_shader(state->tokens, &sel->info);
+
+	if (state->type == PIPE_SHADER_IR_TGSI) {
+		sel->tokens = tgsi_dup_tokens(state->tokens);
+		if (!sel->tokens) {
+			FREE(sel);
+			return NULL;
+		}
+
+		tgsi_scan_shader(state->tokens, &sel->info);
+	} else {
+		assert(state->type == PIPE_SHADER_IR_NIR);
+
+		sel->nir = state->ir.nir;
+
+		si_nir_scan_shader(sel->nir, &sel->info);
+
+		si_lower_nir(sel);
+	}
+
 	sel->type = sel->info.processor;
 	p_atomic_inc(&sscreen->b.num_shaders_created);
 	si_get_active_slot_masks(&sel->info,
@@ -2035,8 +2055,8 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 	case PIPE_SHADER_TESS_CTRL:
 		/* Always reserve space for these. */
 		sel->patch_outputs_written |=
-			(1llu << si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSINNER, 0)) |
-			(1llu << si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSOUTER, 0));
+			(1ull << si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSINNER, 0)) |
+			(1ull << si_shader_io_get_unique_index_patch(TGSI_SEMANTIC_TESSOUTER, 0));
 		/* fall through */
 	case PIPE_SHADER_VERTEX:
 	case PIPE_SHADER_TESS_EVAL:
@@ -2049,7 +2069,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 			case TGSI_SEMANTIC_TESSOUTER:
 			case TGSI_SEMANTIC_PATCH:
 				sel->patch_outputs_written |=
-					1llu << si_shader_io_get_unique_index_patch(name, index);
+					1ull << si_shader_io_get_unique_index_patch(name, index);
 				break;
 
 			case TGSI_SEMANTIC_GENERIC:
@@ -2059,7 +2079,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 				/* fall through */
 			default:
 				sel->outputs_written |=
-					1llu << si_shader_io_get_unique_index(name, index);
+					1ull << si_shader_io_get_unique_index(name, index);
 				break;
 			case TGSI_SEMANTIC_CLIPVERTEX: /* ignore these */
 			case TGSI_SEMANTIC_EDGEFLAG:
@@ -2088,7 +2108,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 				/* fall through */
 			default:
 				sel->inputs_read |=
-					1llu << si_shader_io_get_unique_index(name, index);
+					1ull << si_shader_io_get_unique_index(name, index);
 				break;
 			case TGSI_SEMANTIC_PCOORD: /* ignore this */
 				break;
@@ -2942,7 +2962,10 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
 	bool double_offchip_buffers = sctx->b.chip_class >= CIK &&
 				      sctx->b.family != CHIP_CARRIZO &&
 				      sctx->b.family != CHIP_STONEY;
-	unsigned max_offchip_buffers_per_se = double_offchip_buffers ? 128 : 64;
+	/* This must be one less than the maximum number due to a hw limitation.
+	 * Various hardware bugs in SI, CIK, and GFX9 need this.
+	 */
+	unsigned max_offchip_buffers_per_se = double_offchip_buffers ? 127 : 63;
 	unsigned max_offchip_buffers = max_offchip_buffers_per_se *
 				       sctx->screen->b.info.max_se;
 	unsigned offchip_granularity;
@@ -2957,20 +2980,6 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
 	case 4096:
 		offchip_granularity = V_03093C_X_4K_DWORDS;
 		break;
-	}
-
-	switch (sctx->b.chip_class) {
-	case SI:
-		max_offchip_buffers = MIN2(max_offchip_buffers, 126);
-		break;
-	case CIK:
-	case VI:
-	case GFX9:
-		max_offchip_buffers = MIN2(max_offchip_buffers, 508);
-		break;
-	default:
-		assert(0);
-		return;
 	}
 
 	assert(!sctx->tf_ring);
@@ -3288,18 +3297,47 @@ bool si_update_shaders(struct si_context *sctx)
 		}
 	}
 
-	if (si_pm4_state_changed(sctx, ls) ||
-	    si_pm4_state_changed(sctx, hs) ||
-	    si_pm4_state_changed(sctx, es) ||
-	    si_pm4_state_changed(sctx, gs) ||
-	    si_pm4_state_changed(sctx, vs) ||
-	    si_pm4_state_changed(sctx, ps)) {
+	if (si_pm4_state_enabled_and_changed(sctx, ls) ||
+	    si_pm4_state_enabled_and_changed(sctx, hs) ||
+	    si_pm4_state_enabled_and_changed(sctx, es) ||
+	    si_pm4_state_enabled_and_changed(sctx, gs) ||
+	    si_pm4_state_enabled_and_changed(sctx, vs) ||
+	    si_pm4_state_enabled_and_changed(sctx, ps)) {
 		if (!si_update_spi_tmpring_size(sctx))
 			return false;
 	}
 
-	if (sctx->b.chip_class >= CIK)
-		si_mark_atom_dirty(sctx, &sctx->prefetch_L2);
+	if (sctx->b.chip_class >= CIK) {
+		if (si_pm4_state_enabled_and_changed(sctx, ls))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_LS;
+		else if (!sctx->queued.named.ls)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_LS;
+
+		if (si_pm4_state_enabled_and_changed(sctx, hs))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_HS;
+		else if (!sctx->queued.named.hs)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_HS;
+
+		if (si_pm4_state_enabled_and_changed(sctx, es))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_ES;
+		else if (!sctx->queued.named.es)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_ES;
+
+		if (si_pm4_state_enabled_and_changed(sctx, gs))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_GS;
+		else if (!sctx->queued.named.gs)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_GS;
+
+		if (si_pm4_state_enabled_and_changed(sctx, vs))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_VS;
+		else if (!sctx->queued.named.vs)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_VS;
+
+		if (si_pm4_state_enabled_and_changed(sctx, ps))
+			sctx->prefetch_L2_mask |= SI_PREFETCH_PS;
+		else if (!sctx->queued.named.ps)
+			sctx->prefetch_L2_mask &= ~SI_PREFETCH_PS;
+	}
 
 	sctx->do_update_shaders = false;
 	return true;

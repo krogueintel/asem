@@ -572,7 +572,7 @@ struct PA_STATE_CUT : public PA_STATE
     {
         uint32_t vertexIndex = vertex / SIMD_WIDTH;
         uint32_t vertexOffset = vertex & (SIMD_WIDTH - 1);
-        return _bittest((const LONG*)&this->pCutIndices[vertexIndex], vertexOffset) == 1;
+        return CheckBit(this->pCutIndices[vertexIndex], vertexOffset);
     }
 
     // iterates across the unprocessed verts until we hit the end or we 
@@ -668,8 +668,6 @@ struct PA_STATE_CUT : public PA_STATE
         }
     }
 
-// disabling buffer overrun warning for this function for what appears to be a bug in MSVC 2017
-PRAGMA_WARNING_PUSH_DISABLE(4789)
     bool Assemble(uint32_t slot, simdvector *verts)
     {
         // process any outstanding verts
@@ -705,7 +703,9 @@ PRAGMA_WARNING_PUSH_DISABLE(4789)
 #if USE_SIMD16_FRONTEND
                 simd16scalar temp = _simd16_i32gather_ps(pBase, offsets, 1);
 
-                verts[v].v[c] = useAlternateOffset ? _simd16_extract_ps(temp, 1) : _simd16_extract_ps(temp, 0);
+                // Assigning to a temporary first to avoid an MSVC 2017 compiler bug
+                simdscalar t = useAlternateOffset ? _simd16_extract_ps(temp, 1) : _simd16_extract_ps(temp, 0);
+                verts[v].v[c] = t;
 #else
                 verts[v].v[c] = _simd_i32gather_ps(pBase, offsets, 1);
 #endif
@@ -717,7 +717,6 @@ PRAGMA_WARNING_PUSH_DISABLE(4789)
 
         return true;
     }
-PRAGMA_WARNING_POP()
 
 #if ENABLE_AVX512_SIMD16
     bool Assemble_simd16(uint32_t slot, simd16vector verts[])

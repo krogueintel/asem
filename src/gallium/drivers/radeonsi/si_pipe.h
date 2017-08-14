@@ -68,6 +68,14 @@
 #define SI_CONTEXT_VGT_FLUSH		(R600_CONTEXT_PRIVATE_FLAG << 12)
 #define SI_CONTEXT_VGT_STREAMOUT_SYNC	(R600_CONTEXT_PRIVATE_FLAG << 13)
 
+#define SI_PREFETCH_VBO_DESCRIPTORS	(1 << 0)
+#define SI_PREFETCH_LS			(1 << 1)
+#define SI_PREFETCH_HS			(1 << 2)
+#define SI_PREFETCH_ES			(1 << 3)
+#define SI_PREFETCH_GS			(1 << 4)
+#define SI_PREFETCH_VS			(1 << 5)
+#define SI_PREFETCH_PS			(1 << 6)
+
 #define SI_MAX_BORDER_COLORS	4096
 #define SIX_BITS		0x3F
 
@@ -83,6 +91,7 @@ struct si_screen {
 	bool				has_draw_indirect_multi;
 	bool				has_ds_bpermute;
 	bool				has_msaa_sample_loc_bug;
+	bool				llvm_has_working_vgpr_indexing;
 
 	/* Whether shaders are monolithic (1-part) or separate (3-part). */
 	bool				use_monolithic_shaders;
@@ -112,15 +121,21 @@ struct si_screen {
 
 	/* Shader compiler queue for multithreaded compilation. */
 	struct util_queue		shader_compiler_queue;
-	LLVMTargetMachineRef		tm[4]; /* used by the queue only */
+	/* Use at most 3 normal compiler threads on quadcore and better.
+	 * Hyperthreaded CPUs report the number of threads, but we want
+	 * the number of cores. */
+	LLVMTargetMachineRef		tm[3]; /* used by the queue only */
 
 	struct util_queue		shader_compiler_queue_low_priority;
-	LLVMTargetMachineRef		tm_low_priority[4];
+	/* Use at most 2 low priority threads on quadcore and better.
+	 * We want to minimize the impact on multithreaded Mesa. */
+	LLVMTargetMachineRef		tm_low_priority[2]; /* at most 2 threads */
 };
 
 struct si_blend_color {
 	struct r600_atom		atom;
 	struct pipe_blend_color		state;
+	bool				any_nonzeros;
 };
 
 struct si_sampler_view {
@@ -181,12 +196,12 @@ struct si_framebuffer {
 	ubyte				dirty_cbufs;
 	bool				dirty_zsbuf;
 	bool				any_dst_linear;
-	bool				do_update_surf_dirtiness;
 };
 
 struct si_clip_state {
 	struct r600_atom		atom;
 	struct pipe_clip_state		state;
+	bool				any_nonzeros;
 };
 
 struct si_sample_locs {
@@ -272,6 +287,7 @@ struct si_context {
 	struct u_suballocator		*ce_suballocator;
 	unsigned			ce_ram_saved_offset;
 	uint16_t			total_ce_ram_allocated;
+	uint16_t			prefetch_L2_mask;
 	bool				ce_need_synchronization:1;
 
 	bool				gfx_flush_in_progress:1;
@@ -286,7 +302,6 @@ struct si_context {
 	union si_state			emitted;
 
 	/* Atom declarations. */
-	struct r600_atom		prefetch_L2;
 	struct si_framebuffer		framebuffer;
 	struct si_sample_locs		msaa_sample_locs;
 	struct r600_atom		db_render_state;
@@ -297,7 +312,7 @@ struct si_context {
 	struct si_blend_color		blend_color;
 	struct r600_atom		clip_regs;
 	struct si_clip_state		clip_state;
-	struct si_shader_data		shader_userdata;
+	struct si_shader_data		shader_pointers;
 	struct si_stencil_ref		stencil_ref;
 	struct r600_atom		spi_map;
 
@@ -404,6 +419,7 @@ struct si_context {
 	/* Debug state. */
 	bool			is_debug;
 	struct radeon_saved_cs	last_gfx;
+	struct radeon_saved_cs	last_ce;
 	struct r600_resource	*last_trace_buf;
 	struct r600_resource	*trace_buf;
 	unsigned		trace_id;
@@ -476,6 +492,7 @@ void si_copy_buffer(struct si_context *sctx,
 		    unsigned user_flags);
 void cik_prefetch_TC_L2_async(struct si_context *sctx, struct pipe_resource *buf,
 			      uint64_t offset, unsigned size);
+void cik_emit_prefetch_L2(struct si_context *sctx);
 void si_init_cp_dma_functions(struct si_context *sctx);
 
 /* si_debug.c */

@@ -342,7 +342,7 @@ struct __DRI2throttleExtensionRec {
 #define __DRI2_FENCE "DRI2_Fence"
 #define __DRI2_FENCE_VERSION 2
 
-#define __DRI2_FENCE_TIMEOUT_INFINITE     0xffffffffffffffffllu
+#define __DRI2_FENCE_TIMEOUT_INFINITE     0xffffffffffffffffull
 
 #define __DRI2_FENCE_FLAG_FLUSH_COMMANDS  (1 << 0)
 
@@ -724,11 +724,26 @@ struct __DRIuseInvalidateExtensionRec {
 #define __DRI_ATTRIB_TEXTURE_2D_BIT		0x02
 #define __DRI_ATTRIB_TEXTURE_RECTANGLE_BIT	0x04
 
+/* __DRI_ATTRIB_SWAP_METHOD */
+/* Note that with the exception of __DRI_ATTRIB_SWAP_NONE, we need to define
+ * the same tokens as GLX. This is because old and current X servers will
+ * transmit the driconf value grabbed from the AIGLX driver untranslated as
+ * the GLX fbconfig value. __DRI_ATTRIB_SWAP_NONE is only used by dri drivers
+ * to signal to the dri core that the driconfig is single-buffer.
+ */
+#define __DRI_ATTRIB_SWAP_NONE                  0x0000
+#define __DRI_ATTRIB_SWAP_EXCHANGE              0x8061
+#define __DRI_ATTRIB_SWAP_COPY                  0x8062
+#define __DRI_ATTRIB_SWAP_UNDEFINED             0x8063
+
 /**
  * This extension defines the core DRI functionality.
+ *
+ * Version >= 2 indicates that getConfigAttrib with __DRI_ATTRIB_SWAP_METHOD
+ * returns a reliable value.
  */
 #define __DRI_CORE "DRI_Core"
-#define __DRI_CORE_VERSION 1
+#define __DRI_CORE_VERSION 2
 
 struct __DRIcoreExtensionRec {
     __DRIextension base;
@@ -967,7 +982,15 @@ struct __DRIbufferRec {
 };
 
 #define __DRI_DRI2_LOADER "DRI_DRI2Loader"
-#define __DRI_DRI2_LOADER_VERSION 3
+#define __DRI_DRI2_LOADER_VERSION 4
+
+enum dri_loader_cap {
+   /* Whether the loader handles RGBA channel ordering correctly. If not,
+    * only BGRA ordering can be exposed.
+    */
+   DRI_LOADER_CAP_RGBA_ORDERING,
+};
+
 struct __DRIdri2LoaderExtensionRec {
     __DRIextension base;
 
@@ -1017,6 +1040,18 @@ struct __DRIdri2LoaderExtensionRec {
 					 int *width, int *height,
 					 unsigned int *attachments, int count,
 					 int *out_count, void *loaderPrivate);
+
+    /**
+     * Return a loader capability value. If the loader doesn't know the enum,
+     * it will return 0.
+     *
+     * \param loaderPrivate The last parameter of createNewScreen or
+     *                      createNewScreen2.
+     * \param cap           See the enum.
+     *
+     * \since 4
+     */
+    unsigned (*getCapability)(void *loaderPrivate, enum dri_loader_cap cap);
 };
 
 /**
@@ -1048,6 +1083,12 @@ struct __DRIdri2LoaderExtensionRec {
  * \requires __DRI2_ROBUSTNESS.
  */
 #define __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS	0x00000004
+
+/**
+ * \requires __DRI2_NO_ERROR.
+ *
+ */
+#define __DRI_CTX_FLAG_NO_ERROR			0x00000008
 
 /**
  * \name Context reset strategies.
@@ -1612,17 +1653,46 @@ struct __DRIrobustnessExtensionRec {
 };
 
 /**
+ * No-error context driver extension.
+ *
+ * Existence of this extension means the driver can accept the
+ * __DRI_CTX_FLAG_NO_ERROR flag.
+ */
+#define __DRI2_NO_ERROR "DRI_NoError"
+#define __DRI2_NO_ERROR_VERSION 1
+
+typedef struct __DRInoErrorExtensionRec {
+   __DRIextension base;
+} __DRInoErrorExtension;
+
+/**
  * DRI config options extension.
  *
  * This extension provides the XML string containing driver options for use by
  * the loader in supporting the driconf application.
+ *
+ * v2:
+ * - Add the getXml getter function which allows the driver more flexibility in
+ *   how the XML is provided.
+ * - Deprecate the direct xml pointer. It is only provided as a fallback for
+ *   older versions of libGL and must not be used by clients that are aware of
+ *   the newer version. Future driver versions may set it to NULL.
  */
 #define __DRI_CONFIG_OPTIONS "DRI_ConfigOptions"
-#define __DRI_CONFIG_OPTIONS_VERSION 1
+#define __DRI_CONFIG_OPTIONS_VERSION 2
 
 typedef struct __DRIconfigOptionsExtensionRec {
    __DRIextension base;
-   const char *xml;
+   const char *xml; /**< deprecated since v2, use getXml instead */
+
+   /**
+    * Get an XML string that describes available driver options for use by a
+    * config application.
+    *
+    * The returned string must be heap-allocated. The caller is responsible for
+    * freeing it.
+    */
+   char *(*getXml)(const char *driver_name);
 } __DRIconfigOptionsExtension;
 
 /**
@@ -1692,7 +1762,7 @@ struct __DRIimageList {
 };
 
 #define __DRI_IMAGE_LOADER "DRI_IMAGE_LOADER"
-#define __DRI_IMAGE_LOADER_VERSION 1
+#define __DRI_IMAGE_LOADER_VERSION 3
 
 struct __DRIimageLoaderExtensionRec {
     __DRIextension base;
@@ -1728,6 +1798,28 @@ struct __DRIimageLoaderExtensionRec {
      *                       into __DRIdri2ExtensionRec::createNewDrawable
      */
     void (*flushFrontBuffer)(__DRIdrawable *driDrawable, void *loaderPrivate);
+
+    /**
+     * Return a loader capability value. If the loader doesn't know the enum,
+     * it will return 0.
+     *
+     * \since 2
+     */
+    unsigned (*getCapability)(void *loaderPrivate, enum dri_loader_cap cap);
+
+    /**
+     * Flush swap buffers
+     *
+     * Make sure any outstanding swap buffers have been submitted to the
+     * device.
+     *
+     * \param driDrawable    Drawable whose swaps need to be flushed
+     * \param loaderPrivate  Loader's private data that was previously passed
+     *                       into __DRIdri2ExtensionRec::createNewDrawable
+     *
+     * \since 3
+     */
+    void (*flushSwapBuffers)(__DRIdrawable *driDrawable, void *loaderPrivate);
 };
 
 /**

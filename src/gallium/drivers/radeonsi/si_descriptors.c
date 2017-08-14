@@ -96,6 +96,11 @@ static uint32_t null_image_descriptor[8] = {
 	 * descriptor */
 };
 
+static uint16_t si_ce_ram_size(struct si_context *sctx)
+{
+	return sctx->b.chip_class >= GFX9 ? 4096 : 32768;
+}
+
 static void si_init_descriptor_list(uint32_t *desc_list,
 				    unsigned element_dw_size,
 				    unsigned num_elements,
@@ -148,11 +153,18 @@ static bool si_ce_upload(struct si_context *sctx, unsigned ce_offset, unsigned s
 			 unsigned *out_offset, struct r600_resource **out_buf)
 {
 	uint64_t va;
+	unsigned cache_line_size = sctx->screen->b.info.tcc_cache_line_size;
 
-	u_suballocator_alloc(sctx->ce_suballocator, size,
-			     si_optimal_tcc_alignment(sctx, size),
-			     out_offset,
-			     (struct pipe_resource**)out_buf);
+	/* The base and size should be aligned to the L2 cache line size
+	 * for optimal performance. (all dumps should rewrite whole lines)
+	 */
+	size = align(size, cache_line_size);
+
+	(void)si_ce_ram_size; /* silence an "unused" warning */
+	assert(ce_offset + size <= si_ce_ram_size(sctx));
+
+	u_suballocator_alloc(sctx->ce_suballocator, size, cache_line_size,
+			     out_offset, (struct pipe_resource**)out_buf);
 	if (!out_buf)
 			return false;
 
@@ -422,6 +434,13 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen,
 	state[1] &= C_008F14_BASE_ADDRESS_HI;
 	state[1] |= S_008F14_BASE_ADDRESS_HI(va >> 40);
 
+	/* Only macrotiled modes can set tile swizzle.
+	 * GFX9 doesn't use (legacy) base_level_info.
+	 */
+	if (sscreen->b.chip_class >= GFX9 ||
+	    base_level_info->mode == RADEON_SURF_MODE_2D)
+		state[0] |= tex->surface.tile_swizzle;
+
 	if (sscreen->b.chip_class >= VI) {
 		state[6] &= C_008F28_COMPRESSION_EN;
 		state[7] = 0;
@@ -430,9 +449,13 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen,
 			meta_va = (!tex->dcc_separate_buffer ? tex->resource.gpu_address : 0) +
 				  tex->dcc_offset;
 
-			if (sscreen->b.chip_class <= VI)
+			if (sscreen->b.chip_class == VI) {
 				meta_va += base_level_info->dcc_offset;
-		} else if (tex->tc_compatible_htile) {
+				assert(base_level_info->mode == RADEON_SURF_MODE_2D);
+			}
+
+			meta_va |= (uint32_t)tex->surface.tile_swizzle << 8;
+		} else if (tex->tc_compatible_htile && first_level == 0) {
 			meta_va = tex->resource.gpu_address + tex->htile_offset;
 		}
 
@@ -1101,6 +1124,7 @@ bool si_upload_vertex_buffer_descriptors(struct si_context *sctx)
 	if (!desc->buffer)
 		return false;
 
+	desc->list = ptr;
 	radeon_add_to_buffer_list(&sctx->b, &sctx->b.gfx,
 			      desc->buffer, RADEON_USAGE_READ,
 			      RADEON_PRIO_DESCRIPTORS);
@@ -1151,11 +1175,10 @@ bool si_upload_vertex_buffer_descriptors(struct si_context *sctx)
 	 * on performance (confirmed by testing). New descriptors are always
 	 * uploaded to a fresh new buffer, so I don't think flushing the const
 	 * cache is needed. */
-	si_mark_atom_dirty(sctx, &sctx->shader_userdata.atom);
-	if (sctx->b.chip_class >= CIK)
-		si_mark_atom_dirty(sctx, &sctx->prefetch_L2);
+	si_mark_atom_dirty(sctx, &sctx->shader_pointers.atom);
 	sctx->vertex_buffers_dirty = false;
 	sctx->vertex_buffer_pointer_dirty = true;
+	sctx->prefetch_L2_mask |= SI_PREFETCH_VBO_DESCRIPTORS;
 	return true;
 }
 
@@ -2074,14 +2097,14 @@ static void si_mark_shader_pointers_dirty(struct si_context *sctx,
 	if (shader == PIPE_SHADER_VERTEX)
 		sctx->vertex_buffer_pointer_dirty = sctx->vertex_buffers.buffer != NULL;
 
-	si_mark_atom_dirty(sctx, &sctx->shader_userdata.atom);
+	si_mark_atom_dirty(sctx, &sctx->shader_pointers.atom);
 }
 
-static void si_shader_userdata_begin_new_cs(struct si_context *sctx)
+static void si_shader_pointers_begin_new_cs(struct si_context *sctx)
 {
 	sctx->shader_pointers_dirty = u_bit_consecutive(0, SI_NUM_DESCS);
 	sctx->vertex_buffer_pointer_dirty = sctx->vertex_buffers.buffer != NULL;
-	si_mark_atom_dirty(sctx, &sctx->shader_userdata.atom);
+	si_mark_atom_dirty(sctx, &sctx->shader_pointers.atom);
 }
 
 /* Set a base register address for user data constants in the given shader.
@@ -2090,7 +2113,7 @@ static void si_shader_userdata_begin_new_cs(struct si_context *sctx)
 static void si_set_user_data_base(struct si_context *sctx,
 				  unsigned shader, uint32_t new_base)
 {
-	uint32_t *base = &sctx->shader_userdata.sh_base[shader];
+	uint32_t *base = &sctx->shader_pointers.sh_base[shader];
 
 	if (*base != new_base) {
 		*base = new_base;
@@ -2161,11 +2184,11 @@ static void si_emit_shader_pointer(struct si_context *sctx,
 	radeon_emit(cs, va >> 32);
 }
 
-void si_emit_graphics_shader_userdata(struct si_context *sctx,
+void si_emit_graphics_shader_pointers(struct si_context *sctx,
                                       struct r600_atom *atom)
 {
 	unsigned mask;
-	uint32_t *sh_base = sctx->shader_userdata.sh_base;
+	uint32_t *sh_base = sctx->shader_pointers.sh_base;
 	struct si_descriptors *descs;
 
 	descs = &sctx->descriptors[SI_DESCS_RW_BUFFERS];
@@ -2219,7 +2242,7 @@ void si_emit_graphics_shader_userdata(struct si_context *sctx,
 	}
 }
 
-void si_emit_compute_shader_userdata(struct si_context *sctx)
+void si_emit_compute_shader_pointers(struct si_context *sctx)
 {
 	unsigned base = R_00B900_COMPUTE_USER_DATA_0;
 	struct si_descriptors *descs = sctx->descriptors;
@@ -2361,7 +2384,7 @@ static void si_invalidate_bindless_buf_desc(struct si_context *sctx,
 					    uint64_t offset)
 {
 	struct r600_resource *buf = r600_resource(resource);
-	uint32_t *desc_list = desc->desc_list;
+	uint32_t *desc_list = desc->desc_list + 4;
 	uint64_t old_desc_va;
 
 	assert(resource->target == PIPE_BUFFER);
@@ -2374,7 +2397,7 @@ static void si_invalidate_bindless_buf_desc(struct si_context *sctx,
 		/* The buffer has been invalidated when the handle wasn't
 		 * resident, update the descriptor and the dirty flag.
 		 */
-		si_set_buf_desc_address(buf, offset, &desc_list[4]);
+		si_set_buf_desc_address(buf, offset, &desc_list[0]);
 
 		desc->dirty = true;
 		sctx->bindless_descriptors_dirty = true;
@@ -2834,14 +2857,13 @@ void si_init_all_descriptors(struct si_context *sctx)
 
 	si_init_descriptors(sctx, &sctx->vertex_buffers, SI_SGPR_VERTEX_BUFFERS,
 			    4, SI_NUM_VERTEX_BUFFERS, 0, 0, NULL);
+	FREE(sctx->vertex_buffers.list); /* not used */
+	sctx->vertex_buffers.list = NULL;
 
 	sctx->descriptors_dirty = u_bit_consecutive(0, SI_NUM_DESCS);
 	sctx->total_ce_ram_allocated = ce_offset;
 
-	if (sctx->b.chip_class >= GFX9)
-		assert(ce_offset <= 4096);
-	else
-		assert(ce_offset <= 32768);
+	assert(ce_offset <= si_ce_ram_size(sctx));
 
 	/* Set pipe_context functions. */
 	sctx->b.b.bind_sampler_states = si_bind_sampler_states;
@@ -2861,8 +2883,8 @@ void si_init_all_descriptors(struct si_context *sctx)
 	sctx->b.rebind_buffer = si_rebind_buffer;
 
 	/* Shader user data. */
-	si_init_atom(sctx, &sctx->shader_userdata.atom, &sctx->atoms.s.shader_userdata,
-		     si_emit_graphics_shader_userdata);
+	si_init_atom(sctx, &sctx->shader_pointers.atom, &sctx->atoms.s.shader_pointers,
+		     si_emit_graphics_shader_pointers);
 
 	/* Set default and immutable mappings. */
 	si_set_user_data_base(sctx, PIPE_SHADER_VERTEX, R_00B130_SPI_SHADER_USER_DATA_VS_0);
@@ -2893,7 +2915,7 @@ bool si_upload_graphics_shader_descriptors(struct si_context *sctx)
 		unsigned i = u_bit_scan(&dirty);
 
 		if (!si_upload_descriptors(sctx, &sctx->descriptors[i],
-					   &sctx->shader_userdata.atom))
+					   &sctx->shader_pointers.atom))
 			return false;
 	}
 
@@ -2947,6 +2969,8 @@ void si_release_all_descriptors(struct si_context *sctx)
 
 	for (i = 0; i < SI_NUM_DESCS; ++i)
 		si_release_descriptors(&sctx->descriptors[i]);
+
+	sctx->vertex_buffers.list = NULL; /* points into a mapped buffer */
 	si_release_descriptors(&sctx->vertex_buffers);
 }
 
@@ -2965,7 +2989,7 @@ void si_all_descriptors_begin_new_cs(struct si_context *sctx)
 	for (i = 0; i < SI_NUM_DESCS; ++i)
 		si_descriptors_begin_new_cs(sctx, &sctx->descriptors[i]);
 
-	si_shader_userdata_begin_new_cs(sctx);
+	si_shader_pointers_begin_new_cs(sctx);
 }
 
 void si_set_active_descriptors(struct si_context *sctx, unsigned desc_idx,

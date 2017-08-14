@@ -363,7 +363,7 @@ INLINE void UpdateClientStats(SWR_CONTEXT* pContext, uint32_t workerId, DRAW_CON
     }
 
     DRAW_DYNAMIC_STATE& dynState = pDC->dynState;
-    SWR_STATS stats{ 0 };
+    OSALIGNLINE(SWR_STATS) stats{ 0 };
 
     // Sum up stats across all workers before sending to client.
     for (uint32_t i = 0; i < pContext->NumWorkerThreads; ++i)
@@ -393,7 +393,7 @@ INLINE void ExecuteCallbacks(SWR_CONTEXT* pContext, uint32_t workerId, DRAW_CONT
 // inlined-only version
 INLINE int32_t CompleteDrawContextInl(SWR_CONTEXT* pContext, uint32_t workerId, DRAW_CONTEXT* pDC)
 {
-    int32_t result = InterlockedDecrement((volatile LONG*)&pDC->threadsDone);
+    int32_t result = InterlockedDecrement((volatile long*)&pDC->threadsDone);
     SWR_ASSERT(result >= 0);
 
     AR_FLUSH(pDC->drawId);
@@ -639,7 +639,7 @@ INLINE void CompleteDrawFE(SWR_CONTEXT* pContext, uint32_t workerId, DRAW_CONTEX
     _mm_mfence();
     pDC->doneFE = true;
 
-    InterlockedDecrement((volatile LONG*)&pContext->drawsOutstandingFE);
+    InterlockedDecrement((volatile long*)&pContext->drawsOutstandingFE);
 }
 
 void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint32_t &curDrawFE)
@@ -986,7 +986,7 @@ void CreateThreadPool(SWR_CONTEXT* pContext, THREAD_POOL* pPool)
     // Initialize DRAW_CONTEXT's per-thread stats
     for (uint32_t dc = 0; dc < KNOB_MAX_DRAWS_IN_FLIGHT; ++dc)
     {
-        pContext->dcRing[dc].dynState.pStats = new SWR_STATS[numThreads];
+        pContext->dcRing[dc].dynState.pStats = (SWR_STATS*)AlignedMalloc(sizeof(SWR_STATS) * numThreads, 64);
         memset(pContext->dcRing[dc].dynState.pStats, 0, sizeof(SWR_STATS) * numThreads);
     }
 

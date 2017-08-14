@@ -61,8 +61,7 @@ blorp_emit_reloc(struct blorp_batch *batch,
    uint32_t offset = (char *)location - (char *)brw->batch.map;
    return brw_emit_reloc(&brw->batch, offset,
                          address.buffer, address.offset + delta,
-                         address.read_domains,
-                         address.write_domain);
+                         address.reloc_flags);
 }
 
 static void
@@ -73,10 +72,10 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
    struct brw_context *brw = batch->driver_batch;
    struct brw_bo *bo = address.buffer;
 
-   brw_emit_reloc(&brw->batch, ss_offset, bo, address.offset + delta,
-                  address.read_domains, address.write_domain);
+   uint64_t reloc_val =
+      brw_emit_reloc(&brw->batch, ss_offset, bo, address.offset + delta,
+                     address.reloc_flags);
 
-   uint64_t reloc_val = bo->offset64 + address.offset + delta;
    void *reloc_ptr = (void *)brw->batch.map + ss_offset;
 #if GEN_GEN >= 8
    *(uint64_t *)reloc_ptr = reloc_val;
@@ -142,8 +141,6 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
 
    *addr = (struct blorp_address) {
       .buffer = brw->batch.bo,
-      .read_domains = I915_GEM_DOMAIN_VERTEX,
-      .write_domain = 0,
       .offset = offset,
    };
 
@@ -182,8 +179,6 @@ blorp_emit_urb_config(struct blorp_batch *batch,
    if (!(brw->ctx.NewDriverState & (BRW_NEW_CONTEXT | BRW_NEW_URB_SIZE)) &&
        brw->urb.vsize >= vs_entry_size)
       return;
-
-   brw->ctx.NewDriverState |= BRW_NEW_URB_SIZE;
 
    gen7_upload_urb(brw, vs_entry_size, false, false);
 #elif GEN_GEN == 6

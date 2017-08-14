@@ -4,10 +4,8 @@ i965_FILES = \
 	brw_blorp.h \
 	brw_bufmgr.c \
 	brw_bufmgr.h \
-	brw_cc.c \
 	brw_clear.c \
 	brw_clip.c \
-	brw_clip_state.c \
 	brw_compute.c \
 	brw_conditional_render.c \
 	brw_context.c \
@@ -25,7 +23,6 @@ i965_FILES = \
 	brw_formatquery.c \
 	brw_gs.c \
 	brw_gs.h \
-	brw_gs_state.c \
 	brw_gs_surface_state.c \
 	brw_link.cpp \
 	brw_meta_util.c \
@@ -54,7 +51,6 @@ i965_FILES = \
 	brw_tcs_surface_state.c \
 	brw_tes.c \
 	brw_tes_surface_state.c \
-	brw_tex_layout.c \
 	brw_urb.c \
 	brw_util.c \
 	brw_util.h \
@@ -63,13 +59,11 @@ i965_FILES = \
 	brw_vs_surface_state.c \
 	brw_wm.c \
 	brw_wm.h \
-	brw_wm_state.c \
 	brw_wm_surface_state.c \
 	gen4_blorp_exec.h \
 	gen6_clip_state.c \
 	gen6_constant_state.c \
 	gen6_depth_state.c \
-	gen6_gs_state.c \
 	gen6_multisample_state.c \
 	gen6_queryobj.c \
 	gen6_sampler_state.c \

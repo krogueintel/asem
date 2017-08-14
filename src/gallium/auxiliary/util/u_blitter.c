@@ -890,7 +890,8 @@ static void *blitter_get_fs_texfetch_col(struct blitter_context_priv *ctx,
                                          bool use_txf)
 {
    struct pipe_context *pipe = ctx->base.pipe;
-   unsigned tgsi_tex = util_pipe_tex_to_tgsi_tex(target, src_nr_samples);
+   enum tgsi_texture_type tgsi_tex =
+      util_pipe_tex_to_tgsi_tex(target, src_nr_samples);
    enum tgsi_return_type stype;
    enum tgsi_return_type dtype;
    unsigned type;
@@ -1004,7 +1005,7 @@ void *blitter_get_fs_texfetch_depth(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, nr_samples);
          *shader = util_make_fs_blit_msaa_depth(pipe, tgsi_tex);
@@ -1021,7 +1022,7 @@ void *blitter_get_fs_texfetch_depth(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, 0);
          *shader =
@@ -1049,7 +1050,7 @@ void *blitter_get_fs_texfetch_depthstencil(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, nr_samples);
          *shader = util_make_fs_blit_msaa_depthstencil(pipe, tgsi_tex);
@@ -1066,7 +1067,7 @@ void *blitter_get_fs_texfetch_depthstencil(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, 0);
          *shader =
@@ -1095,7 +1096,7 @@ void *blitter_get_fs_texfetch_stencil(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, nr_samples);
          *shader = util_make_fs_blit_msaa_stencil(pipe, tgsi_tex);
@@ -1112,7 +1113,7 @@ void *blitter_get_fs_texfetch_stencil(struct blitter_context_priv *ctx,
 
       /* Create the fragment shader on-demand. */
       if (!*shader) {
-         unsigned tgsi_tex;
+         enum tgsi_texture_type tgsi_tex;
          assert(!ctx->cached_all_shaders);
          tgsi_tex = util_pipe_tex_to_tgsi_tex(target, 0);
          *shader =
@@ -1777,15 +1778,17 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
       return;
    }
 
-   if (blit_stencil ||
-       (dstbox->width == abs(srcbox->width) &&
-        dstbox->height == abs(srcbox->height))) {
+   bool is_scaled = dstbox->width != abs(srcbox->width) ||
+                    dstbox->height != abs(srcbox->height);
+
+   if (blit_stencil || !is_scaled)
       filter = PIPE_TEX_FILTER_NEAREST;
-   }
 
    bool use_txf = false;
 
+   /* Don't support scaled blits. The TXF shader uses F2I for rounding. */
    if (ctx->has_txf &&
+       !is_scaled &&
        filter == PIPE_TEX_FILTER_NEAREST &&
        src->target != PIPE_TEXTURE_CUBE &&
        src->target != PIPE_TEXTURE_CUBE_ARRAY) {

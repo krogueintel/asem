@@ -145,7 +145,9 @@ void si_context_gfx_flush(void *context, unsigned flags,
 	if (ctx->is_debug) {
 		/* Save the IB for debug contexts. */
 		radeon_clear_saved_cs(&ctx->last_gfx);
-		radeon_save_cs(ws, cs, &ctx->last_gfx);
+		radeon_save_cs(ws, cs, &ctx->last_gfx, true);
+		radeon_clear_saved_cs(&ctx->last_ce);
+		radeon_save_cs(ws, ctx->ce_ib, &ctx->last_ce, false);
 		r600_resource_reference(&ctx->last_trace_buf, ctx->trace_buf);
 		r600_resource_reference(&ctx->trace_buf, NULL);
 	}
@@ -173,16 +175,16 @@ void si_context_gfx_flush(void *context, unsigned flags,
 void si_begin_new_cs(struct si_context *ctx)
 {
 	if (ctx->is_debug) {
-		uint32_t zero = 0;
+		static const uint32_t zeros[2];
 
 		/* Create a buffer used for writing trace IDs and initialize it to 0. */
 		assert(!ctx->trace_buf);
 		ctx->trace_buf = (struct r600_resource*)
 				 pipe_buffer_create(ctx->b.b.screen, 0,
-						    PIPE_USAGE_STAGING, 4);
+						    PIPE_USAGE_STAGING, 8);
 		if (ctx->trace_buf)
 			pipe_buffer_write_nooverlap(&ctx->b.b, &ctx->trace_buf->b.b,
-						    0, sizeof(zero), &zero);
+						    0, sizeof(zeros), zeros);
 		ctx->trace_id = 0;
 	}
 
@@ -214,21 +216,44 @@ void si_begin_new_cs(struct si_context *ctx)
 	if (ctx->ce_ib)
 		si_ce_restore_all_descriptors_at_ib_start(ctx);
 
-	if (ctx->b.chip_class >= CIK)
-		si_mark_atom_dirty(ctx, &ctx->prefetch_L2);
+	if (ctx->queued.named.ls)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_LS;
+	if (ctx->queued.named.hs)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_HS;
+	if (ctx->queued.named.es)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_ES;
+	if (ctx->queued.named.gs)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_GS;
+	if (ctx->queued.named.vs)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_VS;
+	if (ctx->queued.named.ps)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_PS;
+	if (ctx->vertex_buffers.buffer)
+		ctx->prefetch_L2_mask |= SI_PREFETCH_VBO_DESCRIPTORS;
 
-	ctx->framebuffer.dirty_cbufs = (1 << 8) - 1;
-	ctx->framebuffer.dirty_zsbuf = true;
+	/* CLEAR_STATE disables all colorbuffers, so only enable bound ones. */
+	ctx->framebuffer.dirty_cbufs =
+		u_bit_consecutive(0, ctx->framebuffer.state.nr_cbufs);
+	/* CLEAR_STATE disables the zbuffer, so only enable it if it's bound. */
+	ctx->framebuffer.dirty_zsbuf = ctx->framebuffer.state.zsbuf != NULL;
+	/* This should always be marked as dirty to set the framebuffer scissor
+	 * at least. */
 	si_mark_atom_dirty(ctx, &ctx->framebuffer.atom);
 
 	si_mark_atom_dirty(ctx, &ctx->clip_regs);
-	si_mark_atom_dirty(ctx, &ctx->clip_state.atom);
+	/* CLEAR_STATE sets zeros. */
+	if (ctx->clip_state.any_nonzeros)
+		si_mark_atom_dirty(ctx, &ctx->clip_state.atom);
 	ctx->msaa_sample_locs.nr_samples = 0;
 	si_mark_atom_dirty(ctx, &ctx->msaa_sample_locs.atom);
 	si_mark_atom_dirty(ctx, &ctx->msaa_config);
-	si_mark_atom_dirty(ctx, &ctx->sample_mask.atom);
+	/* CLEAR_STATE sets 0xffff. */
+	if (ctx->sample_mask.sample_mask != 0xffff)
+		si_mark_atom_dirty(ctx, &ctx->sample_mask.atom);
 	si_mark_atom_dirty(ctx, &ctx->cb_render_state);
-	si_mark_atom_dirty(ctx, &ctx->blend_color.atom);
+	/* CLEAR_STATE sets zeros. */
+	if (ctx->blend_color.any_nonzeros)
+		si_mark_atom_dirty(ctx, &ctx->blend_color.atom);
 	si_mark_atom_dirty(ctx, &ctx->db_render_state);
 	si_mark_atom_dirty(ctx, &ctx->stencil_ref.atom);
 	si_mark_atom_dirty(ctx, &ctx->spi_map);

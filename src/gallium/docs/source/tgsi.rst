@@ -26,7 +26,13 @@ each of the components of *dst*. When this happens, the result is said to be
 Modifiers
 ^^^^^^^^^^^^^^^
 
-TGSI supports modifiers on inputs (as well as saturate modifier on instructions).
+TGSI supports modifiers on inputs (as well as saturate and precise modifier
+on instructions).
+
+For arithmetic instruction having a precise modifier certain optimizations
+which may alter the result are disallowed. Example: *add(mul(a,b),c)* can't be
+optimized to TGSI_OPCODE_MAD, because some hardware only supports the fused
+MAD instruction.
 
 For inputs which have a floating point type, both absolute value and
 negation modifiers are supported (with absolute value being applied
@@ -236,6 +242,9 @@ This instruction replicates its result.
 
 
 .. opcode:: MAD - Multiply And Add
+
+Perform a * b + c. The implementation is free to decide whether there is an
+intermediate rounding step or not.
 
 .. math::
 
@@ -942,7 +951,9 @@ XXX doesn't look like most of the opcodes really belong here.
   image or PIPE_BUFFER resource. The source sampler may not be a CUBE or
   SHADOW.  src 0 is a
   four-component signed integer vector used to identify the single texel
-  accessed. 3 components + level.  Just like texture instructions, an optional
+  accessed. 3 components + level.  If the texture is multisampled, then
+  the fourth component indicates the sample, not the mipmap level.
+  Just like texture instructions, an optional
   offset vector is provided, which is subject to various driver restrictions
   (regarding range, source of offsets). This instruction ignores the sampler
   state.
@@ -3322,6 +3333,9 @@ contains the current sample id (i.e. gl_SampleID) as an unsigned int.
 Only the X component is used.  If per-sample shading is not enabled,
 the result is (0, undef, undef, undef).
 
+Note that if the fragment shader uses this system value, the fragment
+shader is automatically executed at per sample frequency.
+
 TGSI_SEMANTIC_SAMPLEPOS
 """""""""""""""""""""""
 
@@ -3330,6 +3344,9 @@ value contains the current sample's position as float4(x, y, undef, undef)
 in the render target (i.e.  gl_SamplePosition) when per-fragment shading
 is in effect.  Position values are in the range [0, 1] where 0.5 is
 the center of the fragment.
+
+Note that if the fragment shader uses this system value, the fragment
+shader is automatically executed at per sample frequency.
 
 TGSI_SEMANTIC_SAMPLEMASK
 """"""""""""""""""""""""

@@ -53,7 +53,7 @@ EXTRA_DIST = \
 	common.py \
 	docs \
 	doxygen \
-	git_sha1_gen.sh \
+	bin/git_sha1_gen.py \
 	scons \
 	SConstruct
 
@@ -62,6 +62,11 @@ noinst_HEADERS = \
 	include/c99_compat.h \
 	include/c99_math.h \
 	include/c11 \
+	include/drm-uapi/drm.h \
+	include/drm-uapi/drm_fourcc.h \
+	include/drm-uapi/drm_mode.h \
+	include/drm-uapi/i915_drm.h \
+	include/drm-uapi/vc4_drm.h \
 	include/D3D9 \
 	include/GL/wglext.h \
 	include/HaikuGL \

@@ -242,6 +242,9 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX:
         case PIPE_CAP_POST_DEPTH_COVERAGE:
         case PIPE_CAP_BINDLESS_TEXTURE:
+        case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
+        case PIPE_CAP_QUERY_SO_OVERFLOW:
+        case PIPE_CAP_MEMOBJ:
             return 0;
 
         /* SWTCL-only features. */
@@ -724,7 +727,8 @@ static boolean r300_fence_finish(struct pipe_screen *screen,
     return rws->fence_wait(rws, fence, timeout);
 }
 
-struct pipe_screen* r300_screen_create(struct radeon_winsys *rws, unsigned flags)
+struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
+                                       const struct pipe_screen_config *config)
 {
     struct r300_screen *r300screen = CALLOC_STRUCT(r300_screen);
 

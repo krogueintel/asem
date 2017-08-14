@@ -63,21 +63,15 @@ upload_pipelined_state_pointers(struct brw_context *brw)
 
    BEGIN_BATCH(7);
    OUT_BATCH(_3DSTATE_PIPELINED_POINTERS << 16 | (7 - 2));
-   OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->vs.base.state_offset);
+   OUT_RELOC(brw->batch.bo, 0, brw->vs.base.state_offset);
    if (brw->ff_gs.prog_active)
-      OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-		brw->ff_gs.state_offset | 1);
+      OUT_RELOC(brw->batch.bo, 0, brw->ff_gs.state_offset | 1);
    else
       OUT_BATCH(0);
-   OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->clip.state_offset | 1);
-   OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->sf.state_offset);
-   OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->wm.base.state_offset);
-   OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-	     brw->cc.state_offset);
+   OUT_RELOC(brw->batch.bo, 0, brw->clip.state_offset | 1);
+   OUT_RELOC(brw->batch.bo, 0, brw->sf.state_offset);
+   OUT_RELOC(brw->batch.bo, 0, brw->wm.base.state_offset);
+   OUT_RELOC(brw->batch.bo, 0, brw->cc.state_offset);
    ADVANCE_BATCH();
 
    brw->ctx.NewDriverState |= BRW_NEW_PSP;
@@ -143,7 +137,7 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
    struct gl_context *ctx = &brw->ctx;
    uint32_t tile_mask_x = 0, tile_mask_y = 0;
 
-   intel_get_tile_masks(irb->mt->tiling, irb->mt->cpp,
+   intel_get_tile_masks(irb->mt->surf.tiling, irb->mt->cpp,
                         &tile_mask_x, &tile_mask_y);
    assert(!intel_miptree_level_has_hiz(irb->mt, irb->mt_level));
 
@@ -168,9 +162,11 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
                  irb->mt_level, tile_x, tile_y);
       intel_renderbuffer_move_to_temp(brw, irb, invalidate);
 
-      /* Get the new offset. */
-      tile_x = irb->draw_x & tile_mask_x;
-      tile_y = irb->draw_y & tile_mask_y;
+      /* There is now only single slice miptree. */
+      brw->depthstencil.tile_x = 0;
+      brw->depthstencil.tile_y = 0;
+      brw->depthstencil.depth_offset = 0;
+      return true;
    }
 
    /* While we just tried to get everything aligned, we may have failed to do
@@ -192,7 +188,7 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
                                        irb->draw_x & ~tile_mask_x,
                                        irb->draw_y & ~tile_mask_y);
 
-   return rebase;
+   return false;
 }
 
 void
@@ -304,8 +300,8 @@ brw_emit_depthbuffer(struct brw_context *brw)
       /* Prior to Gen7, if using separate stencil, hiz must be enabled. */
       assert(brw->gen >= 7 || !separate_stencil || hiz);
 
-      assert(brw->gen < 6 || depth_mt->tiling == I915_TILING_Y);
-      assert(!hiz || depth_mt->tiling == I915_TILING_Y);
+      assert(brw->gen < 6 || depth_mt->surf.tiling == ISL_TILING_Y0);
+      assert(!hiz || depth_mt->surf.tiling == ISL_TILING_Y0);
 
       depthbuffer_format = brw_depthbuffer_format(brw);
       depth_surface_type = BRW_SURFACE_2D;
@@ -378,17 +374,14 @@ brw_emit_depth_stencil_hiz(struct brw_context *brw,
 
    BEGIN_BATCH(len);
    OUT_BATCH(_3DSTATE_DEPTH_BUFFER << 16 | (len - 2));
-   OUT_BATCH((depth_mt ? depth_mt->pitch - 1 : 0) |
+   OUT_BATCH((depth_mt ? depth_mt->surf.row_pitch - 1 : 0) |
              (depthbuffer_format << 18) |
              (BRW_TILEWALK_YMAJOR << 26) |
-             ((depth_mt ? depth_mt->tiling != I915_TILING_NONE : 1)
-              << 27) |
+             (1 << 27) |
              (depth_surface_type << 29));
 
    if (depth_mt) {
-      OUT_RELOC(depth_mt->bo,
-		I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-		depth_offset);
+      OUT_RELOC(depth_mt->bo, RELOC_WRITE, depth_offset);
    } else {
       OUT_BATCH(0);
    }
@@ -635,18 +628,14 @@ brw_upload_state_base_address(struct brw_context *brw)
       OUT_BATCH(0);
       OUT_BATCH(mocs_wb << 16);
       /* Surface state base address: */
-      OUT_RELOC64(brw->batch.bo, I915_GEM_DOMAIN_SAMPLER, 0,
-                  mocs_wb << 4 | 1);
+      OUT_RELOC64(brw->batch.bo, 0, mocs_wb << 4 | 1);
       /* Dynamic state base address: */
-      OUT_RELOC64(brw->batch.bo,
-                  I915_GEM_DOMAIN_RENDER | I915_GEM_DOMAIN_INSTRUCTION, 0,
-                  mocs_wb << 4 | 1);
+      OUT_RELOC64(brw->batch.bo, 0, mocs_wb << 4 | 1);
       /* Indirect object base address: MEDIA_OBJECT data */
       OUT_BATCH(mocs_wb << 4 | 1);
       OUT_BATCH(0);
       /* Instruction base address: shader kernels (incl. SIP) */
-      OUT_RELOC64(brw->cache.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-                  mocs_wb << 4 | 1);
+      OUT_RELOC64(brw->cache.bo, 0, mocs_wb << 4 | 1);
 
       /* General state buffer size */
       OUT_BATCH(0xfffff001);
@@ -674,7 +663,7 @@ brw_upload_state_base_address(struct brw_context *brw)
 	* BINDING_TABLE_STATE
 	* SURFACE_STATE
 	*/
-       OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_SAMPLER, 0, 1);
+       OUT_RELOC(brw->batch.bo, 0, 1);
         /* Dynamic state base address:
 	 * SAMPLER_STATE
 	 * SAMPLER_BORDER_COLOR_STATE
@@ -685,12 +674,12 @@ brw_upload_state_base_address(struct brw_context *brw)
 	 * Push constants (when INSTPM: CONSTANT_BUFFER Address Offset
 	 * Disable is clear, which we rely on)
 	 */
-       OUT_RELOC(brw->batch.bo, (I915_GEM_DOMAIN_RENDER |
-				   I915_GEM_DOMAIN_INSTRUCTION), 0, 1);
+       OUT_RELOC(brw->batch.bo, 0, 1);
 
        OUT_BATCH(1); /* Indirect object base address: MEDIA_OBJECT data */
-       OUT_RELOC(brw->cache.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-		 1); /* Instruction base address: shader kernels (incl. SIP) */
+
+       /* Instruction base address: shader kernels (incl. SIP) */
+       OUT_RELOC(brw->cache.bo, 0, 1);
 
        OUT_BATCH(1); /* General state upper bound */
        /* Dynamic state upper bound.  Although the documentation says that
@@ -706,11 +695,9 @@ brw_upload_state_base_address(struct brw_context *brw)
        BEGIN_BATCH(8);
        OUT_BATCH(CMD_STATE_BASE_ADDRESS << 16 | (8 - 2));
        OUT_BATCH(1); /* General state base address */
-       OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_SAMPLER, 0,
-		 1); /* Surface state base address */
+       OUT_RELOC(brw->batch.bo, 0, 1); /* Surface state base address */
        OUT_BATCH(1); /* Indirect object base address */
-       OUT_RELOC(brw->cache.bo, I915_GEM_DOMAIN_INSTRUCTION, 0,
-		 1); /* Instruction base address */
+       OUT_RELOC(brw->cache.bo, 0, 1); /* Instruction base address */
        OUT_BATCH(0xfffff001); /* General state upper bound */
        OUT_BATCH(1); /* Indirect object upper bound */
        OUT_BATCH(1); /* Instruction access upper bound */
@@ -719,8 +706,7 @@ brw_upload_state_base_address(struct brw_context *brw)
        BEGIN_BATCH(6);
        OUT_BATCH(CMD_STATE_BASE_ADDRESS << 16 | (6 - 2));
        OUT_BATCH(1); /* General state base address */
-       OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_SAMPLER, 0,
-		 1); /* Surface state base address */
+       OUT_RELOC(brw->batch.bo, 0, 1); /* Surface state base address */
        OUT_BATCH(1); /* Indirect object base address */
        OUT_BATCH(1); /* General state upper bound */
        OUT_BATCH(1); /* Indirect object upper bound */

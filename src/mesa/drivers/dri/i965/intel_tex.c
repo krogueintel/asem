@@ -94,7 +94,9 @@ intel_alloc_texture_image_buffer(struct gl_context *ctx,
    } else {
       intel_image->mt = intel_miptree_create_for_teximage(brw, intel_texobj,
                                                           intel_image,
-                                                          0);
+                                                          1 /* samples */);
+      if (!intel_image->mt)
+         return false;
 
       /* Even if the object currently has a mipmap tree associated
        * with it, this one is a more likely candidate to represent the
@@ -147,8 +149,8 @@ intel_alloc_texture_storage(struct gl_context *ctx,
                                               first_image->TexFormat,
                                               0, levels - 1,
                                               width, height, depth,
-                                              num_samples,
-                                              MIPTREE_LAYOUT_TILING_ANY);
+                                              MAX2(num_samples, 1),
+                                              MIPTREE_CREATE_DEFAULT);
 
       if (intel_texobj->mt == NULL) {
          return false;
@@ -335,14 +337,15 @@ intel_set_texture_storage_for_buffer_object(struct gl_context *ctx,
 
    struct brw_bo *bo = intel_bufferobj_buffer(brw, intel_buffer_obj,
                                              buffer_offset,
-                                             row_stride * image->Height);
+                                             row_stride * image->Height,
+                                             !read_only);
    intel_texobj->mt =
       intel_miptree_create_for_bo(brw, bo,
                                   image->TexFormat,
                                   buffer_offset,
                                   image->Width, image->Height, image->Depth,
                                   row_stride,
-                                  0);
+                                  MIPTREE_CREATE_DEFAULT);
    if (!intel_texobj->mt)
       return false;
 

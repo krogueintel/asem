@@ -78,34 +78,6 @@ public:
     }
 #define SIMD_WRAPPER_3(op)  SIMD_WRAPPER_3_(op, op, __mmask16(0xff))
 
-#define SIMD_DWRAPPER_1_(op, intrin, mask)  \
-    static SIMDINLINE Double SIMDCALL op(Double a)   \
-    {\
-        return __conv(_mm512_maskz_##intrin((mask), __conv(a)));\
-    }
-#if !defined(AVX512F_STRICT)
-#define SIMD_DWRAPPER_1(op)  SIMD_DWRAPPER_1_(op, op, __mmask8(0xf))
-#endif
-
-#define SIMD_DWRAPPER_1I_(op, intrin, mask)  \
-    template<int ImmT> \
-    static SIMDINLINE Double SIMDCALL op(Double a)   \
-    {\
-        return __conv(_mm512_maskz_##intrin((mask), __conv(a), ImmT));\
-    }
-#if !defined(AVX512F_STRICT)
-#define SIMD_DWRAPPER_1I(op)  SIMD_DWRAPPER_1I_(op, op, __mmask8(0xf))
-#endif
-
-#define SIMD_DWRAPPER_2_(op, intrin, mask)  \
-    static SIMDINLINE Double SIMDCALL op(Double a, Double b)   \
-    {\
-        return __conv(_mm512_maskz_##intrin((mask), __conv(a), __conv(b)));\
-    }
-#if !defined(AVX512F_STRICT)
-#define SIMD_DWRAPPER_2(op)  SIMD_DWRAPPER_2_(op, op, __mmask8(0xf))
-#endif
-
 #define SIMD_DWRAPPER_2I(op)  \
     template<int ImmT>\
     static SIMDINLINE Double SIMDCALL op(Double a, Double b)   \
@@ -119,11 +91,6 @@ public:
         return __conv(_mm512_maskz_##intrin((mask), __conv(a)));\
     }
 #define SIMD_IWRAPPER_1_32(op)  SIMD_IWRAPPER_1_(op, op, __mmask16(0xff))
-#if !defined(AVX512F_STRICT)
-#define SIMD_IWRAPPER_1_8(op)   SIMD_IWRAPPER_1_(op, op, __mmask64(0xffffffffull))
-#define SIMD_IWRAPPER_1_16(op)  SIMD_IWRAPPER_1_(op, op, __mmask32(0xffff))
-#define SIMD_IWRAPPER_1_64(op)  SIMD_IWRAPPER_1_(op, op, __mmask8(0xf))
-#endif
 
 #define SIMD_IWRAPPER_1I_(op, intrin, mask)  \
     template<int ImmT> \
@@ -132,11 +99,6 @@ public:
         return __conv(_mm512_maskz_##intrin((mask), __conv(a), ImmT));\
     }
 #define SIMD_IWRAPPER_1I_32(op)  SIMD_IWRAPPER_1I_(op, op, __mmask16(0xff))
-#if !defined(AVX512F_STRICT)
-#define SIMD_IWRAPPER_1I_8(op)   SIMD_IWRAPPER_1I_(op, op, __mmask64(0xffffffffull))
-#define SIMD_IWRAPPER_1I_16(op)  SIMD_IWRAPPER_1I_(op, op, __mmask32(0xffff))
-#define SIMD_IWRAPPER_1I_64(op)  SIMD_IWRAPPER_1I_(op, op, __mmask8(0xf))
-#endif
 
 #define SIMD_IWRAPPER_2_(op, intrin, mask)  \
     static SIMDINLINE Integer SIMDCALL op(Integer a, Integer b)   \
@@ -144,11 +106,6 @@ public:
         return __conv(_mm512_maskz_##intrin((mask), __conv(a), __conv(b)));\
     }
 #define SIMD_IWRAPPER_2_32(op)  SIMD_IWRAPPER_2_(op, op, __mmask16(0xff))
-#if !defined(AVX512F_STRICT)
-#define SIMD_IWRAPPER_2_8(op)   SIMD_IWRAPPER_2_(op, op, __mmask64(0xffffffffull))
-#define SIMD_IWRAPPER_2_16(op)  SIMD_IWRAPPER_2_(op, op, __mmask32(0xffff))
-#define SIMD_IWRAPPER_2_64(op)  SIMD_IWRAPPER_2_(op, op, __mmask8(0xf))
-#endif
 
 #define SIMD_IWRAPPER_2I(op)  \
     template<int ImmT>\
@@ -167,8 +124,8 @@ SIMD_WRAPPER_3(fmsub_ps);   // return (a * b) - c
 SIMD_WRAPPER_2(max_ps);     // return (a > b) ? a : b
 SIMD_WRAPPER_2(min_ps);     // return (a < b) ? a : b
 SIMD_WRAPPER_2(mul_ps);     // return a * b
-//SIMD_WRAPPER_1_(rcp_ps, rcp28_ps, __mmask16(0xff));     // return 1.0f / a
-//SIMD_WRAPPER_1_(rsqrt_ps, rsqrt28_ps, __mmask16(0xff));   // return 1.0f / sqrt(a)
+SIMD_WRAPPER_1_(rcp_ps, rcp14_ps, __mmask16(0xff));     // return 1.0f / a
+SIMD_WRAPPER_1_(rsqrt_ps, rsqrt14_ps, __mmask16(0xff));   // return 1.0f / sqrt(a)
 SIMD_WRAPPER_2(sub_ps);     // return a - b
 
 //-----------------------------------------------------------------------
@@ -182,12 +139,8 @@ SIMD_IWRAPPER_2_32(min_epi32);  // return (a < b) ? a : b (int32)
 SIMD_IWRAPPER_2_32(min_epu32);  // return (a < b) ? a : b (uint32)
 SIMD_IWRAPPER_2_32(mul_epi32);  // return a * b (int32)
 
-#if !defined(AVX512F_STRICT)
-
-SIMD_IWRAPPER_2_8(add_epi8);    // return a + b (int8)
-SIMD_IWRAPPER_2_8(adds_epu8);   // return ((a + b) > 0xff) ? 0xff : (a + b) (uint8) 
-
-#endif
+// SIMD_IWRAPPER_2_8(add_epi8);    // return a + b (int8)
+// SIMD_IWRAPPER_2_8(adds_epu8);   // return ((a + b) > 0xff) ? 0xff : (a + b) (uint8) 
 
 // return (a * b) & 0xFFFFFFFF
 //
@@ -196,12 +149,8 @@ SIMD_IWRAPPER_2_8(adds_epu8);   // return ((a + b) > 0xff) ? 0xff : (a + b) (uin
 SIMD_IWRAPPER_2_32(mullo_epi32);
 SIMD_IWRAPPER_2_32(sub_epi32);  // return a - b (int32)
 
-#if !defined(AVX512F_STRICT)
-
-SIMD_IWRAPPER_2_64(sub_epi64);  // return a - b (int64)
-SIMD_IWRAPPER_2_8(subs_epu8);   // return (b > a) ? 0 : (a - b) (uint8)
-
-#endif
+// SIMD_IWRAPPER_2_64(sub_epi64);  // return a - b (int64)
+// SIMD_IWRAPPER_2_8(subs_epu8);   // return (b > a) ? 0 : (a - b) (uint8)
 
 //-----------------------------------------------------------------------
 // Logical operations
@@ -253,14 +202,10 @@ SIMD_IWRAPPER_2_32(srlv_epi32);                // return a >> b      (uint32)
 //-----------------------------------------------------------------------
 // Blend / shuffle / permute operations
 //-----------------------------------------------------------------------
-#if !defined(AVX512F_STRICT)
-
-SIMD_IWRAPPER_2_8(packs_epi16);     // int16 --> int8    See documentation for _mm256_packs_epi16 and _mm512_packs_epi16
-SIMD_IWRAPPER_2_16(packs_epi32);    // int32 --> int16   See documentation for _mm256_packs_epi32 and _mm512_packs_epi32
-SIMD_IWRAPPER_2_8(packus_epi16);    // uint16 --> uint8  See documentation for _mm256_packus_epi16 and _mm512_packus_epi16
-SIMD_IWRAPPER_2_16(packus_epi32);   // uint32 --> uint16 See documentation for _mm256_packus_epi32 and _mm512_packus_epi32
-
-#endif
+// SIMD_IWRAPPER_2_8(packs_epi16);     // int16 --> int8    See documentation for _mm256_packs_epi16 and _mm512_packs_epi16
+// SIMD_IWRAPPER_2_16(packs_epi32);    // int32 --> int16   See documentation for _mm256_packs_epi32 and _mm512_packs_epi32
+// SIMD_IWRAPPER_2_8(packus_epi16);    // uint16 --> uint8  See documentation for _mm256_packus_epi16 and _mm512_packus_epi16
+// SIMD_IWRAPPER_2_16(packus_epi32);   // uint32 --> uint16 See documentation for _mm256_packus_epi32 and _mm512_packus_epi32
 
 // SIMD_IWRAPPER_2_(permute_epi32, permutevar8x32_epi32);
 
@@ -279,28 +224,24 @@ SIMD_IWRAPPER_1I_32(shuffle_epi32);
 SIMD_IWRAPPER_2_32(unpackhi_epi32);
 SIMD_IWRAPPER_2_32(unpacklo_epi32);
 
-#if !defined(AVX512F_STRICT)
-
-SIMD_IWRAPPER_2_16(unpackhi_epi16);
-SIMD_IWRAPPER_2_64(unpackhi_epi64);
-SIMD_IWRAPPER_2_8(unpackhi_epi8);
-SIMD_IWRAPPER_2_16(unpacklo_epi16);
-SIMD_IWRAPPER_2_64(unpacklo_epi64);
-SIMD_IWRAPPER_2_8(unpacklo_epi8);
-
-#endif
+// SIMD_IWRAPPER_2_16(unpackhi_epi16);
+// SIMD_IWRAPPER_2_64(unpackhi_epi64);
+// SIMD_IWRAPPER_2_8(unpackhi_epi8);
+// SIMD_IWRAPPER_2_16(unpacklo_epi16);
+// SIMD_IWRAPPER_2_64(unpacklo_epi64);
+// SIMD_IWRAPPER_2_8(unpacklo_epi8);
 
 //-----------------------------------------------------------------------
 // Load / store operations
 //-----------------------------------------------------------------------
 static SIMDINLINE Float SIMDCALL load_ps(float const *p)   // return *p    (loads SIMD width elements from memory)
 {
-    return __conv(_mm512_maskz_load_ps(__mmask16(0xff), p));
+    return __conv(_mm512_maskz_loadu_ps(__mmask16(0xff), p));
 }
 
 static SIMDINLINE Integer SIMDCALL load_si(Integer const *p)  // return *p
 {
-    return __conv(_mm512_maskz_load_epi32(__mmask16(0xff), p));
+    return __conv(_mm512_maskz_loadu_epi32(__mmask16(0xff), p));
 }
 
 static SIMDINLINE Float SIMDCALL loadu_ps(float const *p)  // return *p    (same as load_ps but allows for unaligned mem)
@@ -339,32 +280,33 @@ static SIMDINLINE Float SIMDCALL mask_i32gather_ps(Float old, float const* p, In
                     static_cast<int>(ScaleT)));
 }
 
-#if !defined(AVX512F_STRICT)
-
-static SIMDINLINE uint32_t SIMDCALL movemask_epi8(Integer a)
-{
-    __mmask64 m = 0xffffffffull;
-    return static_cast<uint32_t>(
-        _mm512_mask_test_epi8_mask(m, __conv(a), _mm512_set1_epi8(0x80)));
-}
-
-#endif
+// static SIMDINLINE uint32_t SIMDCALL movemask_epi8(Integer a)
+// {
+//     __mmask64 m = 0xffffffffull;
+//     return static_cast<uint32_t>(
+//         _mm512_mask_test_epi8_mask(m, __conv(a), _mm512_set1_epi8(0x80)));
+// }
 
 static SIMDINLINE void SIMDCALL maskstore_ps(float *p, Integer mask, Float src)
 {
     __mmask16 m = 0xff;
     m = _mm512_mask_test_epi32_mask(m, __conv(mask), _mm512_set1_epi32(0x80000000));
-    _mm512_mask_store_ps(p, m, __conv(src));
+    _mm512_mask_storeu_ps(p, m, __conv(src));
 }
 
 static SIMDINLINE void SIMDCALL store_ps(float *p, Float a)    // *p = a   (stores all elements contiguously in memory)
 {
-    _mm512_mask_store_ps(p, __mmask16(0xff), __conv(a));
+    _mm512_mask_storeu_ps(p, __mmask16(0xff), __conv(a));
 }
 
 static SIMDINLINE void SIMDCALL store_si(Integer *p, Integer a)   // *p = a
 {
-    _mm512_mask_store_epi32(p, __mmask16(0xff), __conv(a));
+    _mm512_mask_storeu_epi32(p, __mmask16(0xff), __conv(a));
+}
+
+static SIMDINLINE Float SIMDCALL vmask_ps(int32_t mask)
+{
+    return castsi_ps(__conv(_mm512_maskz_set1_epi32(__mmask16(mask & 0xff), -1)));
 }
 
 //=======================================================================
@@ -380,30 +322,10 @@ static SIMDINLINE void SIMDCALL store_si(Integer *p, Integer a)   // *p = a
 #undef SIMD_WRAPPER_2I
 #undef SIMD_WRAPPER_3_
 #undef SIMD_WRAPPER_3
-#undef SIMD_DWRAPPER_1_
-#undef SIMD_DWRAPPER_1
-#undef SIMD_DWRAPPER_1I_
-#undef SIMD_DWRAPPER_1I
-#undef SIMD_DWRAPPER_2_
-#undef SIMD_DWRAPPER_2
-#undef SIMD_DWRAPPER_2I
 #undef SIMD_IWRAPPER_1_
-#undef SIMD_IWRAPPER_1_8
-#undef SIMD_IWRAPPER_1_16
 #undef SIMD_IWRAPPER_1_32
-#undef SIMD_IWRAPPER_1_64
 #undef SIMD_IWRAPPER_1I_
-#undef SIMD_IWRAPPER_1I_8
-#undef SIMD_IWRAPPER_1I_16
 #undef SIMD_IWRAPPER_1I_32
-#undef SIMD_IWRAPPER_1I_64
 #undef SIMD_IWRAPPER_2_
-#undef SIMD_IWRAPPER_2_8
-#undef SIMD_IWRAPPER_2_16
 #undef SIMD_IWRAPPER_2_32
-#undef SIMD_IWRAPPER_2_64
 #undef SIMD_IWRAPPER_2I
-//#undef SIMD_IWRAPPER_2I_8
-//#undef SIMD_IWRAPPER_2I_16
-//#undef SIMD_IWRAPPER_2I_32
-//#undef SIMD_IWRAPPER_2I_64

@@ -169,8 +169,15 @@ glsl_to_nir(const struct gl_shader_program *shader_prog,
    shader->info.name = ralloc_asprintf(shader, "GLSL%d", shader_prog->Name);
    if (shader_prog->Label)
       shader->info.label = ralloc_strdup(shader, shader_prog->Label);
+
+   /* Check for transform feedback varyings specified via the API */
    shader->info.has_transform_feedback_varyings =
       shader_prog->TransformFeedback.NumVarying > 0;
+
+   /* Check for transform feedback varyings specified in the Shader */
+   if (shader_prog->last_vert_prog)
+      shader->info.has_transform_feedback_varyings |=
+         shader_prog->last_vert_prog->sh.LinkedTransformFeedback->NumVarying > 0;
 
    return shader;
 }
@@ -799,6 +806,24 @@ nir_visitor::visit(ir_call *ir)
       case ir_intrinsic_shared_atomic_comp_swap:
          op = nir_intrinsic_shared_atomic_comp_swap;
          break;
+      case ir_intrinsic_vote_any:
+         op = nir_intrinsic_vote_any;
+         break;
+      case ir_intrinsic_vote_all:
+         op = nir_intrinsic_vote_all;
+         break;
+      case ir_intrinsic_vote_eq:
+         op = nir_intrinsic_vote_eq;
+         break;
+      case ir_intrinsic_ballot:
+         op = nir_intrinsic_ballot;
+         break;
+      case ir_intrinsic_read_invocation:
+         op = nir_intrinsic_read_invocation;
+         break;
+      case ir_intrinsic_read_first_invocation:
+         op = nir_intrinsic_read_first_invocation;
+         break;
       default:
          unreachable("not reached");
       }
@@ -1135,6 +1160,55 @@ nir_visitor::visit(ir_call *ir)
          nir_builder_instr_insert(&b, &instr->instr);
          break;
       }
+      case nir_intrinsic_vote_any:
+      case nir_intrinsic_vote_all:
+      case nir_intrinsic_vote_eq: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 32, NULL);
+
+         instr->variables[0] = evaluate_deref(&instr->instr, ir->return_deref);
+
+         ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
+         instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
+
+         nir_builder_instr_insert(&b, &instr->instr);
+         break;
+      }
+
+      case nir_intrinsic_ballot: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest,
+                           ir->return_deref->type->vector_elements, 64, NULL);
+
+         ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
+         instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
+
+         nir_builder_instr_insert(&b, &instr->instr);
+         break;
+      }
+      case nir_intrinsic_read_invocation: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest,
+                           ir->return_deref->type->vector_elements, 32, NULL);
+         instr->num_components = ir->return_deref->type->vector_elements;
+
+         ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
+         instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
+
+         ir_rvalue *invocation = (ir_rvalue *) ir->actual_parameters.get_head()->next;
+         instr->src[1] = nir_src_for_ssa(evaluate_rvalue(invocation));
+
+         nir_builder_instr_insert(&b, &instr->instr);
+         break;
+      }
+      case nir_intrinsic_read_first_invocation: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest,
+                           ir->return_deref->type->vector_elements, 32, NULL);
+         instr->num_components = ir->return_deref->type->vector_elements;
+
+         ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
+         instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
+
+         nir_builder_instr_insert(&b, &instr->instr);
+         break;
+      }
       default:
          unreachable("not reached");
       }
@@ -1420,11 +1494,11 @@ nir_visitor::visit(ir_expression *ir)
    }
 
    nir_ssa_def *srcs[4];
-   for (unsigned i = 0; i < ir->get_num_operands(); i++)
+   for (unsigned i = 0; i < ir->num_operands; i++)
       srcs[i] = evaluate_rvalue(ir->operands[i]);
 
    glsl_base_type types[4];
-   for (unsigned i = 0; i < ir->get_num_operands(); i++)
+   for (unsigned i = 0; i < ir->num_operands; i++)
       if (supports_ints)
          types[i] = ir->operands[i]->type->base_type;
       else
@@ -2131,7 +2205,7 @@ nir_visitor::visit(ir_dereference_record *ir)
 {
    ir->record->accept(this);
 
-   int field_index = this->deref_tail->type->field_index(ir->field);
+   int field_index = ir->field_idx;
    assert(field_index >= 0);
 
    nir_deref_struct *deref = nir_deref_struct_create(this->deref_tail, field_index);

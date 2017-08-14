@@ -26,6 +26,7 @@
 #ifndef AC_GPU_INFO_H
 #define AC_GPU_INFO_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "amd_family.h"
@@ -76,6 +77,7 @@ struct radeon_info {
 	uint32_t                    drm_minor;
 	uint32_t                    drm_patchlevel;
 	bool                        has_userptr;
+	bool                        has_syncobj;
 
 	/* Shader cores. */
 	uint32_t                    r600_max_quad_pipes; /* wave size / 16 */
@@ -95,6 +97,7 @@ struct radeon_info {
 	uint32_t                    pipe_interleave_bytes;
 	uint32_t                    enabled_rb_mask; /* GCN harvest config */
 
+	uint64_t                    max_alignment; /* from addrlib */
 	/* Tile modes. */
 	uint32_t                    si_tile_mode_array[32];
 	uint32_t                    cik_macrotile_mode_array[16];
@@ -103,6 +106,10 @@ struct radeon_info {
 bool ac_query_gpu_info(int fd, amdgpu_device_handle dev,
 		       struct radeon_info *info,
 		       struct amdgpu_gpu_info *amdinfo);
+
+void ac_compute_driver_uuid(char *uuid, size_t size);
+
+void ac_compute_device_uuid(struct radeon_info *info, char *uuid, size_t size);
 
 #ifdef __cplusplus
 }

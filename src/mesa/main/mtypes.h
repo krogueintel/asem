@@ -1057,6 +1057,9 @@ struct gl_texture_object
    /** GL_ARB_shader_image_load_store */
    GLenum ImageFormatCompatibilityType;
 
+   /** GL_EXT_memory_object */
+   GLenum TextureTiling;
+
    /** GL_ARB_bindless_texture */
    struct util_dynarray SamplerHandles;
    struct util_dynarray ImageHandles;
@@ -2645,15 +2648,6 @@ struct gl_uniform_buffer_variable
 };
 
 
-enum gl_uniform_block_packing
-{
-   ubo_packing_std140,
-   ubo_packing_shared,
-   ubo_packing_packed,
-   ubo_packing_std430
-};
-
-
 struct gl_uniform_block
 {
    /** Declared name of the uniform block */
@@ -2699,7 +2693,7 @@ struct gl_uniform_block
     * This isn't accessible through the API, but it is used while
     * cross-validating uniform blocks.
     */
-   enum gl_uniform_block_packing _Packing;
+   enum glsl_interface_packing _Packing;
    GLboolean _RowMajor;
 };
 
@@ -3197,7 +3191,6 @@ struct gl_query_state
 /** Sync object state */
 struct gl_sync_object
 {
-   GLenum Type;               /**< GL_SYNC_FENCE */
    GLuint Name;               /**< Fence name */
    GLchar *Label;             /**< GL_KHR_debug */
    GLint RefCount;            /**< Reference count */
@@ -3284,6 +3277,10 @@ struct gl_shared_state
     * Once this field becomes true, it is never reset to false.
     */
    bool ShareGroupReset;
+
+   /** EXT_external_objects */
+   struct _mesa_HashTable *MemoryObjects;
+
 };
 
 
@@ -3313,7 +3310,7 @@ struct gl_renderbuffer
     * called without a rb->TexImage.
     */
    GLboolean NeedsFinishRenderTexture;
-   GLubyte NumSamples;
+   GLubyte NumSamples;    /**< zero means not multisampled */
    GLenum InternalFormat; /**< The user-specified format */
    GLenum _BaseFormat;    /**< Either GL_RGB, GL_RGBA, GL_DEPTH_COMPONENT or
                                GL_STENCIL_INDEX. */
@@ -4121,6 +4118,8 @@ struct gl_extensions
    GLboolean EXT_framebuffer_sRGB;
    GLboolean EXT_gpu_program_parameters;
    GLboolean EXT_gpu_shader4;
+   GLboolean EXT_memory_object;
+   GLboolean EXT_memory_object_fd;
    GLboolean EXT_packed_float;
    GLboolean EXT_pixel_buffer_object;
    GLboolean EXT_point_parameters;
@@ -4648,6 +4647,13 @@ struct gl_image_handle_object
 {
    struct gl_image_unit imgObj;
    GLuint64 handle;
+};
+
+struct gl_memory_object
+{
+   GLuint Name;            /**< hash table ID/name */
+   GLboolean Immutable;    /**< denotes mutability state of parameters */
+   GLboolean Dedicated;    /**< import memory from a dedicated allocation */
 };
 
 /**

@@ -97,9 +97,6 @@ struct loader_dri3_extensions {
 struct loader_dri3_drawable;
 
 struct loader_dri3_vtable {
-   int (*get_swap_interval)(struct loader_dri3_drawable *);
-   int (*clamp_swap_interval)(struct loader_dri3_drawable *, int);
-   void (*set_swap_interval)(struct loader_dri3_drawable *, int);
    void (*set_drawable_size)(struct loader_dri3_drawable *, int, int);
    bool (*in_current_context)(struct loader_dri3_drawable *);
    __DRIcontext *(*get_dri_context)(struct loader_dri3_drawable *);
@@ -157,6 +154,7 @@ struct loader_dri3_drawable {
    xcb_special_event_t *special_event;
 
    bool first_init;
+   int swap_interval;
 
    struct loader_dri3_extensions *ext;
    const struct loader_dri3_vtable *vtable;
@@ -241,4 +239,7 @@ loader_dri3_get_buffers(__DRIdrawable *driDrawable,
 
 void
 loader_dri3_update_drawable_geometry(struct loader_dri3_drawable *draw);
+
+void
+loader_dri3_swapbuffer_barrier(struct loader_dri3_drawable *draw);
 #endif

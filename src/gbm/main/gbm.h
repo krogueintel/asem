@@ -77,6 +77,12 @@ enum gbm_bo_format {
    GBM_BO_FORMAT_ARGB8888
 };
 
+
+/**
+ * The FourCC format codes are taken from the drm_fourcc.h definition, and
+ * re-namespaced. New GBM formats must not be added, unless they are
+ * identical ports from drm_fourcc.
+ */
 #define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
 			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 
@@ -326,6 +332,9 @@ gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane);
 
 uint32_t
 gbm_bo_get_format(struct gbm_bo *bo);
+
+uint32_t
+gbm_bo_get_bpp(struct gbm_bo *bo);
 
 uint32_t
 gbm_bo_get_offset(struct gbm_bo *bo, int plane);

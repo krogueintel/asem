@@ -30,7 +30,7 @@
 #if (defined(FORCE_WINDOWS) || defined(_WIN32)) && !defined(FORCE_LINUX)
 
 #define SWR_API __cdecl
-#define SWR_VISIBLE
+#define SWR_VISIBLE  __declspec(dllexport)
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -173,6 +173,12 @@ void _mm256_storeu2_m128i(__m128i *hi, __m128i *lo, __m256i a)
     _mm_storeu_si128((__m128i*)lo, _mm256_castsi256_si128(a));
     _mm_storeu_si128((__m128i*)hi, _mm256_extractf128_si256(a, 0x1));
 }
+
+// gcc prior to 4.9 doesn't have _mm*_undefined_*
+#if (__GNUC__) && (GCC_VERSION < 409000)
+#define _mm_undefined_si128 _mm_setzero_si128
+#define _mm256_undefined_ps _mm256_setzero_ps
+#endif
 #endif
 
 inline
@@ -214,12 +220,6 @@ void *AlignedMalloc(unsigned int size, unsigned int alignment)
     return ret;
 }
 
-inline
-unsigned char _bittest(const LONG *a, LONG b)
-{
-    return ((*(unsigned *)(a) & (1 << b)) != 0);
-}
-
 static inline
 void AlignedFree(void* p)
 {
@@ -231,8 +231,6 @@ void AlignedFree(void* p)
 #define sprintf_s sprintf
 #define strcpy_s(dst,size,src) strncpy(dst,src,size)
 #define GetCurrentProcessId getpid
-pid_t gettid(void);
-#define GetCurrentThreadId gettid
 
 #define InterlockedCompareExchange(Dest, Exchange, Comparand) __sync_val_compare_and_swap(Dest, Comparand, Exchange)
 #define InterlockedExchangeAdd(Addend, Value) __sync_fetch_and_add(Addend, Value)

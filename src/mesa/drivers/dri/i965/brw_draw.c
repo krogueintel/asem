@@ -205,7 +205,6 @@ brw_emit_prim(struct brw_context *brw,
 
       brw_load_register_mem(brw, GEN7_3DPRIM_VERTEX_COUNT,
                             xfb_obj->prim_count_bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
                             stream * sizeof(uint32_t));
       BEGIN_BATCH(9);
       OUT_BATCH(MI_LOAD_REGISTER_IMM | (9 - 2));
@@ -222,30 +221,24 @@ brw_emit_prim(struct brw_context *brw,
       struct gl_buffer_object *indirect_buffer = brw->ctx.DrawIndirectBuffer;
       struct brw_bo *bo = intel_bufferobj_buffer(brw,
             intel_buffer_object(indirect_buffer),
-            prim->indirect_offset, 5 * sizeof(GLuint));
+            prim->indirect_offset, 5 * sizeof(GLuint), false);
 
       indirect_flag = GEN7_3DPRIM_INDIRECT_PARAMETER_ENABLE;
 
       brw_load_register_mem(brw, GEN7_3DPRIM_VERTEX_COUNT, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
                             prim->indirect_offset + 0);
       brw_load_register_mem(brw, GEN7_3DPRIM_INSTANCE_COUNT, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
                             prim->indirect_offset + 4);
 
       brw_load_register_mem(brw, GEN7_3DPRIM_START_VERTEX, bo,
-                            I915_GEM_DOMAIN_VERTEX, 0,
                             prim->indirect_offset + 8);
       if (prim->indexed) {
          brw_load_register_mem(brw, GEN7_3DPRIM_BASE_VERTEX, bo,
-                               I915_GEM_DOMAIN_VERTEX, 0,
                                prim->indirect_offset + 12);
          brw_load_register_mem(brw, GEN7_3DPRIM_START_INSTANCE, bo,
-                               I915_GEM_DOMAIN_VERTEX, 0,
                                prim->indirect_offset + 16);
       } else {
          brw_load_register_mem(brw, GEN7_3DPRIM_START_INSTANCE, bo,
-                               I915_GEM_DOMAIN_VERTEX, 0,
                                prim->indirect_offset + 12);
          BEGIN_BATCH(3);
          OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
@@ -383,8 +376,12 @@ brw_predraw_resolve_inputs(struct brw_context *brw)
       if (!tex_obj || !tex_obj->mt)
 	 continue;
 
+      struct gl_sampler_object *sampler = _mesa_get_samplerobj(ctx, i);
+      enum isl_format view_format =
+         translate_tex_format(brw, tex_obj->_Format, sampler->sRGBDecode);
+
       bool aux_supported;
-      intel_miptree_prepare_texture(brw, tex_obj->mt, tex_obj->_Format,
+      intel_miptree_prepare_texture(brw, tex_obj->mt, view_format,
                                     &aux_supported);
 
       if (!aux_supported && brw->gen >= 9 &&
@@ -414,7 +411,7 @@ brw_predraw_resolve_inputs(struct brw_context *brw)
             if (tex_obj && tex_obj->mt) {
                intel_miptree_prepare_image(brw, tex_obj->mt);
 
-               if (intel_miptree_is_lossless_compressed(brw, tex_obj->mt) &&
+               if (tex_obj->mt->aux_usage == ISL_AUX_USAGE_CCS_E &&
                    intel_disable_rb_aux_buffer(brw, tex_obj->mt->bo)) {
                   perf_debug("Using renderbuffer as shader image - turning "
                              "off lossless compression");
@@ -469,7 +466,8 @@ brw_predraw_resolve_framebuffer(struct brw_context *brw)
 
       intel_miptree_prepare_render(brw, irb->mt, irb->mt_level,
                                    irb->mt_layer, irb->layer_count,
-                                   ctx->Color.sRGBEnabled);
+                                   ctx->Color.sRGBEnabled,
+                                   ctx->Color.BlendEnabled & (1 << i));
    }
 }
 
@@ -536,7 +534,9 @@ brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
      
       brw_render_cache_set_add_bo(brw, irb->mt->bo);
       intel_miptree_finish_render(brw, irb->mt, irb->mt_level,
-                                  irb->mt_layer, irb->layer_count);
+                                  irb->mt_layer, irb->layer_count,
+                                  ctx->Color.sRGBEnabled,
+                                  ctx->Color.BlendEnabled & (1 << i));
    }
 }
 
@@ -674,6 +674,11 @@ brw_try_draw_prims(struct gl_context *ctx,
       estimated_max_prim_size += 1024; /* gen6 VS push constants */
       estimated_max_prim_size += 1024; /* gen6 WM push constants */
       estimated_max_prim_size += 512; /* misc. pad */
+
+      /* Flag BRW_NEW_DRAW_CALL on every draw.  This allows us to have
+       * atoms that happen on every draw call.
+       */
+      brw->ctx.NewDriverState |= BRW_NEW_DRAW_CALL;
 
       /* Flush the batch if it's approaching full, so that we don't wrap while
        * we've got validated state that needs to be in the same batch as the

@@ -1776,7 +1776,7 @@ fs_visitor::set_gs_stream_control_data_bits(const fs_reg &vertex_count,
    assert(gs_compile->control_data_bits_per_vertex == 2);
 
    /* Must be a valid stream */
-   assert(stream_id >= 0 && stream_id < MAX_VERTEX_STREAMS);
+   assert(stream_id < MAX_VERTEX_STREAMS);
 
    /* Control data bits are initialized to 0 so we don't have to set any
     * bits when sending vertices to stream 0.
@@ -3822,6 +3822,34 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
           * and we have to split it if necessary.
           */
          const unsigned type_size = type_sz(dest.type);
+
+         /* See if we've selected this as a push constant candidate */
+         if (const_index) {
+            const unsigned ubo_block = const_index->u32[0];
+            const unsigned offset_256b = const_offset->u32[0] / 32;
+
+            fs_reg push_reg;
+            for (int i = 0; i < 4; i++) {
+               const struct brw_ubo_range *range = &prog_data->ubo_ranges[i];
+               if (range->block == ubo_block &&
+                   offset_256b >= range->start &&
+                   offset_256b < range->start + range->length) {
+
+                  push_reg = fs_reg(UNIFORM, UBO_START + i, dest.type);
+                  push_reg.offset = const_offset->u32[0] - 32 * range->start;
+                  break;
+               }
+            }
+
+            if (push_reg.file != BAD_FILE) {
+               for (unsigned i = 0; i < instr->num_components; i++) {
+                  bld.MOV(offset(dest, bld, i),
+                          byte_offset(push_reg, i * type_size));
+               }
+               break;
+            }
+         }
+
          const unsigned block_sz = 64; /* Fetch one cacheline at a time. */
          const fs_builder ubld = bld.exec_all().group(block_sz / 4, 0);
          const fs_reg packed_consts = ubld.vgrf(BRW_REGISTER_TYPE_UD);
@@ -4075,7 +4103,11 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       break;
    }
 
-   case nir_intrinsic_load_channel_num: {
+   case nir_intrinsic_load_subgroup_size:
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_D), brw_imm_d(dispatch_width));
+      break;
+
+   case nir_intrinsic_load_subgroup_invocation: {
       fs_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_UW);
       dest = retype(dest, BRW_REGISTER_TYPE_UD);
       const fs_builder allbld8 = bld.group(8, 0).exec_all();
@@ -4087,6 +4119,102 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          allbld16.ADD(byte_offset(tmp, 32), tmp, brw_imm_uw(16u));
       }
       bld.MOV(dest, tmp);
+      break;
+   }
+
+   case nir_intrinsic_load_subgroup_eq_mask:
+   case nir_intrinsic_load_subgroup_ge_mask:
+   case nir_intrinsic_load_subgroup_gt_mask:
+   case nir_intrinsic_load_subgroup_le_mask:
+   case nir_intrinsic_load_subgroup_lt_mask:
+      unreachable("not reached");
+
+   case nir_intrinsic_vote_any: {
+      const fs_builder ubld = bld.exec_all();
+
+      /* The any/all predicates do not consider channel enables. To prevent
+       * dead channels from affecting the result, we initialize the flag with
+       * with the identity value for the logical operation.
+       */
+      ubld.MOV(brw_flag_reg(0, 0), brw_imm_uw(0));
+      bld.CMP(bld.null_reg_d(), get_nir_src(instr->src[0]), brw_imm_d(0), BRW_CONDITIONAL_NZ);
+      bld.MOV(dest, brw_imm_d(-1));
+      set_predicate(dispatch_width == 8 ?
+                    BRW_PREDICATE_ALIGN1_ANY8H :
+                    BRW_PREDICATE_ALIGN1_ANY16H,
+                    bld.SEL(dest, dest, brw_imm_d(0)));
+      break;
+   }
+   case nir_intrinsic_vote_all: {
+      const fs_builder ubld = bld.exec_all();
+
+      /* The any/all predicates do not consider channel enables. To prevent
+       * dead channels from affecting the result, we initialize the flag with
+       * with the identity value for the logical operation.
+       */
+      ubld.MOV(brw_flag_reg(0, 0), brw_imm_uw(0xffff));
+      bld.CMP(bld.null_reg_d(), get_nir_src(instr->src[0]), brw_imm_d(0), BRW_CONDITIONAL_NZ);
+      bld.MOV(dest, brw_imm_d(-1));
+      set_predicate(dispatch_width == 8 ?
+                    BRW_PREDICATE_ALIGN1_ALL8H :
+                    BRW_PREDICATE_ALIGN1_ALL16H,
+                    bld.SEL(dest, dest, brw_imm_d(0)));
+      break;
+   }
+   case nir_intrinsic_vote_eq: {
+      fs_reg value = get_nir_src(instr->src[0]);
+      fs_reg uniformized = bld.emit_uniformize(value);
+      const fs_builder ubld = bld.exec_all();
+
+      /* The any/all predicates do not consider channel enables. To prevent
+       * dead channels from affecting the result, we initialize the flag with
+       * with the identity value for the logical operation.
+       */
+      ubld.MOV(brw_flag_reg(0, 0), brw_imm_uw(0xffff));
+      bld.CMP(bld.null_reg_d(), value, uniformized, BRW_CONDITIONAL_Z);
+      bld.MOV(dest, brw_imm_d(-1));
+      set_predicate(dispatch_width == 8 ?
+                    BRW_PREDICATE_ALIGN1_ALL8H :
+                    BRW_PREDICATE_ALIGN1_ALL16H,
+                    bld.SEL(dest, dest, brw_imm_d(0)));
+      break;
+   }
+
+   case nir_intrinsic_ballot: {
+      const fs_reg value = retype(get_nir_src(instr->src[0]),
+                                  BRW_REGISTER_TYPE_UD);
+      const struct brw_reg flag = retype(brw_flag_reg(0, 0),
+                                         BRW_REGISTER_TYPE_UD);
+
+      bld.exec_all().MOV(flag, brw_imm_ud(0u));
+      bld.CMP(bld.null_reg_ud(), value, brw_imm_ud(0u), BRW_CONDITIONAL_NZ);
+
+      if (instr->dest.ssa.bit_size > 32) {
+         dest.type = BRW_REGISTER_TYPE_UQ;
+      } else {
+         dest.type = BRW_REGISTER_TYPE_UD;
+      }
+      bld.MOV(dest, flag);
+      break;
+   }
+
+   case nir_intrinsic_read_invocation: {
+      const fs_reg value = get_nir_src(instr->src[0]);
+      const fs_reg invocation = get_nir_src(instr->src[1]);
+      fs_reg tmp = bld.vgrf(value.type);
+
+      bld.exec_all().emit(SHADER_OPCODE_BROADCAST, tmp, value,
+                          component(invocation, 0));
+
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_D),
+              fs_reg(component(tmp, 0)));
+      break;
+   }
+
+   case nir_intrinsic_read_first_invocation: {
+      const fs_reg value = get_nir_src(instr->src[0]);
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_D),
+              bld.emit_uniformize(value));
       break;
    }
 

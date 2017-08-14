@@ -77,8 +77,7 @@ dri3_update_num_back(struct loader_dri3_drawable *draw)
 void
 loader_dri3_set_swap_interval(struct loader_dri3_drawable *draw, int interval)
 {
-   interval = draw->vtable->clamp_swap_interval(draw, interval);
-   draw->vtable->set_swap_interval(draw, interval);
+   draw->swap_interval = interval;
    dri3_update_num_back(draw);
 }
 
@@ -165,7 +164,7 @@ loader_dri3_drawable_init(xcb_connection_t *conn,
       swap_interval = 1;
       break;
    }
-   draw->vtable->set_swap_interval(draw, swap_interval);
+   draw->swap_interval = swap_interval;
 
    dri3_update_num_back(draw);
 
@@ -504,6 +503,7 @@ loader_dri3_copy_sub_buffer(struct loader_dri3_drawable *draw,
                                      x, y, width, height, __BLIT_FLAG_FLUSH);
    }
 
+   loader_dri3_swapbuffer_barrier(draw);
    dri3_fence_reset(draw->conn, back);
    dri3_copy_area(draw->conn,
                   dri3_back_buffer(draw)->pixmap,
@@ -595,6 +595,7 @@ loader_dri3_wait_gl(struct loader_dri3_drawable *draw)
                                   front->height,
                                   0, 0, front->width,
                                   front->height, __BLIT_FLAG_FLUSH);
+   loader_dri3_swapbuffer_barrier(draw);
    loader_dri3_copy_drawable(draw, draw->drawable, front->pixmap);
 }
 
@@ -633,14 +634,12 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
    __DRIcontext *dri_context;
    int64_t ret = 0;
    uint32_t options = XCB_PRESENT_OPTION_NONE;
-   int swap_interval;
 
    dri_context = draw->vtable->get_dri_context(draw);
-   swap_interval = draw->vtable->get_swap_interval(draw);
 
    draw->vtable->flush_drawable(draw, flush_flags);
 
-   back = draw->buffers[LOADER_DRI3_BACK_ID(draw->cur_back)];
+   back = draw->buffers[dri3_find_back(draw)];
    if (draw->is_different_gpu && back) {
       /* Update the linear buffer before presenting the pixmap */
       draw->ext->image->blitImage(dri_context,
@@ -672,7 +671,7 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
        */
       ++draw->send_sbc;
       if (target_msc == 0 && divisor == 0 && remainder == 0)
-         target_msc = draw->msc + swap_interval *
+         target_msc = draw->msc + draw->swap_interval *
                       (draw->send_sbc - draw->recv_sbc);
       else if (divisor == 0 && remainder > 0) {
          /* From the GLX_OML_sync_control spec:
@@ -696,7 +695,7 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
        * behaviour by not using XCB_PRESENT_OPTION_ASYNC, but this should not be
        * the default.
        */
-      if (swap_interval == 0)
+      if (draw->swap_interval == 0)
           options |= XCB_PRESENT_OPTION_ASYNC;
       if (force_copy)
           options |= XCB_PRESENT_OPTION_COPY;
@@ -1258,6 +1257,7 @@ dri3_get_buffer(__DRIdrawable *driDrawable,
          }
          break;
       case loader_dri3_buffer_front:
+         loader_dri3_swapbuffer_barrier(draw);
          dri3_fence_reset(draw->conn, new_buffer);
          dri3_copy_area(draw->conn,
                         draw->drawable,
@@ -1430,4 +1430,19 @@ loader_dri3_update_drawable_geometry(struct loader_dri3_drawable *draw)
 
       free(geom_reply);
    }
+}
+
+
+/**
+ * Make sure the server has flushed all pending swap buffers to hardware
+ * for this drawable. Ideally we'd want to send an X protocol request to
+ * have the server block our connection until the swaps are complete. That
+ * would avoid the potential round-trip here.
+ */
+void
+loader_dri3_swapbuffer_barrier(struct loader_dri3_drawable *draw)
+{
+   int64_t ust, msc, sbc;
+
+   (void) loader_dri3_wait_for_sbc(draw, 0, &ust, &msc, &sbc);
 }

@@ -220,6 +220,7 @@ static void si_dump_debug_registers(struct si_context *sctx, FILE *f)
 static void si_dump_last_ib(struct si_context *sctx, FILE *f)
 {
 	int last_trace_id = -1;
+	int last_ce_trace_id = -1;
 
 	if (!sctx->last_gfx.ib)
 		return;
@@ -233,8 +234,10 @@ static void si_dump_last_ib(struct si_context *sctx, FILE *f)
 						       NULL,
 						       PIPE_TRANSFER_UNSYNCHRONIZED |
 						       PIPE_TRANSFER_READ);
-		if (map)
-			last_trace_id = *map;
+		if (map) {
+			last_trace_id = map[0];
+			last_ce_trace_id = map[1];
+		}
 	}
 
 	if (sctx->init_config)
@@ -251,6 +254,12 @@ static void si_dump_last_ib(struct si_context *sctx, FILE *f)
 	ac_parse_ib(f, sctx->last_gfx.ib, sctx->last_gfx.num_dw,
 		    last_trace_id, "IB", sctx->b.chip_class,
 		     NULL, NULL);
+
+	if (sctx->last_ce.ib) {
+		ac_parse_ib(f, sctx->last_ce.ib, sctx->last_ce.num_dw,
+			    last_ce_trace_id, "CE IB", sctx->b.chip_class,
+			    NULL, NULL);
+	}
 }
 
 static const char *priority_to_string(enum radeon_bo_priority priority)
@@ -344,7 +353,7 @@ static void si_dump_bo_list(struct si_context *sctx,
 
 		/* Print the usage. */
 		for (j = 0; j < 64; j++) {
-			if (!(saved->bo_list[i].priority_usage & (1llu << j)))
+			if (!(saved->bo_list[i].priority_usage & (1ull << j)))
 				continue;
 
 			fprintf(f, "%s%s", !hit ? "" : ", ", priority_to_string(j));
@@ -391,6 +400,9 @@ static void si_dump_descriptor_list(struct si_descriptors *desc,
 				    FILE *f)
 {
 	unsigned i, j;
+
+	if (!desc->list)
+		return;
 
 	for (i = 0; i < num_elements; i++) {
 		unsigned dw_offset = slot_remap(i) * element_dw_size;
@@ -842,6 +854,7 @@ static void si_dump_debug_state(struct pipe_context *ctx, FILE *f,
 
 		/* dump only once */
 		radeon_clear_saved_cs(&sctx->last_gfx);
+		radeon_clear_saved_cs(&sctx->last_ce);
 		r600_resource_reference(&sctx->last_trace_buf, NULL);
 	}
 }
@@ -866,7 +879,7 @@ static void si_dump_dma(struct si_context *sctx,
 	fprintf(f, "SDMA Dump Done.\n");
 }
 
-static bool si_vm_fault_occured(struct si_context *sctx, uint32_t *out_addr)
+static bool si_vm_fault_occured(struct si_context *sctx, uint64_t *out_addr)
 {
 	char line[2000];
 	unsigned sec, usec;
@@ -894,7 +907,7 @@ static bool si_vm_fault_occured(struct si_context *sctx, uint32_t *out_addr)
 			}
 			continue;
 		}
-		timestamp = sec * 1000000llu + usec;
+		timestamp = sec * 1000000ull + usec;
 
 		/* If just updating the timestamp. */
 		if (!out_addr)
@@ -921,18 +934,35 @@ static bool si_vm_fault_occured(struct si_context *sctx, uint32_t *out_addr)
 		}
 		msg++;
 
+		const char *header_line, *addr_line_prefix, *addr_line_format;
+
+		if (sctx->b.chip_class >= GFX9) {
+			/* Match this:
+			 * ..: [gfxhub] VMC page fault (src_id:0 ring:158 vm_id:2 pas_id:0)
+			 * ..:   at page 0x0000000219f8f000 from 27
+			 * ..: VM_L2_PROTECTION_FAULT_STATUS:0x0020113C
+			 */
+			header_line = "VMC page fault";
+			addr_line_prefix = "   at page";
+			addr_line_format = "%"PRIx64;
+		} else {
+			header_line = "GPU fault detected:";
+			addr_line_prefix = "VM_CONTEXT1_PROTECTION_FAULT_ADDR";
+			addr_line_format = "%"PRIX64;
+		}
+
 		switch (progress) {
 		case 0:
-			if (strstr(msg, "GPU fault detected:"))
+			if (strstr(msg, header_line))
 				progress = 1;
 			break;
 		case 1:
-			msg = strstr(msg, "VM_CONTEXT1_PROTECTION_FAULT_ADDR");
+			msg = strstr(msg, addr_line_prefix);
 			if (msg) {
 				msg = strstr(msg, "0x");
 				if (msg) {
 					msg += 2;
-					if (sscanf(msg, "%X", out_addr) == 1)
+					if (sscanf(msg, addr_line_format, out_addr) == 1)
 						fault = true;
 				}
 			}
@@ -955,7 +985,7 @@ void si_check_vm_faults(struct r600_common_context *ctx,
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct pipe_screen *screen = sctx->b.b.screen;
 	FILE *f;
-	uint32_t addr;
+	uint64_t addr;
 	char cmd_line[4096];
 
 	if (!si_vm_fault_occured(sctx, &addr))
@@ -971,7 +1001,7 @@ void si_check_vm_faults(struct r600_common_context *ctx,
 	fprintf(f, "Driver vendor: %s\n", screen->get_vendor(screen));
 	fprintf(f, "Device vendor: %s\n", screen->get_device_vendor(screen));
 	fprintf(f, "Device name: %s\n\n", screen->get_name(screen));
-	fprintf(f, "Failing VM page: 0x%08x\n\n", addr);
+	fprintf(f, "Failing VM page: 0x%08"PRIx64"\n\n", addr);
 
 	if (sctx->apitrace_call_number)
 		fprintf(f, "Last apitrace call: %u\n\n",

@@ -30,7 +30,7 @@
 
 /* Compute the size of an array */
 #ifndef ARRAY_SIZE
-#  define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
+#  define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
 /* For compatibility with Clang's __has_builtin() */
@@ -244,8 +244,8 @@ do {                       \
 /** Compute ceiling of integer quotient of A divided by B. */
 #define DIV_ROUND_UP( A, B )  ( (A) % (B) == 0 ? (A)/(B) : (A)/(B)+1 )
 
-/** Clamp X to [MIN,MAX] */
-#define CLAMP( X, MIN, MAX )  ( (X)<(MIN) ? (MIN) : ((X)>(MAX) ? (MAX) : (X)) )
+/** Clamp X to [MIN,MAX].  Turn NaN into MIN, arbitrarily. */
+#define CLAMP( X, MIN, MAX )  ( (X)>(MIN) ? ((X)>(MAX) ? (MAX) : (X)) : (MIN) )
 
 /** Minimum of two values: */
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )

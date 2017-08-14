@@ -25,6 +25,8 @@ include $(LOCAL_PATH)/Makefile.sources
 
 VK_ENTRYPOINTS_SCRIPT := $(MESA_PYTHON2) $(LOCAL_PATH)/vulkan/anv_entrypoints_gen.py
 
+VK_EXTENSIONS_SCRIPT := $(MESA_PYTHON2) $(LOCAL_PATH)/vulkan/anv_extensions.py
+
 VULKAN_COMMON_INCLUDES := \
 	$(MESA_TOP)/src/mapi \
 	$(MESA_TOP)/src/gallium/auxiliary \
@@ -33,7 +35,7 @@ VULKAN_COMMON_INCLUDES := \
 	$(MESA_TOP)/src/vulkan/wsi \
 	$(MESA_TOP)/src/vulkan/util \
 	$(MESA_TOP)/src/intel \
-	$(MESA_TOP)/src/intel/drm \
+	$(MESA_TOP)/include/drm-uapi \
 	$(MESA_TOP)/src/intel/vulkan
 
 # libmesa_anv_entrypoints with header and dummy.c
@@ -206,12 +208,19 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 # conditions since they are stored in another location.
 
 LOCAL_GENERATED_SOURCES += $(intermediates)/vulkan/anv_entrypoints.c
+LOCAL_GENERATED_SOURCES += $(intermediates)/vulkan/anv_extensions.c
 
 $(intermediates)/vulkan/anv_entrypoints.c:
 	@mkdir -p $(dir $@)
 	$(VK_ENTRYPOINTS_SCRIPT) \
 		--xml $(MESA_TOP)/src/vulkan/registry/vk.xml \
 		--outdir $(dir $@)
+
+$(intermediates)/vulkan/anv_extensions.c:
+	@mkdir -p $(dir $@)
+	$(VK_EXTENSIONS_SCRIPT) \
+		--xml $(MESA_TOP)/src/vulkan/registry/vk.xml \
+		--out $@
 
 LOCAL_SHARED_LIBRARIES := libdrm
 

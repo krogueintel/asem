@@ -67,7 +67,7 @@
 /* Debug flags. */
 /* logging */
 #define DBG_TEX			(1 << 0)
-/* gap - reuse */
+#define DBG_NIR			(1 << 1)
 #define DBG_COMPUTE		(1 << 2)
 #define DBG_VM			(1 << 3)
 /* gap - reuse */
@@ -90,28 +90,28 @@
 #define DBG_TEST_DMA		(1 << 20)
 /* Bits 21-31 are reserved for the r600g driver. */
 /* features */
-#define DBG_NO_ASYNC_DMA	(1llu << 32)
-#define DBG_NO_HYPERZ		(1llu << 33)
-#define DBG_NO_DISCARD_RANGE	(1llu << 34)
-#define DBG_NO_2D_TILING	(1llu << 35)
-#define DBG_NO_TILING		(1llu << 36)
-#define DBG_SWITCH_ON_EOP	(1llu << 37)
-#define DBG_FORCE_DMA		(1llu << 38)
-#define DBG_PRECOMPILE		(1llu << 39)
-#define DBG_INFO		(1llu << 40)
-#define DBG_NO_WC		(1llu << 41)
-#define DBG_CHECK_VM		(1llu << 42)
-#define DBG_NO_DCC		(1llu << 43)
-#define DBG_NO_DCC_CLEAR	(1llu << 44)
-#define DBG_NO_RB_PLUS		(1llu << 45)
-#define DBG_SI_SCHED		(1llu << 46)
-#define DBG_MONOLITHIC_SHADERS	(1llu << 47)
-#define DBG_NO_CE		(1llu << 48)
-#define DBG_UNSAFE_MATH		(1llu << 49)
-#define DBG_NO_DCC_FB		(1llu << 50)
-#define DBG_TEST_VMFAULT_CP	(1llu << 51)
-#define DBG_TEST_VMFAULT_SDMA	(1llu << 52)
-#define DBG_TEST_VMFAULT_SHADER	(1llu << 53)
+#define DBG_NO_ASYNC_DMA	(1ull << 32)
+#define DBG_NO_HYPERZ		(1ull << 33)
+#define DBG_NO_DISCARD_RANGE	(1ull << 34)
+#define DBG_NO_2D_TILING	(1ull << 35)
+#define DBG_NO_TILING		(1ull << 36)
+#define DBG_SWITCH_ON_EOP	(1ull << 37)
+#define DBG_FORCE_DMA		(1ull << 38)
+#define DBG_PRECOMPILE		(1ull << 39)
+#define DBG_INFO		(1ull << 40)
+#define DBG_NO_WC		(1ull << 41)
+#define DBG_CHECK_VM		(1ull << 42)
+#define DBG_NO_DCC		(1ull << 43)
+#define DBG_NO_DCC_CLEAR	(1ull << 44)
+#define DBG_NO_RB_PLUS		(1ull << 45)
+#define DBG_SI_SCHED		(1ull << 46)
+#define DBG_MONOLITHIC_SHADERS	(1ull << 47)
+#define DBG_NO_CE		(1ull << 48)
+#define DBG_UNSAFE_MATH		(1ull << 49)
+#define DBG_NO_DCC_FB		(1ull << 50)
+#define DBG_TEST_VMFAULT_CP	(1ull << 51)
+#define DBG_TEST_VMFAULT_SDMA	(1ull << 52)
+#define DBG_TEST_VMFAULT_SHADER	(1ull << 53)
 
 #define R600_MAP_BUFFER_ALIGNMENT 64
 #define R600_MAX_VIEWPORTS        16
@@ -202,6 +202,7 @@ struct r600_fmask_info {
 	unsigned bank_height;
 	unsigned slice_tile_max;
 	unsigned tile_mode_index;
+	unsigned tile_swizzle;
 };
 
 struct r600_cmask_info {
@@ -370,11 +371,18 @@ union r600_mmio_counters {
 		struct r600_mmio_counter meq;
 		struct r600_mmio_counter me;
 		struct r600_mmio_counter surf_sync;
-		struct r600_mmio_counter dma;
+		struct r600_mmio_counter cp_dma;
 		struct r600_mmio_counter scratch_ram;
 		struct r600_mmio_counter ce;
 	} named;
 	unsigned array[0];
+};
+
+struct r600_memory_object {
+	struct pipe_memory_object	b;
+	struct pb_buffer		*buf;
+	uint32_t			stride;
+	uint32_t			offset;
 };
 
 struct r600_common_screen {
@@ -587,6 +595,8 @@ struct r600_common_context {
 	unsigned			num_cs_dw_queries_suspend;
 	/* Misc stats. */
 	unsigned			num_draw_calls;
+	unsigned			num_decompress_calls;
+	unsigned			num_mrt_draw_calls;
 	unsigned			num_prim_restart_calls;
 	unsigned			num_spill_draw_calls;
 	unsigned			num_compute_calls;
@@ -746,7 +756,7 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 			 enum blitter_attrib_type type,
 			 const union pipe_color_union *attrib);
 bool r600_common_screen_init(struct r600_common_screen *rscreen,
-			     struct radeon_winsys *ws, unsigned flags);
+			     struct radeon_winsys *ws);
 void r600_destroy_common_screen(struct r600_common_screen *rscreen);
 void r600_preflush_suspend_features(struct r600_common_context *ctx);
 void r600_postflush_resume_features(struct r600_common_context *ctx);
@@ -766,7 +776,7 @@ const char *r600_get_llvm_processor_name(enum radeon_family family);
 void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 			 struct r600_resource *dst, struct r600_resource *src);
 void radeon_save_cs(struct radeon_winsys *ws, struct radeon_winsys_cs *cs,
-		    struct radeon_saved_cs *saved);
+		    struct radeon_saved_cs *saved, bool get_buffer_list);
 void radeon_clear_saved_cs(struct radeon_saved_cs *saved);
 bool r600_check_device_reset(struct r600_common_context *rctx);
 
@@ -1005,5 +1015,10 @@ vi_dcc_enabled(struct r600_texture *tex, unsigned level)
 	(((unsigned)(s1x) & 0xf) << 8) | (((unsigned)(s1y) & 0xf) << 12) |	   \
 	(((unsigned)(s2x) & 0xf) << 16) | (((unsigned)(s2y) & 0xf) << 20) |	   \
 	 (((unsigned)(s3x) & 0xf) << 24) | (((unsigned)(s3y) & 0xf) << 28))
+
+static inline int S_FIXED(float value, unsigned frac_bits)
+{
+	return value * (1 << frac_bits);
+}
 
 #endif

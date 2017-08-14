@@ -37,6 +37,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "util/u_atomic.h"
 #include "util/list.h"
 
 #if defined(__cplusplus)
@@ -74,6 +75,16 @@ struct brw_bo {
     * entries when calling brw_bo_emit_reloc()
     */
    uint64_t offset64;
+
+   /**
+    * The validation list index for this buffer, or -1 when not in a batch.
+    * Note that a single buffer may be in multiple batches (contexts), and
+    * this is a global field, which refers to the last batch using the BO.
+    * It should not be considered authoritative, but can be used to avoid a
+    * linear walk of the validation list in the common case by guessing that
+    * exec_bos[bo->index] == bo and confirming whether that's the case.
+    */
+   unsigned index;
 
    /**
     * Boolean of whether the GPU is definitely not accessing the buffer.
@@ -124,12 +135,18 @@ struct brw_bo {
    bool reusable;
 
    /**
+    * Boolean of whether this buffer has been shared with an external client.
+    */
+   bool external;
+
+   /**
     * Boolean of whether this buffer is cache coherent
     */
    bool cache_coherent;
 };
 
 #define BO_ALLOC_FOR_RENDER (1<<0)
+#define BO_ALLOC_ZEROED     (1<<1)
 
 /**
  * Allocate a buffer object.
@@ -182,7 +199,11 @@ struct brw_bo *brw_bo_alloc_tiled_2d(struct brw_bufmgr *bufmgr,
                                      unsigned flags);
 
 /** Takes a reference on a buffer object */
-void brw_bo_reference(struct brw_bo *bo);
+static inline void
+brw_bo_reference(struct brw_bo *bo)
+{
+   p_atomic_inc(&bo->refcount);
+}
 
 /**
  * Releases a reference on a buffer object, freeing the data if
@@ -217,9 +238,6 @@ static inline int brw_bo_unmap(struct brw_bo *bo) { return 0; }
 /** Write data into an object. */
 int brw_bo_subdata(struct brw_bo *bo, uint64_t offset,
                    uint64_t size, const void *data);
-/** Read data from an object. */
-int brw_bo_get_subdata(struct brw_bo *bo, uint64_t offset,
-                       uint64_t size, void *data);
 /**
  * Waits for rendering to an object by the GPU to have completed.
  *
@@ -227,7 +245,7 @@ int brw_bo_get_subdata(struct brw_bo *bo, uint64_t offset,
  * bo_subdata, etc.  It is merely a way for the driver to implement
  * glFinish.
  */
-void brw_bo_wait_rendering(struct brw_context *brw, struct brw_bo *bo);
+void brw_bo_wait_rendering(struct brw_bo *bo);
 
 /**
  * Tears down the buffer manager instance.

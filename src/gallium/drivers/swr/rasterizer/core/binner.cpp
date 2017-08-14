@@ -36,12 +36,12 @@
 #include "tilemgr.h"
 
 // Function Prototype
-void BinPostSetupLines(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[3], simdscalar vRecipW[2], uint32_t primMask, simdscalari primID, simdscalari viewportIdx);
-void BinPostSetupPoints(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primID, simdscalari viewportIdx);
+void BinPostSetupLines(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[3], simdscalar vRecipW[2], uint32_t primMask, simdscalari const &primID, simdscalari const &viewportIdx);
+void BinPostSetupPoints(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari const &primID, simdscalari const &viewportIdx);
 
 #if USE_SIMD16_FRONTEND
-void BinPostSetupLines_simd16(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simd16vector prims[3], simd16scalar vRecipW[2], uint32_t primMask, simd16scalari primID, simd16scalari viewportIdx);
-void BinPostSetupPoints_simd16(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simd16vector prims[], uint32_t primMask, simd16scalari primID, simd16scalari viewportIdx);
+void BinPostSetupLines_simd16(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simd16vector prims[3], simd16scalar vRecipW[2], uint32_t primMask, simd16scalari const &primID, simd16scalari const &viewportIdx);
+void BinPostSetupPoints_simd16(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simd16vector prims[], uint32_t primMask, simd16scalari const &primID, simd16scalari const &viewportIdx);
 #endif
 
 //////////////////////////////////////////////////////////////////////////
@@ -64,7 +64,7 @@ INLINE void ProcessAttributes(
     static_assert(NumVertsT::value > 0 && NumVertsT::value <= 3, "Invalid value for NumVertsT");
     const SWR_BACKEND_STATE& backendState = pDC->pState->state.backendState;
     // Conservative Rasterization requires degenerate tris to have constant attribute interpolation
-    LONG constantInterpMask = IsDegenerate::value ? 0xFFFFFFFF : backendState.constantInterpolationMask;
+    uint32_t constantInterpMask = IsDegenerate::value ? 0xFFFFFFFF : backendState.constantInterpolationMask;
     const uint32_t provokingVertex = pDC->pState->state.frontendState.topologyProvokingVertex;
     const PRIMITIVE_TOPOLOGY topo = pDC->pState->state.topology;
 
@@ -93,7 +93,7 @@ INLINE void ProcessAttributes(
 
         if (HasConstantInterpT::value || IsDegenerate::value)
         {
-            if (_bittest(&constantInterpMask, i))
+            if (CheckBit(constantInterpMask, i))
             {
                 uint32_t vid;
                 uint32_t adjustedTriIndex;
@@ -433,7 +433,7 @@ void BinTriangles(
     uint32_t workerId,
     simdvector tri[3],
     uint32_t triMask,
-    simdscalari primID)
+    simdscalari const &primID)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -878,7 +878,7 @@ void SIMDCALL BinTriangles_simd16(
     uint32_t workerId,
     simd16vector tri[3],
     uint32_t triMask,
-    simd16scalari primID)
+    simd16scalari const &primID)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -1076,13 +1076,14 @@ void SIMDCALL BinTriangles_simd16(
             (SWR_INPUT_COVERAGE)pDC->pState->state.psState.inputCoverage, EdgeValToEdgeState(ALL_EDGES_VALID), (state.scissorsTileAligned == false));
     }
 
+    simd16BBox bbox;
+
     if (!triMask)
     {
         goto endBinTriangles;
     }
 
     // Calc bounding box of triangles
-    simd16BBox bbox;
     calcBoundingBoxIntVertical<CT>(tri, vXi, vYi, bbox);
 
     // determine if triangle falls between pixel centers and discard
@@ -1385,8 +1386,8 @@ void BinPostSetupPoints(
     uint32_t workerId,
     simdvector prim[],
     uint32_t primMask,
-    simdscalari primID,
-    simdscalari viewportIdx)
+    simdscalari const &primID,
+    simdscalari const &viewportIdx)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -1702,7 +1703,7 @@ void BinPoints(
     uint32_t workerId,
     simdvector prim[3],
     uint32_t primMask,
-    simdscalari primID)
+    simdscalari const &primID)
 {
     simdvector& primVerts = prim[0];
 
@@ -1766,8 +1767,8 @@ void BinPostSetupPoints_simd16(
     uint32_t workerId,
     simd16vector prim[],
     uint32_t primMask,
-    simd16scalari primID,
-    simd16scalari viewportIdx)
+    simd16scalari const &primID,
+    simd16scalari const &viewportIdx)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -2085,7 +2086,7 @@ void SIMDCALL BinPoints_simd16(
     uint32_t workerId,
     simd16vector prim[3],
     uint32_t primMask,
-    simd16scalari primID)
+    simd16scalari const &primID)
 {
     simd16vector& primVerts = prim[0];
 
@@ -2102,7 +2103,7 @@ void SIMDCALL BinPoints_simd16(
 
         // OOB indices => forced to zero.
         simd16scalari vpai = _simd16_castps_si(vpiAttrib[0][VERTEX_SGV_VAI_COMP]);
-        vpai = _simd16_max_epi32(_simd16_setzero_si(), vpai)
+        vpai = _simd16_max_epi32(_simd16_setzero_si(), vpai);
         simd16scalari vNumViewports = _simd16_set1_epi32(KNOB_NUM_VIEWPORTS_SCISSORS);
         simd16scalari vClearMask = _simd16_cmplt_epi32(vpai, vNumViewports);
         viewportIdx = _simd16_and_si(vClearMask, vpai);
@@ -2159,8 +2160,8 @@ void BinPostSetupLines(
     simdvector prim[],
     simdscalar recipW[],
     uint32_t primMask,
-    simdscalari primID,
-    simdscalari viewportIdx)
+    simdscalari const &primID,
+    simdscalari const &viewportIdx)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -2364,8 +2365,8 @@ void BinPostSetupLines_simd16(
     simd16vector prim[],
     simd16scalar recipW[],
     uint32_t primMask,
-    simd16scalari primID,
-    simd16scalari viewportIdx)
+    simd16scalari const &primID,
+    simd16scalari const &viewportIdx)
 {
     SWR_CONTEXT *pContext = pDC->pContext;
 
@@ -2461,6 +2462,13 @@ void BinPostSetupLines_simd16(
 
     const simdscalar unused = _simd_setzero_ps();
 
+    // transpose verts needed for backend
+    /// @todo modify BE to take non-transformed verts
+    simd4scalar vHorizX[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
+    simd4scalar vHorizY[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
+    simd4scalar vHorizZ[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
+    simd4scalar vHorizW[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
+
     if (!primMask)
     {
         goto endBinLines;
@@ -2478,13 +2486,6 @@ void BinPostSetupLines_simd16(
     _simd16_store_si(reinterpret_cast<simd16scalari *>(aMTRight),   bbox.xmax);
     _simd16_store_si(reinterpret_cast<simd16scalari *>(aMTTop),     bbox.ymin);
     _simd16_store_si(reinterpret_cast<simd16scalari *>(aMTBottom),  bbox.ymax);
-
-    // transpose verts needed for backend
-    /// @todo modify BE to take non-transformed verts
-    simd4scalar vHorizX[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
-    simd4scalar vHorizY[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
-    simd4scalar vHorizZ[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
-    simd4scalar vHorizW[2][KNOB_SIMD_WIDTH]; // KNOB_SIMD16_WIDTH
 
     vTranspose3x8(vHorizX[0], _simd16_extract_ps(prim[0].x, 0), _simd16_extract_ps(prim[1].x, 0), unused);
     vTranspose3x8(vHorizY[0], _simd16_extract_ps(prim[0].y, 0), _simd16_extract_ps(prim[1].y, 0), unused);
@@ -2595,7 +2596,7 @@ void BinLines(
     uint32_t workerId,
     simdvector prim[],
     uint32_t primMask,
-    simdscalari primID)
+    simdscalari const &primID)
 {
     const API_STATE& state = GetApiState(pDC);
     const SWR_RASTSTATE& rastState = state.rastState;
@@ -2669,7 +2670,7 @@ void SIMDCALL BinLines_simd16(
     uint32_t workerId,
     simd16vector prim[3],
     uint32_t primMask,
-    simd16scalari primID)
+    simd16scalari const &primID)
 {
     const API_STATE& state = GetApiState(pDC);
     const SWR_RASTSTATE& rastState = state.rastState;

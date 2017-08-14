@@ -396,6 +396,14 @@ The integer capabilities:
   ``TGSI_PROPERTY_FS_POST_DEPTH_COVERAGE`` is supported.
 * ``PIPE_CAP_BINDLESS_TEXTURE``: Whether bindless texture operations are
   supported.
+* ``PIPE_CAP_NIR_SAMPLERS_AS_DEREF``: Whether NIR tex instructions should
+  reference texture and sampler as NIR derefs instead of by indices.
+* ``PIPE_CAP_QUERY_SO_OVERFLOW``: Whether the
+  ``PIPE_QUERY_SO_OVERFLOW_PREDICATE`` and
+  ``PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE`` query types are supported. Note that
+  for a driver that does not support multiple output streams (i.e.,
+  ``PIPE_CAP_MAX_VERTEX_STREAMS`` is 1), both query types are identical.
+* ``PIPE_CAP_MEMOBJ``: Whether operations on memory objects are supported.
 
 
 .. _pipe_capf:

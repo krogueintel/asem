@@ -72,6 +72,7 @@ release_buffer(struct gbm_surface *_surf, struct gbm_bo *bo)
    for (unsigned i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
       if (dri2_surf->color_buffers[i].bo == bo) {
 	 dri2_surf->color_buffers[i].locked = false;
+	 break;
       }
    }
 }
@@ -90,14 +91,14 @@ has_free_buffers(struct gbm_surface *_surf)
 }
 
 static _EGLSurface *
-dri2_drm_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
-                        _EGLConfig *conf, void *native_window,
-                        const EGLint *attrib_list)
+dri2_drm_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
+                               _EGLConfig *conf, void *native_surface,
+                               const EGLint *attrib_list)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
    struct dri2_egl_surface *dri2_surf;
-   struct gbm_surface *window = native_window;
+   struct gbm_surface *surface = native_surface;
    struct gbm_dri_surface *surf;
    const __DRIconfig *config;
 
@@ -109,25 +110,14 @@ dri2_drm_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       return NULL;
    }
 
-   if (!_eglInitSurface(&dri2_surf->base, disp, type, conf, attrib_list))
+   if (!_eglInitSurface(&dri2_surf->base, disp, EGL_WINDOW_BIT, conf, attrib_list))
       goto cleanup_surf;
 
-   switch (type) {
-   case EGL_WINDOW_BIT:
-      if (!window) {
-         _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_create_surface");
-         goto cleanup_surf;
-      }
-
-      surf = gbm_dri_surface(window);
-      dri2_surf->gbm_surf = surf;
-      dri2_surf->base.Width =  surf->base.width;
-      dri2_surf->base.Height = surf->base.height;
-      surf->dri_private = dri2_surf;
-      break;
-   default:
-      goto cleanup_surf;
-   }
+   surf = gbm_dri_surface(surface);
+   dri2_surf->gbm_surf = surf;
+   dri2_surf->base.Width =  surf->base.width;
+   dri2_surf->base.Height = surf->base.height;
+   surf->dri_private = dri2_surf;
 
    config = dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
                                 dri2_surf->base.GLColorspace);
@@ -156,15 +146,6 @@ dri2_drm_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
    free(dri2_surf);
 
    return NULL;
-}
-
-static _EGLSurface *
-dri2_drm_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
-                               _EGLConfig *conf, void *native_window,
-                               const EGLint *attrib_list)
-{
-   return dri2_drm_create_surface(drv, disp, EGL_WINDOW_BIT, conf,
-                                  native_window, attrib_list);
 }
 
 static _EGLSurface *
@@ -229,7 +210,8 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
    if (dri2_surf->back->bo == NULL) {
       if (surf->base.modifiers)
          dri2_surf->back->bo = gbm_bo_create_with_modifiers(&dri2_dpy->gbm_dri->base,
-                                                            surf->base.width, surf->base.height,
+                                                            surf->base.width,
+                                                            surf->base.height,
                                                             surf->base.format,
                                                             surf->base.modifiers,
                                                             surf->base.count);
@@ -321,10 +303,9 @@ dri2_drm_get_buffers_with_format(__DRIdrawable *driDrawable,
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
    int i, j;
 
-   dri2_surf->buffer_count = 0;
    for (i = 0, j = 0; i < 2 * count; i += 2, j++) {
       assert(attachments[i] < __DRI_BUFFER_COUNT);
-      assert(dri2_surf->buffer_count < 5);
+      assert(j < ARRAY_SIZE(dri2_surf->buffers));
 
       switch (attachments[i]) {
       case __DRI_BUFFER_BACK_LEFT:
@@ -525,6 +506,9 @@ swrast_put_image2(__DRIdrawable *driDrawable,
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
    int internal_stride;
    struct gbm_dri_bo *bo;
+   uint32_t bpp;
+   int x_bytes, width_bytes;
+   char *src, *dst;
 
    if (op != __DRI_SWRAST_IMAGE_OP_DRAW &&
        op != __DRI_SWRAST_IMAGE_OP_SWAP)
@@ -534,14 +518,26 @@ swrast_put_image2(__DRIdrawable *driDrawable,
       return;
 
    bo = gbm_dri_bo(dri2_surf->current->bo);
+
+   bpp = gbm_bo_get_bpp(&bo->base);
+   if (bpp == 0)
+      return;
+
+   x_bytes = x * (bpp >> 3);
+   width_bytes = width * (bpp >> 3);
+
    if (gbm_dri_bo_map_dumb(bo) == NULL)
       return;
 
    internal_stride = bo->base.stride;
 
+   dst = bo->map + x_bytes + (y * internal_stride);
+   src = data;
+
    for (int i = 0; i < height; i++) {
-      memcpy(bo->map + (x + i) * internal_stride + y,
-             data + i * stride, stride);
+      memcpy(dst, src, width_bytes);
+      dst += internal_stride;
+      src += stride;
    }
 
    gbm_dri_bo_unmap_dumb(bo);
@@ -559,20 +555,35 @@ swrast_get_image(__DRIdrawable *driDrawable,
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
    int internal_stride, stride;
    struct gbm_dri_bo *bo;
+   uint32_t bpp;
+   int x_bytes, width_bytes;
+   char *src, *dst;
 
    if (get_swrast_front_bo(dri2_surf) < 0)
       return;
 
    bo = gbm_dri_bo(dri2_surf->current->bo);
+
+   bpp = gbm_bo_get_bpp(&bo->base);
+   if (bpp == 0)
+      return;
+
+   x_bytes = x * (bpp >> 3);
+   width_bytes = width * (bpp >> 3);
+
+   internal_stride = bo->base.stride;
+   stride = width_bytes;
+
    if (gbm_dri_bo_map_dumb(bo) == NULL)
       return;
 
-   internal_stride = bo->base.stride;
-   stride = width * 4;
+   dst = data;
+   src = bo->map + x_bytes + (y * internal_stride);
 
    for (int i = 0; i < height; i++) {
-      memcpy(data + i * stride,
-             bo->map + (x + i) * internal_stride + y, stride);
+      memcpy(dst, src, width_bytes);
+      dst += stride;
+      src += internal_stride;
    }
 
    gbm_dri_bo_unmap_dumb(bo);

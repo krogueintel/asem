@@ -37,10 +37,11 @@
 #include "swrast/s_renderbuffer.h"
 #include "util/ralloc.h"
 #include "brw_defines.h"
+#include "brw_state.h"
 #include "compiler/nir/nir.h"
 
 #include "utils.h"
-#include "xmlpool.h"
+#include "util/xmlpool.h"
 
 #ifndef DRM_FORMAT_MOD_INVALID
 #define DRM_FORMAT_MOD_INVALID ((1ULL<<56) - 1)
@@ -55,7 +56,6 @@ static const __DRIconfigOptionsExtension brw_config_options = {
    .xml =
 DRI_CONF_BEGIN
    DRI_CONF_SECTION_PERFORMANCE
-      DRI_CONF_VBLANK_MODE(DRI_CONF_VBLANK_ALWAYS_SYNC)
       /* Options correspond to DRI_CONF_BO_REUSE_DISABLED,
        * DRI_CONF_BO_REUSE_ALL
        */
@@ -65,6 +65,7 @@ DRI_CONF_BEGIN
 	    DRI_CONF_ENUM(1, "Enable reuse of all sizes of buffer objects")
 	 DRI_CONF_DESC_END
       DRI_CONF_OPT_END
+      DRI_CONF_MESA_NO_ERROR("false")
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_QUALITY
@@ -186,7 +187,7 @@ static const struct __DRI2flushExtensionRec intelFlushExtension = {
     .flush_with_flags   = intel_dri2_flush_with_flags,
 };
 
-static struct intel_image_format intel_image_formats[] = {
+static const struct intel_image_format intel_image_formats[] = {
    { __DRI_IMAGE_FOURCC_ARGB8888, __DRI_IMAGE_COMPONENTS_RGBA, 1,
      { { 0, 0, 0, __DRI_IMAGE_FORMAT_ARGB8888, 4 } } },
 
@@ -295,69 +296,42 @@ static struct intel_image_format intel_image_formats[] = {
 };
 
 static const struct {
-   uint32_t tiling;
    uint64_t modifier;
    unsigned since_gen;
-   unsigned height_align;
-} tiling_modifier_map[] = {
-   { .tiling = I915_TILING_NONE, .modifier = DRM_FORMAT_MOD_LINEAR,
-     .since_gen = 1, .height_align = 1 },
-   { .tiling = I915_TILING_X, .modifier = I915_FORMAT_MOD_X_TILED,
-     .since_gen = 1, .height_align = 8 },
-   { .tiling = I915_TILING_Y, .modifier = I915_FORMAT_MOD_Y_TILED,
-     .since_gen = 6, .height_align = 32 },
+} supported_modifiers[] = {
+   { .modifier = DRM_FORMAT_MOD_LINEAR       , .since_gen = 1 },
+   { .modifier = I915_FORMAT_MOD_X_TILED     , .since_gen = 1 },
+   { .modifier = I915_FORMAT_MOD_Y_TILED     , .since_gen = 6 },
 };
 
 static bool
-modifier_is_supported(uint64_t modifier)
+modifier_is_supported(const struct gen_device_info *devinfo,
+                      uint64_t modifier)
 {
    int i;
 
-   for (i = 0; i < ARRAY_SIZE(tiling_modifier_map); i++) {
-      if (tiling_modifier_map[i].modifier == modifier)
-         return true;
+   for (i = 0; i < ARRAY_SIZE(supported_modifiers); i++) {
+      if (supported_modifiers[i].modifier != modifier)
+         continue;
+
+      return supported_modifiers[i].since_gen <= devinfo->gen;
    }
 
    return false;
 }
 
-static uint32_t
-modifier_to_tiling(uint64_t modifier)
-{
-   int i;
-
-   for (i = 0; i < ARRAY_SIZE(tiling_modifier_map); i++) {
-      if (tiling_modifier_map[i].modifier == modifier)
-         return tiling_modifier_map[i].tiling;
-   }
-
-   unreachable("modifier_to_tiling should only receive known modifiers");
-}
-
 static uint64_t
 tiling_to_modifier(uint32_t tiling)
 {
-   int i;
+   static const uint64_t map[] = {
+      [I915_TILING_NONE]   = DRM_FORMAT_MOD_LINEAR,
+      [I915_TILING_X]      = I915_FORMAT_MOD_X_TILED,
+      [I915_TILING_Y]      = I915_FORMAT_MOD_Y_TILED,
+   };
 
-   for (i = 0; i < ARRAY_SIZE(tiling_modifier_map); i++) {
-      if (tiling_modifier_map[i].tiling == tiling)
-         return tiling_modifier_map[i].modifier;
-   }
+   assert(tiling < ARRAY_SIZE(map));
 
-   unreachable("tiling_to_modifier received unknown tiling mode");
-}
-
-static unsigned
-get_tiled_height(uint64_t modifier, unsigned height)
-{
-   int i;
-
-   for (i = 0; i < ARRAY_SIZE(tiling_modifier_map); i++) {
-      if (tiling_modifier_map[i].modifier == modifier)
-         return ALIGN(height, tiling_modifier_map[i].height_align);
-   }
-
-   unreachable("get_tiled_height received unknown tiling mode");
+   return map[tiling];
 }
 
 static void
@@ -372,19 +346,15 @@ intel_image_warn_if_unaligned(__DRIimage *image, const char *func)
    }
 }
 
-static struct intel_image_format *
+static const struct intel_image_format *
 intel_image_format_lookup(int fourcc)
 {
-   struct intel_image_format *f = NULL;
-
    for (unsigned i = 0; i < ARRAY_SIZE(intel_image_formats); i++) {
-      if (intel_image_formats[i].fourcc == fourcc) {
-	 f = &intel_image_formats[i];
-	 break;
-      }
+      if (intel_image_formats[i].fourcc == fourcc)
+         return &intel_image_formats[i];
    }
 
-   return f;
+   return NULL;
 }
 
 static boolean intel_lookup_fourcc(int dri_format, int *fourcc)
@@ -437,9 +407,11 @@ intel_setup_image_from_mipmap_tree(struct brw_context *brw, __DRIimage *image,
 
    intel_miptree_check_level_layer(mt, level, zoffset);
 
-   image->width = minify(mt->physical_width0, level - mt->first_level);
-   image->height = minify(mt->physical_height0, level - mt->first_level);
-   image->pitch = mt->pitch;
+   image->width = minify(mt->surf.phys_level0_sa.width,
+                         level - mt->first_level);
+   image->height = minify(mt->surf.phys_level0_sa.height,
+                          level - mt->first_level);
+   image->pitch = mt->surf.row_pitch;
 
    image->offset = intel_miptree_get_tile_offsets(mt, level, zoffset,
                                                   &image->tile_x,
@@ -506,7 +478,8 @@ intel_create_image_from_renderbuffer(__DRIcontext *context,
 
    image->internal_format = rb->InternalFormat;
    image->format = rb->Format;
-   image->modifier = tiling_to_modifier(irb->mt->tiling);
+   image->modifier = tiling_to_modifier(
+                        isl_tiling_to_i915_tiling(irb->mt->surf.tiling));
    image->offset = 0;
    image->data = loaderPrivate;
    brw_bo_unreference(image->bo);
@@ -514,7 +487,7 @@ intel_create_image_from_renderbuffer(__DRIcontext *context,
    brw_bo_reference(irb->mt->bo);
    image->width = rb->Width;
    image->height = rb->Height;
-   image->pitch = irb->mt->pitch;
+   image->pitch = irb->mt->surf.row_pitch;
    image->dri_format = driGLFormatToImageFormat(image->format);
    image->has_depthstencil = irb->mt->stencil_mt? true : false;
 
@@ -568,7 +541,8 @@ intel_create_image_from_texture(__DRIcontext *context, int target,
 
    image->internal_format = obj->Image[face][level]->InternalFormat;
    image->format = obj->Image[face][level]->TexFormat;
-   image->modifier = tiling_to_modifier(iobj->mt->tiling);
+   image->modifier = tiling_to_modifier(
+                        isl_tiling_to_i915_tiling(iobj->mt->surf.tiling));
    image->data = loaderPrivate;
    intel_setup_image_from_mipmap_tree(brw, image, iobj->mt, level, zoffset);
    image->dri_format = driGLFormatToImageFormat(image->format);
@@ -612,6 +586,9 @@ select_best_modifier(struct gen_device_info *devinfo,
    enum modifier_priority prio = MODIFIER_PRIORITY_INVALID;
 
    for (int i = 0; i < count; i++) {
+      if (!modifier_is_supported(devinfo, modifiers[i]))
+         continue;
+
       switch (modifiers[i]) {
       case I915_FORMAT_MOD_Y_TILED:
          prio = MAX2(prio, MODIFIER_PRIORITY_Y);
@@ -641,10 +618,8 @@ intel_create_image_common(__DRIscreen *dri_screen,
 {
    __DRIimage *image;
    struct intel_screen *screen = dri_screen->driverPrivate;
-   uint32_t tiling;
    uint64_t modifier = DRM_FORMAT_MOD_INVALID;
-   unsigned tiled_height;
-   int cpp;
+   bool ok;
 
    /* Callers of this may specify a modifier, or a dri usage, but not both. The
     * newer modifier interface deprecates the older usage flags newer modifier
@@ -674,23 +649,48 @@ intel_create_image_common(__DRIscreen *dri_screen,
          modifier = I915_FORMAT_MOD_X_TILED;
       }
    }
-   tiling = modifier_to_tiling(modifier);
-   tiled_height = get_tiled_height(modifier, height);
 
    image = intel_allocate_image(screen, format, loaderPrivate);
    if (image == NULL)
       return NULL;
 
-   cpp = _mesa_get_format_bytes(image->format);
-   image->bo = brw_bo_alloc_tiled_2d(screen->bufmgr, "image",
-                                     width, tiled_height, cpp, tiling,
-                                     &image->pitch, 0);
+   const struct isl_drm_modifier_info *mod_info =
+      isl_drm_modifier_get_info(modifier);
+
+   struct isl_surf surf;
+   ok = isl_surf_init(&screen->isl_dev, &surf,
+                      .dim = ISL_SURF_DIM_2D,
+                      .format = brw_isl_format_for_mesa_format(image->format),
+                      .width = width,
+                      .height = height,
+                      .depth = 1,
+                      .levels = 1,
+                      .array_len = 1,
+                      .samples = 1,
+                      .usage = ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                               ISL_SURF_USAGE_TEXTURE_BIT |
+                               ISL_SURF_USAGE_STORAGE_BIT,
+                      .tiling_flags = (1 << mod_info->tiling));
+   assert(ok);
+   if (!ok) {
+      free(image);
+      return NULL;
+   }
+
+   /* We request that the bufmgr zero because, if a buffer gets re-used from
+    * the pool, we don't want to leak random garbage from our process to some
+    * other.
+    */
+   image->bo = brw_bo_alloc_tiled(screen->bufmgr, "image", surf.size,
+                                  isl_tiling_to_i915_tiling(mod_info->tiling),
+                                  surf.row_pitch, BO_ALLOC_ZEROED);
    if (image->bo == NULL) {
       free(image);
       return NULL;
    }
    image->width = width;
    image->height = height;
+   image->pitch = surf.row_pitch;
    image->modifier = modifier;
 
    return image;
@@ -814,7 +814,7 @@ intel_create_image_from_names(__DRIscreen *dri_screen,
                               int *strides, int *offsets,
                               void *loaderPrivate)
 {
-    struct intel_image_format *f = NULL;
+    const struct intel_image_format *f = NULL;
     __DRIimage *image;
     int i, index;
 
@@ -851,10 +851,10 @@ intel_create_image_from_fds_common(__DRIscreen *dri_screen,
                                    void *loaderPrivate)
 {
    struct intel_screen *screen = dri_screen->driverPrivate;
-   struct intel_image_format *f;
+   const struct intel_image_format *f;
    __DRIimage *image;
-   unsigned tiled_height;
    int i, index;
+   bool ok;
 
    if (fds == NULL || num_fds < 1)
       return NULL;
@@ -863,8 +863,9 @@ intel_create_image_from_fds_common(__DRIscreen *dri_screen,
    if (f == NULL)
       return NULL;
 
-   if (modifier != DRM_FORMAT_MOD_INVALID && !modifier_is_supported(modifier))
-         return NULL;
+   if (modifier != DRM_FORMAT_MOD_INVALID &&
+       !modifier_is_supported(&screen->devinfo, modifier))
+      return NULL;
 
    if (f->nplanes == 1)
       image = intel_allocate_image(screen, f->planes[0].dri_format,
@@ -905,7 +906,6 @@ intel_create_image_from_fds_common(__DRIscreen *dri_screen,
       image->modifier = modifier;
    else
       image->modifier = tiling_to_modifier(image->bo->tiling_mode);
-   tiled_height = get_tiled_height(image->modifier, height);
 
    int size = 0;
    for (i = 0; i < f->nplanes; i++) {
@@ -913,8 +913,33 @@ intel_create_image_from_fds_common(__DRIscreen *dri_screen,
       image->offsets[index] = offsets[index];
       image->strides[index] = strides[index];
 
-      const int plane_height = tiled_height >> f->planes[i].height_shift;
-      const int end = offsets[index] + plane_height * strides[index];
+      const struct isl_drm_modifier_info *mod_info =
+         isl_drm_modifier_get_info(image->modifier);
+
+      mesa_format format = driImageFormatToGLFormat(f->planes[i].dri_format);
+
+      struct isl_surf surf;
+      ok = isl_surf_init(&screen->isl_dev, &surf,
+                         .dim = ISL_SURF_DIM_2D,
+                         .format = brw_isl_format_for_mesa_format(format),
+                         .width = image->width >> f->planes[i].width_shift,
+                         .height = image->height >> f->planes[i].height_shift,
+                         .depth = 1,
+                         .levels = 1,
+                         .array_len = 1,
+                         .samples = 1,
+                         .row_pitch = strides[index],
+                         .usage = ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                                  ISL_SURF_USAGE_TEXTURE_BIT |
+                                  ISL_SURF_USAGE_STORAGE_BIT,
+                         .tiling_flags = (1 << mod_info->tiling));
+      if (!ok) {
+         brw_bo_unreference(image->bo);
+         free(image);
+         return NULL;
+      }
+
+      const int end = offsets[index] + surf.size;
       if (size < end)
          size = end;
    }
@@ -963,7 +988,7 @@ intel_create_image_from_dma_bufs2(__DRIscreen *dri_screen,
                                   void *loaderPrivate)
 {
    __DRIimage *image;
-   struct intel_image_format *f = intel_image_format_lookup(fourcc);
+   const struct intel_image_format *f = intel_image_format_lookup(fourcc);
 
    if (!f) {
       *error = __DRI_IMAGE_ERROR_BAD_MATCH;
@@ -1046,22 +1071,23 @@ intel_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
                               int *count)
 {
    struct intel_screen *screen = _screen->driverPrivate;
-   struct intel_image_format *f;
+   const struct intel_image_format *f;
    int num_mods = 0, i;
 
    f = intel_image_format_lookup(fourcc);
    if (f == NULL)
       return false;
 
-   for (i = 0; i < ARRAY_SIZE(tiling_modifier_map); i++) {
-      if (screen->devinfo.gen < tiling_modifier_map[i].since_gen)
+   for (i = 0; i < ARRAY_SIZE(supported_modifiers); i++) {
+      uint64_t modifier = supported_modifiers[i].modifier;
+      if (!modifier_is_supported(&screen->devinfo, modifier))
          continue;
 
       num_mods++;
       if (max == 0)
          continue;
 
-      modifiers[num_mods - 1] = tiling_modifier_map[i].modifier;
+      modifiers[num_mods - 1] = modifier;
       if (num_mods >= max)
         break;
    }
@@ -1087,7 +1113,7 @@ static __DRIimage *
 intel_from_planar(__DRIimage *parent, int plane, void *loaderPrivate)
 {
     int width, height, offset, stride, dri_format, index;
-    struct intel_image_format *f;
+    const struct intel_image_format *f;
     __DRIimage *image;
 
     if (parent == NULL || parent->planar_format == NULL)
@@ -1257,6 +1283,7 @@ static const __DRIextension *screenExtensions[] = {
     &intelImageExtension.base,
     &intelRendererQueryExtension.base,
     &dri2ConfigQueryExtension.base,
+    &dri2NoErrorExtension.base,
     NULL
 };
 
@@ -1268,6 +1295,7 @@ static const __DRIextension *intelRobustScreenExtensions[] = {
     &intelRendererQueryExtension.base,
     &dri2ConfigQueryExtension.base,
     &dri2Robustness.base,
+    &dri2NoErrorExtension.base,
     NULL
 };
 
@@ -1746,7 +1774,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
 
    /* GLX_SWAP_COPY_OML is not supported due to page flipping. */
    static const GLenum back_buffer_modes[] = {
-       GLX_SWAP_UNDEFINED_OML, GLX_NONE,
+      __DRI_ATTRIB_SWAP_UNDEFINED, __DRI_ATTRIB_SWAP_NONE
    };
 
    static const uint8_t singlesample_samples[1] = {0};
@@ -2009,7 +2037,7 @@ parse_devid_override(const char *devid_override)
          return name_map[i].pci_id;
    }
 
-   return strtod(devid_override, NULL);
+   return strtol(devid_override, NULL, 0);
 }
 
 /**
@@ -2120,6 +2148,9 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
 
    screen->hw_has_swizzling = intel_detect_swizzling(screen);
    screen->hw_has_timestamp = intel_detect_timestamp(screen);
+
+   isl_device_init(&screen->isl_dev, &screen->devinfo,
+                   screen->hw_has_swizzling);
 
    /* GENs prior to 8 do not support EU/Subslice info */
    if (devinfo->gen >= 8) {
@@ -2232,11 +2263,12 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
    }
 
    /* Kernel 4.13 retuired for exec object capture */
-#ifndef I915_PARAM_HAS_EXEC_CAPTURE
-#define I915_PARAM_HAS_EXEC_CAPTURE 45
-#endif
    if (intel_get_boolean(screen, I915_PARAM_HAS_EXEC_CAPTURE)) {
       screen->kernel_features |= KERNEL_ALLOWS_EXEC_CAPTURE;
+   }
+
+   if (intel_get_boolean(screen, I915_PARAM_HAS_EXEC_BATCH_FIRST)) {
+      screen->kernel_features |= KERNEL_ALLOWS_EXEC_BATCH_FIRST;
    }
 
    if (!intel_detect_pipelined_so(screen)) {
@@ -2307,6 +2339,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
    screen->compiler = brw_compiler_create(screen, devinfo);
    screen->compiler->shader_debug_log = shader_debug_log_mesa;
    screen->compiler->shader_perf_log = shader_perf_log_mesa;
+   screen->compiler->constant_buffer_0_is_relative = devinfo->gen < 8;
    screen->program_id = 1;
 
    screen->has_exec_fence =

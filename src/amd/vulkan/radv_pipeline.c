@@ -230,6 +230,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 			.image_write_without_format = true,
 			.tessellation = true,
 			.int64 = true,
+			.variable_pointers = true,
 		};
 		entry_point = spirv_to_nir(spirv, module->size / 4,
 					   spec_entries, num_spec_entries,
@@ -380,7 +381,10 @@ void radv_shader_variant_destroy(struct radv_device *device,
 	if (!p_atomic_dec_zero(&variant->ref_count))
 		return;
 
-	device->ws->buffer_destroy(variant->bo);
+	mtx_lock(&device->shader_slab_mutex);
+	list_del(&variant->slab_list);
+	mtx_unlock(&device->shader_slab_mutex);
+
 	free(variant);
 }
 
@@ -430,14 +434,8 @@ static void radv_fill_shader_variant(struct radv_device *device,
 		S_00B848_DX10_CLAMP(1) |
 		S_00B848_FLOAT_MODE(variant->config.float_mode);
 
-	variant->bo = device->ws->buffer_create(device->ws, binary->code_size, 256,
-						RADEON_DOMAIN_VRAM, RADEON_FLAG_CPU_ACCESS);
-
-	void *ptr = device->ws->buffer_map(variant->bo);
+	void *ptr = radv_alloc_shader_memory(device, variant);
 	memcpy(ptr, binary->code, binary->code_size);
-	device->ws->buffer_unmap(variant->bo);
-
-
 }
 
 static struct radv_shader_variant *radv_shader_variant_create(struct radv_device *device,
@@ -460,12 +458,16 @@ static struct radv_shader_variant *radv_shader_variant_create(struct radv_device
 		options.key = *key;
 
 	struct ac_shader_binary binary;
-
+	enum ac_target_machine_options tm_options = 0;
 	options.unsafe_math = !!(device->debug_flags & RADV_DEBUG_UNSAFE_MATH);
 	options.family = chip_family;
 	options.chip_class = device->physical_device->rad_info.chip_class;
 	options.supports_spill = device->llvm_supports_spill;
-	tm = ac_create_target_machine(chip_family, options.supports_spill);
+	if (options.supports_spill)
+		tm_options |= AC_TM_SUPPORTS_SPILL;
+	if (device->instance->perftest_flags & RADV_PERFTEST_SISCHED)
+		tm_options |= AC_TM_SISCHED;
+	tm = ac_create_target_machine(chip_family, tm_options);
 	ac_compile_nir_shader(tm, &binary, &variant->config,
 			      &variant->info, shader, &options, dump);
 	LLVMDisposeTargetMachine(tm);
@@ -501,10 +503,14 @@ radv_pipeline_create_gs_copy_shader(struct radv_pipeline *pipeline,
 
 	struct ac_nir_compiler_options options = {0};
 	struct ac_shader_binary binary;
+	enum ac_target_machine_options tm_options = 0;
 	options.family = chip_family;
 	options.chip_class = pipeline->device->physical_device->rad_info.chip_class;
-	options.supports_spill = pipeline->device->llvm_supports_spill;
-	tm = ac_create_target_machine(chip_family, options.supports_spill);
+	if (options.supports_spill)
+		tm_options |= AC_TM_SUPPORTS_SPILL;
+	if (pipeline->device->instance->perftest_flags & RADV_PERFTEST_SISCHED)
+		tm_options |= AC_TM_SISCHED;
+	tm = ac_create_target_machine(chip_family, tm_options);
 	ac_create_gs_copy_shader(tm, nir, &binary, &variant->config, &variant->info, &options, dump_shader);
 	LLVMDisposeTargetMachine(tm);
 
@@ -1026,14 +1032,17 @@ radv_pipeline_compute_spi_color_formats(struct radv_pipeline *pipeline,
 	unsigned col_format = 0;
 
 	for (unsigned i = 0; i < (single_cb_enable ? 1 : subpass->color_count); ++i) {
-		struct radv_render_pass_attachment *attachment;
 		unsigned cf;
 
-		attachment = pass->attachments + subpass->color_attachments[i].attachment;
+		if (subpass->color_attachments[i].attachment == VK_ATTACHMENT_UNUSED) {
+			cf = V_028714_SPI_SHADER_ZERO;
+		} else {
+			struct radv_render_pass_attachment *attachment = pass->attachments + subpass->color_attachments[i].attachment;
 
-		cf = si_choose_spi_color_format(attachment->format,
-						blend_enable & (1 << i),
-						blend_need_alpha & (1 << i));
+			cf = si_choose_spi_color_format(attachment->format,
+			                                blend_enable & (1 << i),
+			                                blend_need_alpha & (1 << i));
+		}
 
 		col_format |= cf << (4 * i);
 	}
@@ -1055,31 +1064,51 @@ format_is_int8(VkFormat format)
 	       desc->channel[channel].size == 8;
 }
 
+static bool
+format_is_int10(VkFormat format)
+{
+	const struct vk_format_description *desc = vk_format_description(format);
+
+	if (desc->nr_channels != 4)
+		return false;
+	for (unsigned i = 0; i < 4; i++) {
+		if (desc->channel[i].pure_integer && desc->channel[i].size == 10)
+			return true;
+	}
+	return false;
+}
+
 unsigned radv_format_meta_fs_key(VkFormat format)
 {
 	unsigned col_format = si_choose_spi_color_format(format, false, false) - 1;
 	bool is_int8 = format_is_int8(format);
+	bool is_int10 = format_is_int10(format);
 
-	return col_format + (is_int8 ? 3 : 0);
+	return col_format + (is_int8 ? 3 : is_int10 ? 5 : 0);
 }
 
-static unsigned
-radv_pipeline_compute_is_int8(const VkGraphicsPipelineCreateInfo *pCreateInfo)
+static void
+radv_pipeline_compute_get_int_clamp(const VkGraphicsPipelineCreateInfo *pCreateInfo,
+				    unsigned *is_int8, unsigned *is_int10)
 {
 	RADV_FROM_HANDLE(radv_render_pass, pass, pCreateInfo->renderPass);
 	struct radv_subpass *subpass = pass->subpasses + pCreateInfo->subpass;
-	unsigned is_int8 = 0;
+	*is_int8 = 0;
+	*is_int10 = 0;
 
 	for (unsigned i = 0; i < subpass->color_count; ++i) {
 		struct radv_render_pass_attachment *attachment;
 
+		if (subpass->color_attachments[i].attachment == VK_ATTACHMENT_UNUSED)
+			continue;
+
 		attachment = pass->attachments + subpass->color_attachments[i].attachment;
 
 		if (format_is_int8(attachment->format))
-			is_int8 |= 1 << i;
+			*is_int8 |= 1 << i;
+		if (format_is_int10(attachment->format))
+			*is_int10 |= 1 << i;
 	}
-
-	return is_int8;
 }
 
 static void
@@ -1334,7 +1363,9 @@ radv_pipeline_init_multisample_state(struct radv_pipeline *pipeline,
 	else
 		ms->num_samples = 1;
 
-	if (pipeline->shaders[MESA_SHADER_FRAGMENT]->info.fs.force_persample) {
+	if (vkms && vkms->sampleShadingEnable) {
+		ps_iter_samples = ceil(vkms->minSampleShading * ms->num_samples);
+	} else if (pipeline->shaders[MESA_SHADER_FRAGMENT]->info.info.ps.force_persample) {
 		ps_iter_samples = ms->num_samples;
 	}
 
@@ -2036,9 +2067,11 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 	}
 
 	if (modules[MESA_SHADER_FRAGMENT]) {
-		union ac_shader_variant_key key;
+		union ac_shader_variant_key key = {0};
 		key.fs.col_format = pipeline->graphics.blend.spi_shader_col_format;
-		key.fs.is_int8 = radv_pipeline_compute_is_int8(pCreateInfo);
+
+		if (pipeline->device->physical_device->rad_info.chip_class < VI)
+			radv_pipeline_compute_get_int_clamp(pCreateInfo, &key.fs.is_int8, &key.fs.is_int10);
 
 		const VkPipelineShaderStageCreateInfo *stage = pStages[MESA_SHADER_FRAGMENT];
 
@@ -2389,4 +2422,57 @@ VkResult radv_CreateComputePipelines(
 	}
 
 	return result;
+}
+
+void *radv_alloc_shader_memory(struct radv_device *device,
+                               struct radv_shader_variant *shader)
+{
+	mtx_lock(&device->shader_slab_mutex);
+	list_for_each_entry(struct radv_shader_slab, slab, &device->shader_slabs, slabs) {
+		uint64_t offset = 0;
+		list_for_each_entry(struct radv_shader_variant, s, &slab->shaders, slab_list) {
+			if (s->bo_offset - offset >= shader->code_size) {
+				shader->bo = slab->bo;
+				shader->bo_offset = offset;
+				list_addtail(&shader->slab_list, &s->slab_list);
+				mtx_unlock(&device->shader_slab_mutex);
+				return slab->ptr + offset;
+			}
+			offset = align_u64(s->bo_offset + s->code_size, 256);
+		}
+		if (slab->size - offset >= shader->code_size) {
+			shader->bo = slab->bo;
+			shader->bo_offset = offset;
+			list_addtail(&shader->slab_list, &slab->shaders);
+			mtx_unlock(&device->shader_slab_mutex);
+			return slab->ptr + offset;
+		}
+	}
+
+	mtx_unlock(&device->shader_slab_mutex);
+	struct radv_shader_slab *slab = calloc(1, sizeof(struct radv_shader_slab));
+
+	slab->size = 256 * 1024;
+	slab->bo = device->ws->buffer_create(device->ws, slab->size, 256,
+	                                     RADEON_DOMAIN_VRAM, 0);
+	slab->ptr = (char*)device->ws->buffer_map(slab->bo);
+	list_inithead(&slab->shaders);
+
+	mtx_lock(&device->shader_slab_mutex);
+	list_add(&slab->slabs, &device->shader_slabs);
+
+	shader->bo = slab->bo;
+	shader->bo_offset = 0;
+	list_add(&shader->slab_list, &slab->shaders);
+	mtx_unlock(&device->shader_slab_mutex);
+	return slab->ptr;
+}
+
+void radv_destroy_shader_slabs(struct radv_device *device)
+{
+	list_for_each_entry_safe(struct radv_shader_slab, slab, &device->shader_slabs, slabs) {
+		device->ws->buffer_destroy(slab->bo);
+		free(slab);
+	}
+	mtx_destroy(&device->shader_slab_mutex);
 }

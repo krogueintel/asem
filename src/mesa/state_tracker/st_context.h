@@ -33,6 +33,7 @@
 #include "main/fbobject.h"
 #include "state_tracker/st_atom.h"
 #include "util/u_inlines.h"
+#include "util/list.h"
 
 
 #ifdef __cplusplus
@@ -277,6 +278,9 @@ struct st_context
     */
    struct st_bound_handles bound_texture_handles[PIPE_SHADER_TYPES];
    struct st_bound_handles bound_image_handles[PIPE_SHADER_TYPES];
+
+   /* Winsys buffers */
+   struct list_head winsys_buffers;
 };
 
 
@@ -295,13 +299,16 @@ static inline struct st_context *st_context(struct gl_context *ctx)
 struct st_framebuffer
 {
    struct gl_framebuffer Base;
-   void *Private;
 
    struct st_framebuffer_iface *iface;
    enum st_attachment_type statts[ST_ATTACHMENT_COUNT];
    unsigned num_statts;
    int32_t stamp;
    int32_t iface_stamp;
+   uint32_t iface_ID;
+
+   /* list of framebuffer objects */
+   struct list_head head;
 };
 
 
@@ -351,30 +358,6 @@ st_fb_orientation(const struct gl_framebuffer *fb)
 }
 
 
-static inline enum pipe_shader_type
-st_shader_stage_to_ptarget(gl_shader_stage stage)
-{
-   switch (stage) {
-   case MESA_SHADER_VERTEX:
-      return PIPE_SHADER_VERTEX;
-   case MESA_SHADER_FRAGMENT:
-      return PIPE_SHADER_FRAGMENT;
-   case MESA_SHADER_GEOMETRY:
-      return PIPE_SHADER_GEOMETRY;
-   case MESA_SHADER_TESS_CTRL:
-      return PIPE_SHADER_TESS_CTRL;
-   case MESA_SHADER_TESS_EVAL:
-      return PIPE_SHADER_TESS_EVAL;
-   case MESA_SHADER_COMPUTE:
-      return PIPE_SHADER_COMPUTE;
-   default:
-      break;
-   }
-
-   assert(!"should not be reached");
-   return PIPE_SHADER_VERTEX;
-}
-
 static inline bool
 st_user_clip_planes_enabled(struct gl_context *ctx)
 {
@@ -391,7 +374,8 @@ extern struct st_context *
 st_create_context(gl_api api, struct pipe_context *pipe,
                   const struct gl_config *visual,
                   struct st_context *share,
-                  const struct st_config_options *options);
+                  const struct st_config_options *options,
+                  bool no_error);
 
 extern void
 st_destroy_context(struct st_context *st);

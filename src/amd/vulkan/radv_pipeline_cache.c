@@ -168,6 +168,7 @@ radv_create_shader_variant_from_pipeline_cache(struct radv_device *device,
 		if (!variant)
 			return NULL;
 
+		variant->code_size = entry->code_size;
 		variant->config = entry->config;
 		variant->info = entry->variant_info;
 		variant->rsrc1 = entry->rsrc1;
@@ -175,12 +176,8 @@ radv_create_shader_variant_from_pipeline_cache(struct radv_device *device,
 		variant->code_size = entry->code_size;
 		variant->ref_count = 1;
 
-		variant->bo = device->ws->buffer_create(device->ws, entry->code_size, 256,
-						RADEON_DOMAIN_VRAM, RADEON_FLAG_CPU_ACCESS);
-
-		void *ptr = device->ws->buffer_map(variant->bo);
+		void *ptr = radv_alloc_shader_memory(device, variant);
 		memcpy(ptr, entry->code, entry->code_size);
-		device->ws->buffer_unmap(variant->bo);
 
 		entry->variant = variant;
 	}
@@ -332,7 +329,7 @@ radv_pipeline_cache_load(struct radv_pipeline_cache *cache,
 		return;
 	if (header.device_id != device->physical_device->rad_info.pci_id)
 		return;
-	if (memcmp(header.uuid, device->physical_device->uuid, VK_UUID_SIZE) != 0)
+	if (memcmp(header.uuid, device->physical_device->cache_uuid, VK_UUID_SIZE) != 0)
 		return;
 
 	char *end = (void *) data + size;
@@ -431,7 +428,7 @@ VkResult radv_GetPipelineCacheData(
 	header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
 	header->vendor_id = 0x1002;
 	header->device_id = device->physical_device->rad_info.pci_id;
-	memcpy(header->uuid, device->physical_device->uuid, VK_UUID_SIZE);
+	memcpy(header->uuid, device->physical_device->cache_uuid, VK_UUID_SIZE);
 	p += header->header_size;
 
 	struct cache_entry *entry;

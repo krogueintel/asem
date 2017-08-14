@@ -250,8 +250,8 @@ optimizations = [
    (('ishr', a, 0), a),
    (('ushr', 0, a), 0),
    (('ushr', a, 0), a),
-   (('iand', 0xff, ('ushr', a, 24)), ('ushr', a, 24)),
-   (('iand', 0xffff, ('ushr', a, 16)), ('ushr', a, 16)),
+   (('iand', 0xff, ('ushr@32', a, 24)), ('ushr', a, 24)),
+   (('iand', 0xffff, ('ushr@32', a, 16)), ('ushr', a, 16)),
    # Exponential/logarithmic identities
    (('~fexp2', ('flog2', a)), a), # 2^lg2(a) = a
    (('~flog2', ('fexp2', a)), a), # lg2(2^a) = a
@@ -356,6 +356,17 @@ optimizations = [
    (('imul', '#a', ('imul', b, '#c')), ('imul', ('imul', a, c), b)),
    (('~fadd', '#a', ('fadd', b, '#c')), ('fadd', ('fadd', a, c), b)),
    (('iadd', '#a', ('iadd', b, '#c')), ('iadd', ('iadd', a, c), b)),
+
+   # By definition...
+   (('bcsel', ('ige', ('find_lsb', a), 0), ('find_lsb', a), -1), ('find_lsb', a)),
+   (('bcsel', ('ige', ('ifind_msb', a), 0), ('ifind_msb', a), -1), ('ifind_msb', a)),
+   (('bcsel', ('ige', ('ufind_msb', a), 0), ('ufind_msb', a), -1), ('ufind_msb', a)),
+
+   (('bcsel', ('ine', a, 0), ('find_lsb', a), -1), ('find_lsb', a)),
+   (('bcsel', ('ine', a, 0), ('ifind_msb', a), -1), ('ifind_msb', a)),
+   (('bcsel', ('ine', a, 0), ('ufind_msb', a), -1), ('ufind_msb', a)),
+
+   (('bcsel', ('ine', a, -1), ('ifind_msb', a), -1), ('ifind_msb', a)),
 
    # Misc. lowering
    (('fmod@32', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod32'),

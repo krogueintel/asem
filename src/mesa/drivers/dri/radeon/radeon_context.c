@@ -67,7 +67,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_fog.h"
 
 #include "utils.h"
-#include "xmlpool.h" /* for symbolic values of enum-type options */
+#include "util/xmlpool.h" /* for symbolic values of enum-type options */
 
 extern const struct tnl_pipeline_stage _radeon_render_stage;
 extern const struct tnl_pipeline_stage _radeon_tcl_stage;
@@ -155,7 +155,7 @@ r100CreateContext( gl_api api,
    int i;
    int tcl_mode, fthrottle_mode;
 
-   if (flags & ~__DRI_CTX_FLAG_DEBUG) {
+   if (flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_NO_ERROR)) {
       *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
       return false;
    }
