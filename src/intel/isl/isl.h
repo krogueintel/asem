@@ -1552,6 +1552,12 @@ isl_tiling_from_i915_tiling(uint32_t tiling);
 const struct isl_drm_modifier_info * ATTRIBUTE_CONST
 isl_drm_modifier_get_info(uint64_t modifier);
 
+static inline bool
+isl_drm_modifier_has_aux(uint64_t modifier)
+{
+   return isl_drm_modifier_get_info(modifier)->aux_usage != ISL_AUX_USAGE_NONE;
+}
+
 struct isl_extent2d ATTRIBUTE_CONST
 isl_get_interleaved_msaa_px_size_sa(uint32_t samples);
 
@@ -1684,6 +1690,10 @@ isl_surf_fill_state_s(const struct isl_device *dev, void *state,
 void
 isl_buffer_fill_state_s(const struct isl_device *dev, void *state,
                         const struct isl_buffer_fill_state_info *restrict info);
+
+void
+isl_null_fill_state(const struct isl_device *dev, void *state,
+                    struct isl_extent3d size);
 
 #define isl_emit_depth_stencil_hiz(dev, batch, ...) \
    isl_emit_depth_stencil_hiz_s((dev), (batch), \

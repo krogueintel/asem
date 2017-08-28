@@ -60,7 +60,6 @@ is_mem_query_inst(unsigned opcode)
    return opcode == TGSI_OPCODE_RESQ ||
           opcode == TGSI_OPCODE_TXQ ||
           opcode == TGSI_OPCODE_TXQS ||
-          opcode == TGSI_OPCODE_TXQ_LZ ||
           opcode == TGSI_OPCODE_LODQ;
 }
 
@@ -92,7 +91,6 @@ computes_derivative(unsigned opcode)
              opcode != TGSI_OPCODE_TXL &&
              opcode != TGSI_OPCODE_TXL2 &&
              opcode != TGSI_OPCODE_TXQ &&
-             opcode != TGSI_OPCODE_TXQ_LZ &&
              opcode != TGSI_OPCODE_TXQS;
    }
 
@@ -459,8 +457,14 @@ scan_instruction(struct tgsi_shader_info *info,
       }
    }
 
-   if (fullinst->Instruction.Opcode >= TGSI_OPCODE_F2D &&
-       fullinst->Instruction.Opcode <= TGSI_OPCODE_DSSG)
+   if ((fullinst->Instruction.Opcode >= TGSI_OPCODE_F2D &&
+        fullinst->Instruction.Opcode <= TGSI_OPCODE_DSSG) ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_DFMA ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_DDIV ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_D2U64 ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_D2I64 ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_U642D ||
+       fullinst->Instruction.Opcode == TGSI_OPCODE_I642D)
       info->uses_doubles = TRUE;
 
    for (i = 0; i < fullinst->Instruction.NumSrcRegs; i++) {

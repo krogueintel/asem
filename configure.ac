@@ -773,6 +773,20 @@ if test "x$enable_asm" = xyes; then
             ;;
         esac
         ;;
+    aarch64)
+        case "$host_os" in
+        linux*)
+            asm_arch=aarch64
+            ;;
+        esac
+        ;;
+    arm)
+        case "$host_os" in
+        linux*)
+            asm_arch=arm
+            ;;
+        esac
+        ;;
     esac
 
     case "$asm_arch" in
@@ -791,6 +805,14 @@ if test "x$enable_asm" = xyes; then
     ppc64le)
         DEFINES="$DEFINES -DUSE_PPC64LE_ASM"
         AC_MSG_RESULT([yes, ppc64le])
+        ;;
+    aarch64)
+        DEFINES="$DEFINES -DUSE_AARCH64_ASM"
+        AC_MSG_RESULT([yes, aarch64])
+        ;;
+    arm)
+        DEFINES="$DEFINES -DUSE_ARM_ASM"
+        AC_MSG_RESULT([yes, arm])
         ;;
     *)
         AC_MSG_RESULT([no, platform not supported])
@@ -1792,7 +1814,9 @@ if test "x$with_dri_drivers" = xno; then
 fi
 
 # Check for expat
-PKG_CHECK_MODULES([EXPAT], [expat])
+PKG_CHECK_MODULES([EXPAT], [expat],,
+    [PKG_CHECK_MODULES([EXPAT], [expat21])]
+)
 
 dnl If $with_dri_drivers is yes, drivers will be added through
 dnl platform checks. Set DEFINES and LIB_DEPS
@@ -2623,35 +2647,37 @@ if test "x$enable_llvm" = xyes; then
     fi
     LLVM_LIBS="`$LLVM_CONFIG --libs ${LLVM_COMPONENTS}`"
 
-    dnl llvm-config may not give the right answer when llvm is a built as a
-    dnl single shared library, so we must work the library name out for
-    dnl ourselves.
-    dnl (See https://llvm.org/bugs/show_bug.cgi?id=6823)
     if test "x$enable_llvm_shared_libs" = xyes; then
-        dnl We can't use $LLVM_VERSION because it has 'svn' stripped out,
-        LLVM_SO_NAME=LLVM-`$LLVM_CONFIG --version`
-        AS_IF([test -f "$LLVM_LIBDIR/lib$LLVM_SO_NAME.$IMP_LIB_EXT"], [llvm_have_one_so=yes])
+        if test $LLVM_VERSION_MAJOR -lt 4 -o "`$LLVM_CONFIG --shared-mode ${LLVM_COMPONENTS}`" = static; then
+            dnl llvm-config may not give the right answer when llvm is a built as a
+            dnl single shared library, so we must work the library name out for
+            dnl ourselves.
+            dnl (See https://llvm.org/bugs/show_bug.cgi?id=6823)
+            dnl We can't use $LLVM_VERSION because it has 'svn' stripped out,
+            LLVM_SO_NAME=LLVM-`$LLVM_CONFIG --version`
+            AS_IF([test -f "$LLVM_LIBDIR/lib$LLVM_SO_NAME.$IMP_LIB_EXT"], [llvm_have_one_so=yes])
 
-        if test "x$llvm_have_one_so" = xyes; then
-            dnl LLVM was built using auto*, so there is only one shared object.
-            LLVM_LIBS="-l$LLVM_SO_NAME"
-        else
-            dnl If LLVM was built with CMake, there will be one shared object per
-            dnl component.
-            AS_IF([test ! -f "$LLVM_LIBDIR/libLLVMTarget.$IMP_LIB_EXT"],
-                    [AC_MSG_ERROR([Could not find llvm shared libraries:
-	Please make sure you have built llvm with the --enable-shared option
-	and that your llvm libraries are installed in $LLVM_LIBDIR
-	If you have installed your llvm libraries to a different directory you
-	can use the --with-llvm-prefix= configure flag to specify this directory.
-	NOTE: Mesa is attempting to use llvm shared libraries by default.
-	If you do not want to build with llvm shared libraries and instead want to
-	use llvm static libraries then add --disable-llvm-shared-libs to your configure
-	invocation and rebuild.])])
+            if test "x$llvm_have_one_so" = xyes; then
+               dnl LLVM was built using auto*, so there is only one shared object.
+               LLVM_LIBS="-l$LLVM_SO_NAME"
+            else
+                dnl If LLVM was built with CMake, there will be one shared object per
+                dnl component.
+                AS_IF([test ! -f "$LLVM_LIBDIR/libLLVMTarget.$IMP_LIB_EXT"],
+                      [AC_MSG_ERROR([Could not find llvm shared libraries:
+                       Please make sure you have built llvm with the --enable-shared option
+                       and that your llvm libraries are installed in $LLVM_LIBDIR
+                       If you have installed your llvm libraries to a different directory you
+                       can use the --with-llvm-prefix= configure flag to specify this directory.
+                       NOTE: Mesa is attempting to use llvm shared libraries by default.
+                       If you do not want to build with llvm shared libraries and instead want to
+                       use llvm static libraries then add --disable-llvm-shared-libs to your configure
+                       invocation and rebuild.])])
 
-           dnl We don't need to update LLVM_LIBS in this case because the LLVM
-           dnl install uses a shared object for each component and we have
-           dnl already added all of these objects to LLVM_LIBS.
+                dnl We don't need to update LLVM_LIBS in this case because the LLVM
+                dnl install uses a shared object for each component and we have
+                dnl already added all of these objects to LLVM_LIBS.
+            fi
         fi
     else
         AC_MSG_WARN([Building mesa with statically linked LLVM may cause compilation issues])
@@ -2729,6 +2755,8 @@ AM_CONDITIONAL(HAVE_X86_ASM, test "x$asm_arch" = xx86 -o "x$asm_arch" = xx86_64)
 AM_CONDITIONAL(HAVE_X86_64_ASM, test "x$asm_arch" = xx86_64)
 AM_CONDITIONAL(HAVE_SPARC_ASM, test "x$asm_arch" = xsparc)
 AM_CONDITIONAL(HAVE_PPC64LE_ASM, test "x$asm_arch" = xppc64le)
+AM_CONDITIONAL(HAVE_AARCH64_ASM, test "x$asm_arch" = xaarch64)
+AM_CONDITIONAL(HAVE_ARM_ASM, test "x$asm_arch" = xarm)
 
 AC_SUBST([NINE_MAJOR], 1)
 AC_SUBST([NINE_MINOR], 0)

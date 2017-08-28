@@ -251,9 +251,6 @@ lp_build_tgsi_inst_llvm(
    case TGSI_OPCODE_UP2US:
    case TGSI_OPCODE_UP4B:
    case TGSI_OPCODE_UP4UB:
-   case TGSI_OPCODE_PUSHA:
-   case TGSI_OPCODE_POPA:
-   case TGSI_OPCODE_SAD:
       /* deprecated? */
       assert(0);
       return FALSE;
@@ -530,11 +527,9 @@ lp_build_tgsi_llvm(
    while (bld_base->pc != -1) {
       const struct tgsi_full_instruction *instr =
          bld_base->instructions + bld_base->pc;
-      const struct tgsi_opcode_info *opcode_info =
-         tgsi_get_opcode_info(instr->Instruction.Opcode);
       if (!lp_build_tgsi_inst_llvm(bld_base, instr)) {
          _debug_printf("warning: failed to translate tgsi opcode %s to LLVM\n",
-                       opcode_info->mnemonic);
+                       tgsi_get_opcode_name(instr->Instruction.Opcode));
          return FALSE;
       }
    }

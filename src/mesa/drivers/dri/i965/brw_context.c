@@ -675,6 +675,22 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    /* OES_primitive_bounding_box */
    ctx->Const.NoPrimitiveBoundingBoxOutput = true;
+
+   /* TODO: We should be able to use STD430 packing by default on all hardware
+    * but some piglit tests [1] currently fail on SNB when this is enabled.
+    * The problem is the messages we're using for doing uniform pulls
+    * in the vec4 back-end on SNB is the OWORD block load instruction, which
+    * takes its offset in units of OWORDS (16 bytes).  On IVB+, we use the
+    * sampler which doesn't have these restrictions.
+    *
+    * In the scalar back-end, we use the sampler for dynamic uniform loads and
+    * pull an entire cache line at a time for constant offset loads both of
+    * which support almost any alignment.
+    *
+    * [1] glsl-1.40/uniform_buffer/vs-float-array-variable-index.shader_test
+    */
+   if (brw->gen >= 7)
+      ctx->Const.UseSTD430AsDefaultPacking = true;
 }
 
 static void
@@ -866,16 +882,12 @@ brwCreateContext(gl_api api,
    brw->gs.base.stage = MESA_SHADER_GEOMETRY;
    brw->wm.base.stage = MESA_SHADER_FRAGMENT;
    if (brw->gen >= 8) {
-      gen8_init_vtable_surface_functions(brw);
       brw->vtbl.emit_depth_stencil_hiz = gen8_emit_depth_stencil_hiz;
    } else if (brw->gen >= 7) {
-      gen7_init_vtable_surface_functions(brw);
       brw->vtbl.emit_depth_stencil_hiz = gen7_emit_depth_stencil_hiz;
    } else if (brw->gen >= 6) {
-      gen6_init_vtable_surface_functions(brw);
       brw->vtbl.emit_depth_stencil_hiz = gen6_emit_depth_stencil_hiz;
    } else {
-      gen4_init_vtable_surface_functions(brw);
       brw->vtbl.emit_depth_stencil_hiz = brw_emit_depth_stencil_hiz;
    }
 
@@ -934,7 +946,7 @@ brwCreateContext(gl_api api,
 
    intel_fbo_init(brw);
 
-   intel_batchbuffer_init(&brw->batch, brw->bufmgr, brw->has_llc);
+   intel_batchbuffer_init(screen, &brw->batch);
 
    if (brw->gen >= 6) {
       /* Create a new hardware context.  Using a hardware context means that
@@ -1222,7 +1234,7 @@ intel_resolve_for_dri2_flush(struct brw_context *brw,
       if (rb->mt->surf.samples == 1) {
          assert(rb->mt_layer == 0 && rb->mt_level == 0 &&
                 rb->layer_count == 1);
-         intel_miptree_prepare_access(brw, rb->mt, 0, 1, 0, 1, false, false);
+         intel_miptree_prepare_external(brw, rb->mt);
       } else {
          intel_renderbuffer_downsample(brw, rb);
       }

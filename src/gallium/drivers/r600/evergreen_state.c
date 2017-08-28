@@ -1392,8 +1392,7 @@ static void evergreen_init_depth_surface(struct r600_context *rctx,
 					S_028044_FORMAT(V_028044_STENCIL_8);
 	}
 
-	/* use htile only for first level */
-	if (rtex->htile_offset && !level) {
+	if (r600_htile_enabled(rtex, level)) {
 		uint64_t va = rtex->resource.gpu_address + rtex->htile_offset;
 		surf->db_htile_data_base = va >> 8;
 		surf->db_htile_surface = S_028ABC_HTILE_WIDTH(1) |
@@ -2297,6 +2296,9 @@ static void evergreen_emit_vertex_fetch_shader(struct r600_context *rctx, struct
 	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	struct r600_cso_state *state = (struct r600_cso_state*)a;
 	struct r600_fetch_shader *shader = (struct r600_fetch_shader*)state->cso;
+
+	if (!shader)
+		return;
 
 	radeon_set_context_reg(cs, R_0288A4_SQ_PGM_START_FS,
 			       (shader->buffer->gpu_address + shader->offset) >> 8);

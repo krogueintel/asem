@@ -256,20 +256,19 @@ bo_alloc_internal(struct brw_bufmgr *bufmgr,
    struct bo_cache_bucket *bucket;
    bool alloc_from_cache;
    uint64_t bo_size;
-   bool for_render = false;
+   bool busy = false;
    bool zeroed = false;
 
-   if (flags & BO_ALLOC_FOR_RENDER)
-      for_render = true;
+   if (flags & BO_ALLOC_BUSY)
+      busy = true;
 
    if (flags & BO_ALLOC_ZEROED)
       zeroed = true;
 
-   /* FOR_RENDER really means "I'm ok with a busy BO".  This doesn't really
-    * jive with ZEROED as we have to wait for it to be idle before we can
-    * memset.  Just disallow that combination.
+   /* BUSY does doesn't really jive with ZEROED as we have to wait for it to
+    * be idle before we can memset.  Just disallow that combination.
     */
-   assert(!(for_render && zeroed));
+   assert(!(busy && zeroed));
 
    /* Round the allocated size up to a power of two number of pages. */
    bucket = bucket_for_size(bufmgr, size);
@@ -290,7 +289,7 @@ bo_alloc_internal(struct brw_bufmgr *bufmgr,
 retry:
    alloc_from_cache = false;
    if (bucket != NULL && !list_empty(&bucket->head)) {
-      if (for_render && !zeroed) {
+      if (busy && !zeroed) {
          /* Allocate new render-target BOs from the tail (MRU)
           * of the list, as it will likely be hot in the GPU
           * cache and in the aperture for us.  If the caller
@@ -742,7 +741,7 @@ brw_bo_map_cpu(struct brw_context *brw, struct brw_bo *bo, unsigned flags)
       bo_wait_with_stall_warning(brw, bo, "CPU mapping");
    }
 
-   if (!bo->cache_coherent) {
+   if (!bo->cache_coherent && !bo->bufmgr->has_llc) {
       /* If we're reusing an existing CPU mapping, the CPU caches may
        * contain stale data from the last time we read from that mapping.
        * (With the BO cache, it might even be data from a previous buffer!)
@@ -752,6 +751,12 @@ brw_bo_map_cpu(struct brw_context *brw, struct brw_bo *bo, unsigned flags)
        * We need to invalidate those cachelines so that we see the latest
        * contents, and so long as we only read from the CPU mmap we do not
        * need to write those cachelines back afterwards.
+       *
+       * On LLC, the emprical evidence suggests that writes from the GPU
+       * that bypass the LLC (i.e. for scanout) do *invalidate* the CPU
+       * cachelines. (Other reads, such as the display engine, bypass the
+       * LLC entirely requiring us to keep dirty pixels for the scanout
+       * out of any cache.)
        */
       gen_invalidate_range(bo->map_cpu, bo->size);
    }
@@ -887,6 +892,14 @@ static bool
 can_map_cpu(struct brw_bo *bo, unsigned flags)
 {
    if (bo->cache_coherent)
+      return true;
+
+   /* Even if the buffer itself is not cache-coherent (such as a scanout), on
+    * an LLC platform reads always are coherent (as they are performed via the
+    * central system agent). It is just the writes that we need to take special
+    * care to ensure that land in main memory and not stick in the CPU cache.
+    */
+   if (!(flags & MAP_WRITE) && bo->bufmgr->has_llc)
       return true;
 
    /* If PERSISTENT or COHERENT are set, the mmapping needs to remain valid

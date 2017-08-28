@@ -350,6 +350,7 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_VIEWPORT_COUNT),
    DEFINE_BIT(BRW_NEW_CONSERVATIVE_RASTERIZATION),
    DEFINE_BIT(BRW_NEW_DRAW_CALL),
+   DEFINE_BIT(BRW_NEW_FAST_CLEAR_COLOR),
    {0, 0, 0}
 };
 
@@ -447,7 +448,7 @@ merge_ctx_state(struct brw_context *brw,
    state->brw |= brw->ctx.NewDriverState;
 }
 
-static inline void
+static ALWAYS_INLINE void
 check_and_emit_atom(struct brw_context *brw,
                     struct brw_state_flags *state,
                     const struct brw_tracked_state *atom)

@@ -719,12 +719,6 @@ static void si_emit_clip_regs(struct si_context *sctx, struct r600_atom *atom)
 		rs->pa_cl_clip_cntl |
 		ucp_mask |
 		S_028810_CLIP_DISABLE(window_space));
-
-	if (sctx->b.chip_class <= VI) {
-		/* reuse needs to be set off if we write oViewport */
-		radeon_set_context_reg(cs, R_028AB4_VGT_REUSE_OFF,
-				       S_028AB4_REUSE_OFF(info->writes_viewport_index));
-	}
 }
 
 /*
@@ -2327,8 +2321,7 @@ static void si_init_depth_surface(struct si_context *sctx,
 		surf->db_depth_size = S_02801C_X_MAX(rtex->resource.b.b.width0 - 1) |
 				      S_02801C_Y_MAX(rtex->resource.b.b.height0 - 1);
 
-		/* Only use HTILE for the first level. */
-		if (rtex->htile_offset && !level) {
+		if (r600_htile_enabled(rtex, level)) {
 			z_info |= S_028038_TILE_SURFACE_ENABLE(1) |
 				  S_028038_ALLOW_EXPCLEAR(1);
 
@@ -2406,8 +2399,7 @@ static void si_init_depth_surface(struct si_context *sctx,
 		surf->db_depth_slice = S_02805C_SLICE_TILE_MAX((levelinfo->nblk_x *
 								levelinfo->nblk_y) / 64 - 1);
 
-		/* Only use HTILE for the first level. */
-		if (rtex->htile_offset && !level) {
+		if (r600_htile_enabled(rtex, level)) {
 			z_info |= S_028040_TILE_SURFACE_ENABLE(1) |
 				  S_028040_ALLOW_EXPCLEAR(1);
 
@@ -2572,11 +2564,10 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	 * Only flush and wait for CB if there is actually a bound color buffer.
 	 */
 	if (sctx->framebuffer.nr_samples <= 1 &&
-	    sctx->framebuffer.state.nr_cbufs) {
-		sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
-				 SI_CONTEXT_INV_GLOBAL_L2 |
-				 SI_CONTEXT_FLUSH_AND_INV_CB;
-	}
+	    sctx->framebuffer.state.nr_cbufs)
+		si_make_CB_shader_coherent(sctx, sctx->framebuffer.nr_samples,
+					   sctx->framebuffer.CB_has_shader_readable_metadata);
+
 	sctx->b.flags |= SI_CONTEXT_CS_PARTIAL_FLUSH;
 
 	/* u_blitter doesn't invoke depth decompression when it does multiple
@@ -2585,11 +2576,9 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	 * individual generate_mipmap blits.
 	 * Note that lower mipmap levels aren't compressed.
 	 */
-	if (sctx->generate_mipmap_for_depth) {
-		sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
-				 SI_CONTEXT_INV_GLOBAL_L2 |
-				 SI_CONTEXT_FLUSH_AND_INV_DB;
-	}
+	if (sctx->generate_mipmap_for_depth)
+		si_make_DB_shader_coherent(sctx, 1, false,
+					   sctx->framebuffer.DB_has_shader_readable_metadata);
 
 	/* Take the maximum of the old and new count. If the new count is lower,
 	 * dirtying is needed to disable the unbound colorbuffers.
@@ -2613,6 +2602,8 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	sctx->framebuffer.nr_samples = util_framebuffer_get_num_samples(state);
 	sctx->framebuffer.log_samples = util_logbase2(sctx->framebuffer.nr_samples);
 	sctx->framebuffer.any_dst_linear = false;
+	sctx->framebuffer.CB_has_shader_readable_metadata = false;
+	sctx->framebuffer.DB_has_shader_readable_metadata = false;
 
 	for (i = 0; i < state->nr_cbufs; i++) {
 		if (!state->cbufs[i])
@@ -2647,6 +2638,9 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 		if (rtex->surface.is_linear)
 			sctx->framebuffer.any_dst_linear = true;
 
+		if (vi_dcc_enabled(rtex, surf->base.u.tex.level))
+			sctx->framebuffer.CB_has_shader_readable_metadata = true;
+
 		r600_context_add_resource_size(ctx, surf->base.texture);
 
 		p_atomic_inc(&rtex->framebuffers_bound);
@@ -2665,6 +2659,10 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 		if (!surf->depth_initialized) {
 			si_init_depth_surface(sctx, surf);
 		}
+
+		if (vi_tc_compat_htile_enabled(rtex, surf->base.u.tex.level))
+			sctx->framebuffer.DB_has_shader_readable_metadata = true;
+
 		r600_context_add_resource_size(ctx, surf->base.texture);
 	}
 
@@ -3177,14 +3175,13 @@ si_make_texture_descriptor(struct si_screen *screen,
 			   uint32_t *fmask_state)
 {
 	struct pipe_resource *res = &tex->resource.b.b;
-	const struct util_format_description *base_desc, *desc;
+	const struct util_format_description *desc;
 	unsigned char swizzle[4];
 	int first_non_void;
 	unsigned num_format, data_format, type;
 	uint64_t va;
 
 	desc = util_format_description(pipe_format);
-	base_desc = util_format_description(res->format);
 
 	if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
 		const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
@@ -3283,15 +3280,6 @@ si_make_texture_descriptor(struct si_screen *screen,
 	data_format = si_translate_texformat(&screen->b.b, pipe_format, desc, first_non_void);
 	if (data_format == ~0) {
 		data_format = 0;
-	}
-
-	/* Enable clamping for UNORM depth formats promoted to Z32F. */
-	if (screen->b.chip_class >= GFX9 &&
-	    util_format_has_depth(desc) &&
-	    num_format == V_008F14_IMG_NUM_FORMAT_FLOAT &&
-	    util_get_depth_format_type(base_desc) != UTIL_FORMAT_TYPE_FLOAT) {
-		/* NUM_FORMAT=FLOAT and DATA_FORMAT=24_8 means "clamp to [0,1]". */
-		data_format = V_008F14_IMG_DATA_FORMAT_24_8;
 	}
 
 	/* S8 with Z32 HTILE needs a special format. */
@@ -4036,11 +4024,9 @@ static void si_texture_barrier(struct pipe_context *ctx, unsigned flags)
 
 	/* Multisample surfaces are flushed in si_decompress_textures. */
 	if (sctx->framebuffer.nr_samples <= 1 &&
-	    sctx->framebuffer.state.nr_cbufs) {
-		sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
-				 SI_CONTEXT_INV_GLOBAL_L2 |
-				 SI_CONTEXT_FLUSH_AND_INV_CB;
-	}
+	    sctx->framebuffer.state.nr_cbufs)
+		si_make_CB_shader_coherent(sctx, sctx->framebuffer.nr_samples,
+					   sctx->framebuffer.CB_has_shader_readable_metadata);
 }
 
 /* This only ensures coherency for shader image/buffer stores. */
@@ -4083,8 +4069,10 @@ static void si_memory_barrier(struct pipe_context *ctx, unsigned flags)
 	if (flags & PIPE_BARRIER_FRAMEBUFFER &&
 	    sctx->framebuffer.nr_samples <= 1 &&
 	    sctx->framebuffer.state.nr_cbufs) {
-		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_CB |
-				 SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_CB;
+
+		if (sctx->b.chip_class <= VI)
+			sctx->b.flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
 	}
 
 	/* Indirect buffers use TC L2 on GFX9, but not older hw. */
@@ -4286,6 +4274,25 @@ void si_init_screen_state_functions(struct si_screen *sscreen)
 	sscreen->b.apply_opaque_metadata = si_apply_opaque_metadata;
 }
 
+static void si_set_grbm_gfx_index(struct si_context *sctx,
+				  struct si_pm4_state *pm4,  unsigned value)
+{
+	unsigned reg = sctx->b.chip_class >= CIK ? R_030800_GRBM_GFX_INDEX :
+						   GRBM_GFX_INDEX;
+	si_pm4_set_reg(pm4, reg, value);
+}
+
+static void si_set_grbm_gfx_index_se(struct si_context *sctx,
+				     struct si_pm4_state *pm4, unsigned se)
+{
+	assert(se == ~0 || se < sctx->screen->b.info.max_se);
+	si_set_grbm_gfx_index(sctx, pm4,
+			      (se == ~0 ? S_030800_SE_BROADCAST_WRITES(1) :
+					  S_030800_SE_INDEX(se)) |
+			      S_030800_SH_BROADCAST_WRITES(1) |
+			      S_030800_INSTANCE_BROADCAST_WRITES(1));
+}
+
 static void
 si_write_harvested_raster_configs(struct si_context *sctx,
 				  struct si_pm4_state *pm4,
@@ -4388,28 +4395,12 @@ si_write_harvested_raster_configs(struct si_context *sctx,
 			}
 		}
 
-		/* GRBM_GFX_INDEX has a different offset on SI and CI+ */
-		if (sctx->b.chip_class < CIK)
-			si_pm4_set_reg(pm4, GRBM_GFX_INDEX,
-				       SE_INDEX(se) | SH_BROADCAST_WRITES |
-				       INSTANCE_BROADCAST_WRITES);
-		else
-			si_pm4_set_reg(pm4, R_030800_GRBM_GFX_INDEX,
-				       S_030800_SE_INDEX(se) | S_030800_SH_BROADCAST_WRITES(1) |
-				       S_030800_INSTANCE_BROADCAST_WRITES(1));
+		si_set_grbm_gfx_index_se(sctx, pm4, se);
 		si_pm4_set_reg(pm4, R_028350_PA_SC_RASTER_CONFIG, raster_config_se);
 	}
+	si_set_grbm_gfx_index(sctx, pm4, ~0);
 
-	/* GRBM_GFX_INDEX has a different offset on SI and CI+ */
-	if (sctx->b.chip_class < CIK)
-		si_pm4_set_reg(pm4, GRBM_GFX_INDEX,
-			       SE_BROADCAST_WRITES | SH_BROADCAST_WRITES |
-			       INSTANCE_BROADCAST_WRITES);
-	else {
-		si_pm4_set_reg(pm4, R_030800_GRBM_GFX_INDEX,
-			       S_030800_SE_BROADCAST_WRITES(1) | S_030800_SH_BROADCAST_WRITES(1) |
-			       S_030800_INSTANCE_BROADCAST_WRITES(1));
-
+	if (sctx->b.chip_class >= CIK) {
 		if ((num_se > 2) && ((!se_mask[0] && !se_mask[1]) ||
 		                     (!se_mask[2] && !se_mask[3]))) {
 			raster_config_1 &= C_028354_SE_PAIR_MAP;
@@ -4427,44 +4418,14 @@ si_write_harvested_raster_configs(struct si_context *sctx,
 	}
 }
 
-static void si_init_config(struct si_context *sctx)
+static void si_set_raster_config(struct si_context *sctx, struct si_pm4_state *pm4)
 {
 	struct si_screen *sscreen = sctx->screen;
 	unsigned num_rb = MIN2(sctx->screen->b.info.num_render_backends, 16);
 	unsigned rb_mask = sctx->screen->b.info.enabled_rb_mask;
 	unsigned raster_config, raster_config_1;
-	uint64_t border_color_va = sctx->border_color_buffer->gpu_address;
-	struct si_pm4_state *pm4 = CALLOC_STRUCT(si_pm4_state);
 
-	if (!pm4)
-		return;
-
-	si_pm4_cmd_begin(pm4, PKT3_CONTEXT_CONTROL);
-	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_LOAD_ENABLE(1));
-	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_SHADOW_ENABLE(1));
-	si_pm4_cmd_end(pm4, false);
-
-	si_pm4_cmd_begin(pm4, PKT3_CLEAR_STATE);
-	si_pm4_cmd_add(pm4, 0);
-	si_pm4_cmd_end(pm4, false);
-
-	si_pm4_set_reg(pm4, R_028A18_VGT_HOS_MAX_TESS_LEVEL, fui(64));
-
-	/* FIXME calculate these values somehow ??? */
-	if (sctx->b.chip_class <= VI) {
-		si_pm4_set_reg(pm4, R_028A54_VGT_GS_PER_ES, SI_GS_PER_ES);
-		si_pm4_set_reg(pm4, R_028A58_VGT_ES_PER_GS, 0x40);
-	}
-
-	si_pm4_set_reg(pm4, R_028AA0_VGT_INSTANCE_STEP_RATE_0, 1);
-	if (sctx->b.chip_class < CIK)
-		si_pm4_set_reg(pm4, R_008A14_PA_CL_ENHANCE, S_008A14_NUM_CLIP_SEQ(3) |
-			       S_008A14_CLIP_VTX_REORDER_ENA(1));
-
-	si_pm4_set_reg(pm4, R_028BD4_PA_SC_CENTROID_PRIORITY_0, 0x76543210);
-	si_pm4_set_reg(pm4, R_028BD8_PA_SC_CENTROID_PRIORITY_1, 0xfedcba98);
-
-	switch (sctx->screen->b.family) {
+	switch (sctx->b.family) {
 	case CHIP_TAHITI:
 	case CHIP_PITCAIRN:
 		raster_config = 0x2a00126a;
@@ -4536,29 +4497,81 @@ static void si_init_config(struct si_context *sctx)
 		raster_config_1 = 0x00000000;
 		break;
 	default:
-		if (sctx->b.chip_class <= VI) {
-			fprintf(stderr,
-				"radeonsi: Unknown GPU, using 0 for raster_config\n");
-			raster_config = 0x00000000;
-			raster_config_1 = 0x00000000;
-		}
-		break;
+		fprintf(stderr,
+			"radeonsi: Unknown GPU, using 0 for raster_config\n");
+		raster_config = 0x00000000;
+		raster_config_1 = 0x00000000;
 	}
 
-	if (sctx->b.chip_class <= VI) {
-		if (!rb_mask || util_bitcount(rb_mask) >= num_rb) {
-			/* Always use the default config when all backends are enabled
-			 * (or when we failed to determine the enabled backends).
-			 */
-			si_pm4_set_reg(pm4, R_028350_PA_SC_RASTER_CONFIG,
-				       raster_config);
-			if (sctx->b.chip_class >= CIK)
-				si_pm4_set_reg(pm4, R_028354_PA_SC_RASTER_CONFIG_1,
-					       raster_config_1);
-		} else {
-			si_write_harvested_raster_configs(sctx, pm4, raster_config, raster_config_1);
-		}
+	if (!rb_mask || util_bitcount(rb_mask) >= num_rb) {
+		/* Always use the default config when all backends are enabled
+		 * (or when we failed to determine the enabled backends).
+		 */
+		si_pm4_set_reg(pm4, R_028350_PA_SC_RASTER_CONFIG,
+			       raster_config);
+		if (sctx->b.chip_class >= CIK)
+			si_pm4_set_reg(pm4, R_028354_PA_SC_RASTER_CONFIG_1,
+				       raster_config_1);
+	} else {
+		si_write_harvested_raster_configs(sctx, pm4, raster_config, raster_config_1);
 	}
+}
+
+static void si_init_config(struct si_context *sctx)
+{
+	struct si_screen *sscreen = sctx->screen;
+	uint64_t border_color_va = sctx->border_color_buffer->gpu_address;
+	bool has_clear_state = sscreen->has_clear_state;
+	struct si_pm4_state *pm4 = CALLOC_STRUCT(si_pm4_state);
+
+	/* Only SI can disable CLEAR_STATE for now. */
+	assert(has_clear_state || sscreen->b.chip_class == SI);
+
+	if (!pm4)
+		return;
+
+	si_pm4_cmd_begin(pm4, PKT3_CONTEXT_CONTROL);
+	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_LOAD_ENABLE(1));
+	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_SHADOW_ENABLE(1));
+	si_pm4_cmd_end(pm4, false);
+
+	if (has_clear_state) {
+		si_pm4_cmd_begin(pm4, PKT3_CLEAR_STATE);
+		si_pm4_cmd_add(pm4, 0);
+		si_pm4_cmd_end(pm4, false);
+	}
+
+	if (sctx->b.chip_class <= VI)
+		si_set_raster_config(sctx, pm4);
+
+	si_pm4_set_reg(pm4, R_028A18_VGT_HOS_MAX_TESS_LEVEL, fui(64));
+	if (!has_clear_state)
+		si_pm4_set_reg(pm4, R_028A1C_VGT_HOS_MIN_TESS_LEVEL, fui(0));
+
+	/* FIXME calculate these values somehow ??? */
+	if (sctx->b.chip_class <= VI) {
+		si_pm4_set_reg(pm4, R_028A54_VGT_GS_PER_ES, SI_GS_PER_ES);
+		si_pm4_set_reg(pm4, R_028A58_VGT_ES_PER_GS, 0x40);
+	}
+
+	if (!has_clear_state) {
+		si_pm4_set_reg(pm4, R_028A5C_VGT_GS_PER_VS, 0x2);
+		si_pm4_set_reg(pm4, R_028A8C_VGT_PRIMITIVEID_RESET, 0x0);
+		si_pm4_set_reg(pm4, R_028B98_VGT_STRMOUT_BUFFER_CONFIG, 0x0);
+	}
+
+	si_pm4_set_reg(pm4, R_028AA0_VGT_INSTANCE_STEP_RATE_0, 1);
+	if (!has_clear_state)
+		si_pm4_set_reg(pm4, R_028AB8_VGT_VTX_CNT_EN, 0x0);
+	if (sctx->b.chip_class < CIK)
+		si_pm4_set_reg(pm4, R_008A14_PA_CL_ENHANCE, S_008A14_NUM_CLIP_SEQ(3) |
+			       S_008A14_CLIP_VTX_REORDER_ENA(1));
+
+	si_pm4_set_reg(pm4, R_028BD4_PA_SC_CENTROID_PRIORITY_0, 0x76543210);
+	si_pm4_set_reg(pm4, R_028BD8_PA_SC_CENTROID_PRIORITY_1, 0xfedcba98);
+
+	if (!has_clear_state)
+		si_pm4_set_reg(pm4, R_02882C_PA_SU_PRIM_FILTER_CNTL, 0);
 
 	/* CLEAR_STATE doesn't clear these correctly on certain generations.
 	 * I don't know why. Deduced by trial and error.
@@ -4572,6 +4585,26 @@ static void si_init_config(struct si_context *sctx)
 		si_pm4_set_reg(pm4, R_028030_PA_SC_SCREEN_SCISSOR_TL, 0);
 		si_pm4_set_reg(pm4, R_028034_PA_SC_SCREEN_SCISSOR_BR,
 			       S_028034_BR_X(16384) | S_028034_BR_Y(16384));
+	}
+
+	if (!has_clear_state) {
+		si_pm4_set_reg(pm4, R_02820C_PA_SC_CLIPRECT_RULE, 0xFFFF);
+		si_pm4_set_reg(pm4, R_028230_PA_SC_EDGERULE,
+			       S_028230_ER_TRI(0xA) |
+			       S_028230_ER_POINT(0xA) |
+			       S_028230_ER_RECT(0xA) |
+			       /* Required by DX10_DIAMOND_TEST_ENA: */
+			       S_028230_ER_LINE_LR(0x1A) |
+			       S_028230_ER_LINE_RL(0x26) |
+			       S_028230_ER_LINE_TB(0xA) |
+			       S_028230_ER_LINE_BT(0xA));
+		/* PA_SU_HARDWARE_SCREEN_OFFSET must be 0 due to hw bug on SI */
+		si_pm4_set_reg(pm4, R_028234_PA_SU_HARDWARE_SCREEN_OFFSET, 0);
+		si_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
+		si_pm4_set_reg(pm4, R_028AC0_DB_SRESULTS_COMPARE_STATE0, 0x0);
+		si_pm4_set_reg(pm4, R_028AC4_DB_SRESULTS_COMPARE_STATE1, 0x0);
+		si_pm4_set_reg(pm4, R_028AC8_DB_PRELOAD_CONTROL, 0x0);
+		si_pm4_set_reg(pm4, R_02800C_DB_RENDER_OVERRIDE, 0);
 	}
 
 	if (sctx->b.chip_class >= GFX9) {
@@ -4650,6 +4683,9 @@ static void si_init_config(struct si_context *sctx)
 			vgt_tess_distribution |= S_028B50_TRAP_SPLIT(3);
 
 		si_pm4_set_reg(pm4, R_028B50_VGT_TESS_DISTRIBUTION, vgt_tess_distribution);
+	} else if (!has_clear_state) {
+		si_pm4_set_reg(pm4, R_028C58_VGT_VERTEX_REUSE_BLOCK_CNTL, 14);
+		si_pm4_set_reg(pm4, R_028C5C_VGT_OUT_DEALLOC_CNTL, 16);
 	}
 
 	si_pm4_set_reg(pm4, R_028080_TA_BC_BASE_ADDR, border_color_va >> 8);

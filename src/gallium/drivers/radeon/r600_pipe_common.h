@@ -47,6 +47,8 @@
 #include "util/u_transfer.h"
 #include "util/u_threaded_context.h"
 
+struct u_log_context;
+
 #define ATI_VENDOR_ID 0x1002
 
 #define R600_RESOURCE_FLAG_TRANSFER		(PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
@@ -64,13 +66,15 @@
 /* special primitive types */
 #define R600_PRIM_RECTANGLE_LIST	PIPE_PRIM_MAX
 
+#define R600_NOT_QUERY		0xffffffff
+
 /* Debug flags. */
-/* logging */
+/* logging and features */
 #define DBG_TEX			(1 << 0)
 #define DBG_NIR			(1 << 1)
 #define DBG_COMPUTE		(1 << 2)
 #define DBG_VM			(1 << 3)
-/* gap - reuse */
+/* gap */
 /* shader logging */
 #define DBG_FS			(1 << 5)
 #define DBG_VS			(1 << 6)
@@ -106,7 +110,7 @@
 #define DBG_NO_RB_PLUS		(1ull << 45)
 #define DBG_SI_SCHED		(1ull << 46)
 #define DBG_MONOLITHIC_SHADERS	(1ull << 47)
-#define DBG_NO_CE		(1ull << 48)
+/* gap */
 #define DBG_UNSAFE_MATH		(1ull << 49)
 #define DBG_NO_DCC_FB		(1ull << 50)
 #define DBG_TEST_VMFAULT_CP	(1ull << 51)
@@ -373,7 +377,6 @@ union r600_mmio_counters {
 		struct r600_mmio_counter surf_sync;
 		struct r600_mmio_counter cp_dma;
 		struct r600_mmio_counter scratch_ram;
-		struct r600_mmio_counter ce;
 	} named;
 	unsigned array[0];
 };
@@ -560,6 +563,7 @@ struct r600_common_context {
 	struct r600_ring		dma;
 	struct pipe_fence_handle	*last_gfx_fence;
 	struct pipe_fence_handle	*last_sdma_fence;
+	struct r600_resource		*eop_bug_scratch;
 	unsigned			num_gfx_cs_flushes;
 	unsigned			initial_gfx_cs_size;
 	unsigned			gpu_reset_counter;
@@ -651,6 +655,7 @@ struct r600_common_context {
 
 	struct pipe_debug_callback	debug;
 	struct pipe_device_reset_callback device_reset_callback;
+	struct u_log_context		*log;
 
 	void				*query_result_shader;
 
@@ -747,7 +752,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 			      unsigned event, unsigned event_flags,
 			      unsigned data_sel,
 			      struct r600_resource *buf, uint64_t va,
-			      uint32_t old_fence, uint32_t new_fence);
+			      uint32_t new_fence, unsigned query_type);
 unsigned r600_gfx_write_fence_dwords(struct r600_common_screen *screen);
 void r600_gfx_wait_fence(struct r600_common_context *ctx,
 			 uint64_t va, uint32_t ref, uint32_t mask);
@@ -829,7 +834,7 @@ bool r600_init_flushed_depth_texture(struct pipe_context *ctx,
 				     struct pipe_resource *texture,
 				     struct r600_texture **staging);
 void r600_print_texture_info(struct r600_common_screen *rscreen,
-			     struct r600_texture *rtex, FILE *f);
+			     struct r600_texture *rtex, struct u_log_context *log);
 struct pipe_resource *r600_texture_create(struct pipe_screen *screen,
 					const struct pipe_resource *templ);
 bool vi_dcc_formats_compatible(enum pipe_format format1,
@@ -999,6 +1004,19 @@ static inline bool
 vi_dcc_enabled(struct r600_texture *tex, unsigned level)
 {
 	return tex->dcc_offset && level < tex->surface.num_dcc_levels;
+}
+
+static inline bool
+r600_htile_enabled(struct r600_texture *tex, unsigned level)
+{
+	return tex->htile_offset && level == 0;
+}
+
+static inline bool
+vi_tc_compat_htile_enabled(struct r600_texture *tex, unsigned level)
+{
+	assert(!tex->tc_compatible_htile || tex->htile_offset);
+	return tex->tc_compatible_htile && level == 0;
 }
 
 #define COMPUTE_DBG(rscreen, fmt, args...) \

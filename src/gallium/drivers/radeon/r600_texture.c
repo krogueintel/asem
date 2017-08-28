@@ -28,6 +28,7 @@
 #include "r600_cs.h"
 #include "r600_query.h"
 #include "util/u_format.h"
+#include "util/u_log.h"
 #include "util/u_memory.h"
 #include "util/u_pack_color.h"
 #include "util/u_surface.h"
@@ -355,7 +356,9 @@ static void r600_surface_import_metadata(struct r600_common_screen *rscreen,
 			*array_mode = RADEON_SURF_MODE_LINEAR_ALIGNED;
 
 		*is_scanout = metadata->u.gfx9.swizzle_mode == 0 ||
-			metadata->u.gfx9.swizzle_mode % 4 == 2;
+			      metadata->u.gfx9.swizzle_mode % 4 == 2;
+
+		surf->u.gfx9.surf.swizzle_mode = metadata->u.gfx9.swizzle_mode;
 	} else {
 		surf->u.legacy.pipe_config = metadata->u.legacy.pipe_config;
 		surf->u.legacy.bankw = metadata->u.legacy.bankw;
@@ -1039,12 +1042,12 @@ static void r600_texture_allocate_htile(struct r600_common_screen *rscreen,
 }
 
 void r600_print_texture_info(struct r600_common_screen *rscreen,
-			     struct r600_texture *rtex, FILE *f)
+			     struct r600_texture *rtex, struct u_log_context *log)
 {
 	int i;
 
 	/* Common parameters. */
-	fprintf(f, "  Info: npix_x=%u, npix_y=%u, npix_z=%u, blk_w=%u, "
+	u_log_printf(log, "  Info: npix_x=%u, npix_y=%u, npix_z=%u, blk_w=%u, "
 		"blk_h=%u, array_size=%u, last_level=%u, "
 		"bpe=%u, nsamples=%u, flags=0x%x, %s\n",
 		rtex->resource.b.b.width0, rtex->resource.b.b.height0,
@@ -1055,7 +1058,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		rtex->surface.flags, util_format_short_name(rtex->resource.b.b.format));
 
 	if (rscreen->chip_class >= GFX9) {
-		fprintf(f, "  Surf: size=%"PRIu64", slice_size=%"PRIu64", "
+		u_log_printf(log, "  Surf: size=%"PRIu64", slice_size=%"PRIu64", "
 			"alignment=%u, swmode=%u, epitch=%u, pitch=%u\n",
 			rtex->surface.surf_size,
 			rtex->surface.u.gfx9.surf_slice_size,
@@ -1065,7 +1068,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 			rtex->surface.u.gfx9.surf_pitch);
 
 		if (rtex->fmask.size) {
-			fprintf(f, "  FMASK: offset=%"PRIu64", size=%"PRIu64", "
+			u_log_printf(log, "  FMASK: offset=%"PRIu64", size=%"PRIu64", "
 				"alignment=%u, swmode=%u, epitch=%u\n",
 				rtex->fmask.offset,
 				rtex->surface.u.gfx9.fmask_size,
@@ -1075,7 +1078,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		}
 
 		if (rtex->cmask.size) {
-			fprintf(f, "  CMask: offset=%"PRIu64", size=%"PRIu64", "
+			u_log_printf(log, "  CMask: offset=%"PRIu64", size=%"PRIu64", "
 				"alignment=%u, rb_aligned=%u, pipe_aligned=%u\n",
 				rtex->cmask.offset,
 				rtex->surface.u.gfx9.cmask_size,
@@ -1085,7 +1088,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		}
 
 		if (rtex->htile_offset) {
-			fprintf(f, "  HTile: offset=%"PRIu64", size=%"PRIu64", alignment=%u, "
+			u_log_printf(log, "  HTile: offset=%"PRIu64", size=%"PRIu64", alignment=%u, "
 				"rb_aligned=%u, pipe_aligned=%u\n",
 				rtex->htile_offset,
 				rtex->surface.htile_size,
@@ -1095,7 +1098,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		}
 
 		if (rtex->dcc_offset) {
-			fprintf(f, "  DCC: offset=%"PRIu64", size=%"PRIu64", "
+			u_log_printf(log, "  DCC: offset=%"PRIu64", size=%"PRIu64", "
 				"alignment=%u, pitch_max=%u, num_dcc_levels=%u\n",
 				rtex->dcc_offset, rtex->surface.dcc_size,
 				rtex->surface.dcc_alignment,
@@ -1104,7 +1107,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		}
 
 		if (rtex->surface.u.gfx9.stencil_offset) {
-			fprintf(f, "  Stencil: offset=%"PRIu64", swmode=%u, epitch=%u\n",
+			u_log_printf(log, "  Stencil: offset=%"PRIu64", swmode=%u, epitch=%u\n",
 				rtex->surface.u.gfx9.stencil_offset,
 				rtex->surface.u.gfx9.stencil.swizzle_mode,
 				rtex->surface.u.gfx9.stencil.epitch);
@@ -1112,7 +1115,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		return;
 	}
 
-	fprintf(f, "  Layout: size=%"PRIu64", alignment=%u, bankw=%u, "
+	u_log_printf(log, "  Layout: size=%"PRIu64", alignment=%u, bankw=%u, "
 		"bankh=%u, nbanks=%u, mtilea=%u, tilesplit=%u, pipeconfig=%u, scanout=%u\n",
 		rtex->surface.surf_size, rtex->surface.surf_alignment, rtex->surface.u.legacy.bankw,
 		rtex->surface.u.legacy.bankh, rtex->surface.u.legacy.num_banks, rtex->surface.u.legacy.mtilea,
@@ -1120,31 +1123,31 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 		(rtex->surface.flags & RADEON_SURF_SCANOUT) != 0);
 
 	if (rtex->fmask.size)
-		fprintf(f, "  FMask: offset=%"PRIu64", size=%"PRIu64", alignment=%u, pitch_in_pixels=%u, "
+		u_log_printf(log, "  FMask: offset=%"PRIu64", size=%"PRIu64", alignment=%u, pitch_in_pixels=%u, "
 			"bankh=%u, slice_tile_max=%u, tile_mode_index=%u\n",
 			rtex->fmask.offset, rtex->fmask.size, rtex->fmask.alignment,
 			rtex->fmask.pitch_in_pixels, rtex->fmask.bank_height,
 			rtex->fmask.slice_tile_max, rtex->fmask.tile_mode_index);
 
 	if (rtex->cmask.size)
-		fprintf(f, "  CMask: offset=%"PRIu64", size=%"PRIu64", alignment=%u, "
+		u_log_printf(log, "  CMask: offset=%"PRIu64", size=%"PRIu64", alignment=%u, "
 			"slice_tile_max=%u\n",
 			rtex->cmask.offset, rtex->cmask.size, rtex->cmask.alignment,
 			rtex->cmask.slice_tile_max);
 
 	if (rtex->htile_offset)
-		fprintf(f, "  HTile: offset=%"PRIu64", size=%"PRIu64", "
+		u_log_printf(log, "  HTile: offset=%"PRIu64", size=%"PRIu64", "
 			"alignment=%u, TC_compatible = %u\n",
 			rtex->htile_offset, rtex->surface.htile_size,
 			rtex->surface.htile_alignment,
 			rtex->tc_compatible_htile);
 
 	if (rtex->dcc_offset) {
-		fprintf(f, "  DCC: offset=%"PRIu64", size=%"PRIu64", alignment=%u\n",
+		u_log_printf(log, "  DCC: offset=%"PRIu64", size=%"PRIu64", alignment=%u\n",
 			rtex->dcc_offset, rtex->surface.dcc_size,
 			rtex->surface.dcc_alignment);
 		for (i = 0; i <= rtex->resource.b.b.last_level; i++)
-			fprintf(f, "  DCCLevel[%i]: enabled=%u, offset=%"PRIu64", "
+			u_log_printf(log, "  DCCLevel[%i]: enabled=%u, offset=%"PRIu64", "
 				"fast_clear_size=%"PRIu64"\n",
 				i, i < rtex->surface.num_dcc_levels,
 				rtex->surface.u.legacy.level[i].dcc_offset,
@@ -1152,7 +1155,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 	}
 
 	for (i = 0; i <= rtex->resource.b.b.last_level; i++)
-		fprintf(f, "  Level[%i]: offset=%"PRIu64", slice_size=%"PRIu64", "
+		u_log_printf(log, "  Level[%i]: offset=%"PRIu64", slice_size=%"PRIu64", "
 			"npix_x=%u, npix_y=%u, npix_z=%u, nblk_x=%u, nblk_y=%u, "
 			"mode=%u, tiling_index = %u\n",
 			i, rtex->surface.u.legacy.level[i].offset,
@@ -1166,10 +1169,10 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 			rtex->surface.u.legacy.tiling_index[i]);
 
 	if (rtex->surface.flags & RADEON_SURF_SBUFFER) {
-		fprintf(f, "  StencilLayout: tilesplit=%u\n",
+		u_log_printf(log, "  StencilLayout: tilesplit=%u\n",
 			rtex->surface.u.legacy.stencil_tile_split);
 		for (i = 0; i <= rtex->resource.b.b.last_level; i++) {
-			fprintf(f, "  StencilLevel[%i]: offset=%"PRIu64", "
+			u_log_printf(log, "  StencilLevel[%i]: offset=%"PRIu64", "
 				"slice_size=%"PRIu64", npix_x=%u, "
 				"npix_y=%u, npix_z=%u, nblk_x=%u, nblk_y=%u, "
 				"mode=%u, tiling_index = %u\n",
@@ -1360,8 +1363,12 @@ r600_texture_create_object(struct pipe_screen *screen,
 
 	if (rscreen->debug_flags & DBG_TEX) {
 		puts("Texture:");
-		r600_print_texture_info(rscreen, rtex, stdout);
+		struct u_log_context log;
+		u_log_context_init(&log);
+		r600_print_texture_info(rscreen, rtex, &log);
+		u_log_new_page_print(&log, stdout);
 		fflush(stdout);
+		u_log_context_destroy(&log);
 	}
 
 	return rtex;
@@ -1515,11 +1522,6 @@ static struct pipe_resource *r600_texture_from_handle(struct pipe_screen *screen
 
 	if (rscreen->apply_opaque_metadata)
 		rscreen->apply_opaque_metadata(rscreen, rtex, &metadata);
-
-	/* Validate that addrlib arrived at the same surface parameters. */
-	if (rscreen->chip_class >= GFX9) {
-		assert(metadata.u.gfx9.swizzle_mode == surface.u.gfx9.surf.swizzle_mode);
-	}
 
 	assert(rtex->surface.tile_swizzle == 0);
 	return &rtex->resource.b.b;
@@ -2913,7 +2915,7 @@ r600_texture_from_memobj(struct pipe_screen *screen,
 	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
 	struct r600_memory_object *memobj = (struct r600_memory_object *)_memobj;
 	struct r600_texture *rtex;
-	struct radeon_surf surface;
+	struct radeon_surf surface = {};
 	struct radeon_bo_metadata metadata = {};
 	enum radeon_surf_mode array_mode;
 	bool is_scanout;

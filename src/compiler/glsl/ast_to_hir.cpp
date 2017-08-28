@@ -1182,7 +1182,7 @@ do_comparison(void *mem_ctx, int operation, ir_rvalue *op0, ir_rvalue *op1)
  * scalar booleans.  If it isn't, emit an error and return a constant
  * boolean to avoid triggering cascading error messages.
  */
-ir_rvalue *
+static ir_rvalue *
 get_scalar_boolean_operand(exec_list *instructions,
                            struct _mesa_glsl_parse_state *state,
                            ast_expression *parent_expr,
@@ -4322,7 +4322,7 @@ get_variable_being_redeclared(ir_variable *var, YYLTYPE loc,
 /**
  * Generate the IR for an initializer in a variable declaration
  */
-ir_rvalue *
+static ir_rvalue *
 process_initializer(ir_variable *var, ast_declaration *decl,
                     ast_fully_specified_type *type,
                     exec_list *initializer_instructions,
@@ -4500,7 +4500,7 @@ process_initializer(ir_variable *var, ast_declaration *decl,
       } else {
          if (var->type->is_numeric()) {
             /* Reduce cascading errors. */
-            var->constant_value = type->qualifier.flags.q.constant
+            rhs = var->constant_value = type->qualifier.flags.q.constant
                ? ir_constant::zero(state, var->type) : NULL;
          }
       }
@@ -4719,7 +4719,7 @@ handle_geometry_shader_input_decl(struct _mesa_glsl_parse_state *state,
                                           "geometry shader input");
 }
 
-void
+static void
 validate_identifier(const char *identifier, YYLTYPE loc,
                     struct _mesa_glsl_parse_state *state)
 {

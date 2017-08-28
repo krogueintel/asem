@@ -499,7 +499,7 @@ ir_to_mesa_visitor::src_reg_for_float(float val)
 }
 
 static int
-type_size(const struct glsl_type *type)
+storage_type_size(const struct glsl_type *type, bool bindless)
 {
    unsigned int i;
    int size;
@@ -541,19 +541,19 @@ type_size(const struct glsl_type *type)
          return 1;
    case GLSL_TYPE_ARRAY:
       assert(type->length > 0);
-      return type_size(type->fields.array) * type->length;
+      return storage_type_size(type->fields.array, bindless) * type->length;
    case GLSL_TYPE_STRUCT:
       size = 0;
       for (i = 0; i < type->length; i++) {
-	 size += type_size(type->fields.structure[i].type);
+	 size += storage_type_size(type->fields.structure[i].type, bindless);
       }
       return size;
    case GLSL_TYPE_SAMPLER:
    case GLSL_TYPE_IMAGE:
+      if (!bindless)
+         return 0;
+      /* fall through */
    case GLSL_TYPE_SUBROUTINE:
-      /* Samplers take up one slot in UNIFORMS[], but they're baked in
-       * at link time.
-       */
       return 1;
    case GLSL_TYPE_ATOMIC_UINT:
    case GLSL_TYPE_VOID:
@@ -565,6 +565,12 @@ type_size(const struct glsl_type *type)
    }
 
    return 0;
+}
+
+static int
+type_size(const struct glsl_type *type)
+{
+   return storage_type_size(type, false);
 }
 
 /**
@@ -2410,9 +2416,10 @@ namespace {
 
 class add_uniform_to_shader : public program_resource_visitor {
 public:
-   add_uniform_to_shader(struct gl_shader_program *shader_program,
+   add_uniform_to_shader(struct gl_context *ctx,
+                         struct gl_shader_program *shader_program,
 			 struct gl_program_parameter_list *params)
-      : shader_program(shader_program), params(params), idx(-1)
+      : ctx(ctx), params(params), idx(-1)
    {
       /* empty */
    }
@@ -2421,7 +2428,8 @@ public:
    {
       this->idx = -1;
       this->var = var;
-      this->program_resource_visitor::process(var);
+      this->program_resource_visitor::process(var,
+                                         ctx->Const.UseSTD430AsDefaultPacking);
       var->data.param_index = this->idx;
    }
 
@@ -2431,7 +2439,7 @@ private:
                             const enum glsl_interface_packing packing,
                             bool last_field);
 
-   struct gl_shader_program *shader_program;
+   struct gl_context *ctx;
    struct gl_program_parameter_list *params;
    int idx;
    ir_variable *var;
@@ -2454,7 +2462,7 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
 
    assert(_mesa_lookup_parameter_index(params, name) < 0);
 
-   unsigned size = type_size(type) * 4;
+   unsigned size = storage_type_size(type, var->data.bindless) * 4;
 
    int index = _mesa_add_parameter(params, PROGRAM_UNIFORM, name, size,
                                    type->gl_type, NULL, NULL);
@@ -2475,13 +2483,14 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
  * \param params         Parameter list to be filled in.
  */
 void
-_mesa_generate_parameters_list_for_uniforms(struct gl_shader_program
+_mesa_generate_parameters_list_for_uniforms(struct gl_context *ctx,
+                                            struct gl_shader_program
 					    *shader_program,
 					    struct gl_linked_shader *sh,
 					    struct gl_program_parameter_list
 					    *params)
 {
-   add_uniform_to_shader add(shader_program, params);
+   add_uniform_to_shader add(ctx, shader_program, params);
 
    foreach_in_list(ir_instruction, node, sh->ir) {
       ir_variable *var = node->as_variable();
@@ -2843,7 +2852,7 @@ get_mesa_program(struct gl_context *ctx,
    v.shader_program = shader_program;
    v.options = options;
 
-   _mesa_generate_parameters_list_for_uniforms(shader_program, shader,
+   _mesa_generate_parameters_list_for_uniforms(ctx, shader_program, shader,
 					       prog->Parameters);
 
    /* Emit Mesa IR for main(). */

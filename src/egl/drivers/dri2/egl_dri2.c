@@ -46,7 +46,6 @@
 #endif
 #include <GL/gl.h>
 #include <GL/internal/dri_interface.h>
-#include "GL/mesa_glinterop.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -61,6 +60,7 @@
 #endif
 
 #include "egl_dri2.h"
+#include "GL/mesa_glinterop.h"
 #include "loader/loader.h"
 #include "util/u_atomic.h"
 #include "util/u_vector.h"
@@ -677,7 +677,8 @@ dri2_setup_screen(_EGLDisplay *disp)
       disp->Extensions.KHR_wait_sync = EGL_TRUE;
       if (dri2_dpy->fence->get_fence_from_cl_event)
          disp->Extensions.KHR_cl_event2 = EGL_TRUE;
-      if (dri2_dpy->fence->base.version >= 2) {
+      if (dri2_dpy->fence->base.version >= 2 &&
+          dri2_dpy->fence->get_capabilities) {
          unsigned capabilities =
             dri2_dpy->fence->get_capabilities(dri2_dpy->dri_screen);
          disp->Extensions.ANDROID_native_fence_sync =
@@ -945,8 +946,11 @@ dri2_display_destroy(_EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
-   if (dri2_dpy->own_dri_screen)
+   if (dri2_dpy->own_dri_screen) {
+      if (dri2_dpy->vtbl->close_screen_notify)
+         dri2_dpy->vtbl->close_screen_notify(disp);
       dri2_dpy->core->destroyScreen(dri2_dpy->dri_screen);
+   }
    if (dri2_dpy->fd >= 0)
       close(dri2_dpy->fd);
    if (dri2_dpy->driver)
@@ -1006,6 +1010,40 @@ dri2_display_destroy(_EGLDisplay *disp)
    }
    free(dri2_dpy);
    disp->DriverData = NULL;
+}
+
+__DRIbuffer *
+dri2_egl_surface_alloc_local_buffer(struct dri2_egl_surface *dri2_surf,
+                                    unsigned int att, unsigned int format)
+{
+   struct dri2_egl_display *dri2_dpy =
+      dri2_egl_display(dri2_surf->base.Resource.Display);
+
+   if (att >= ARRAY_SIZE(dri2_surf->local_buffers))
+      return NULL;
+
+   if (!dri2_surf->local_buffers[att]) {
+      dri2_surf->local_buffers[att] =
+         dri2_dpy->dri2->allocateBuffer(dri2_dpy->dri_screen, att, format,
+                                        dri2_surf->base.Width, dri2_surf->base.Height);
+   }
+
+   return dri2_surf->local_buffers[att];
+}
+
+void
+dri2_egl_surface_free_local_buffers(struct dri2_egl_surface *dri2_surf)
+{
+   struct dri2_egl_display *dri2_dpy =
+      dri2_egl_display(dri2_surf->base.Resource.Display);
+
+   for (int i = 0; i < ARRAY_SIZE(dri2_surf->local_buffers); i++) {
+      if (dri2_surf->local_buffers[i]) {
+         dri2_dpy->dri2->releaseBuffer(dri2_dpy->dri_screen,
+                                       dri2_surf->local_buffers[i]);
+         dri2_surf->local_buffers[i] = NULL;
+      }
+   }
 }
 
 /**
@@ -2155,6 +2193,24 @@ dri2_check_dma_buf_format(const _EGLImageAttribs *attrs)
       return 0;
    }
 
+   for (unsigned i = plane_n; i < DMA_BUF_MAX_PLANES; i++) {
+      /**
+       * The modifiers extension spec says:
+       *
+       * "Modifiers may modify any attribute of a buffer import, including
+       *  but not limited to adding extra planes to a format which
+       *  otherwise does not have those planes. As an example, a modifier
+       *  may add a plane for an external compression buffer to a
+       *  single-plane format. The exact meaning and effect of any
+       *  modifier is canonically defined by drm_fourcc.h, not as part of
+       *  this extension."
+       */
+      if (attrs->DMABufPlaneModifiersLo[i].IsPresent &&
+          attrs->DMABufPlaneModifiersHi[i].IsPresent) {
+         plane_n = i + 1;
+      }
+   }
+
    /**
      * The spec says:
      *
@@ -2181,25 +2237,7 @@ dri2_check_dma_buf_format(const _EGLImageAttribs *attrs)
    for (unsigned i = plane_n; i < DMA_BUF_MAX_PLANES; ++i) {
       if (attrs->DMABufPlaneFds[i].IsPresent ||
           attrs->DMABufPlaneOffsets[i].IsPresent ||
-          attrs->DMABufPlanePitches[i].IsPresent ||
-          attrs->DMABufPlaneModifiersLo[i].IsPresent ||
-          attrs->DMABufPlaneModifiersHi[i].IsPresent) {
-
-         /**
-          * The modifiers extension spec says:
-          *
-          * "Modifiers may modify any attribute of a buffer import, including
-          *  but not limited to adding extra planes to a format which
-          *  otherwise does not have those planes. As an example, a modifier
-          *  may add a plane for an external compression buffer to a
-          *  single-plane format. The exact meaning and effect of any
-          *  modifier is canonically defined by drm_fourcc.h, not as part of
-          *  this extension."
-          */
-         if (attrs->DMABufPlaneModifiersLo[i].IsPresent &&
-             attrs->DMABufPlaneModifiersHi[i].IsPresent)
-            continue;
-
+          attrs->DMABufPlanePitches[i].IsPresent) {
          _eglError(EGL_BAD_ATTRIBUTE, "too many plane attributes");
          return 0;
       }

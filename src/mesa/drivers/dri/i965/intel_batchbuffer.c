@@ -58,13 +58,13 @@ uint_key_hash(const void *key)
 }
 
 void
-intel_batchbuffer_init(struct intel_batchbuffer *batch,
-                       struct brw_bufmgr *bufmgr,
-                       bool has_llc)
+intel_batchbuffer_init(struct intel_screen *screen,
+                       struct intel_batchbuffer *batch)
 {
-   struct brw_context *brw = container_of(batch, brw, batch);
+   struct brw_bufmgr *bufmgr = screen->bufmgr;
+   const struct gen_device_info *devinfo = &screen->devinfo;
 
-   if (!has_llc) {
+   if (!devinfo->has_llc) {
       batch->cpu_map = malloc(BATCH_SZ);
       batch->map = batch->cpu_map;
       batch->map_next = batch->cpu_map;
@@ -87,14 +87,14 @@ intel_batchbuffer_init(struct intel_batchbuffer *batch,
    }
 
    batch->use_batch_first =
-      brw->screen->kernel_features & KERNEL_ALLOWS_EXEC_BATCH_FIRST;
+      screen->kernel_features & KERNEL_ALLOWS_EXEC_BATCH_FIRST;
 
    /* PIPE_CONTROL needs a w/a but only on gen6 */
    batch->valid_reloc_flags = EXEC_OBJECT_WRITE;
-   if (brw->gen == 6)
+   if (devinfo->gen == 6)
       batch->valid_reloc_flags |= EXEC_OBJECT_NEEDS_GTT;
 
-   intel_batchbuffer_reset(batch, bufmgr, has_llc);
+   intel_batchbuffer_reset(batch, bufmgr, devinfo->has_llc);
 }
 
 #define READ_ONCE(x) (*(volatile __typeof__(x) *)&(x))
@@ -299,8 +299,8 @@ do_batch_dump(struct brw_context *brw)
    void *map = brw_bo_map(brw, batch->bo, MAP_READ);
    if (map == NULL) {
       fprintf(stderr,
-	      "WARNING: failed to map batchbuffer, "
-	      "dumping uploaded data instead.\n");
+              "WARNING: failed to map batchbuffer, "
+              "dumping uploaded data instead.\n");
    }
 
    uint32_t *data = map ? map : batch->map;
@@ -633,10 +633,10 @@ do_flush_locked(struct brw_context *brw, int in_fence_fd, int *out_fence_fd)
    } else {
       ret = brw_bo_subdata(batch->bo, 0, 4 * USED_BATCH(*batch), batch->map);
       if (ret == 0 && batch->state_batch_offset != batch->bo->size) {
-	 ret = brw_bo_subdata(batch->bo,
-				    batch->state_batch_offset,
-				    batch->bo->size - batch->state_batch_offset,
-				    (char *)batch->map + batch->state_batch_offset);
+         ret = brw_bo_subdata(batch->bo,
+                              batch->state_batch_offset,
+                              batch->bo->size - batch->state_batch_offset,
+                              (char *)batch->map + batch->state_batch_offset);
       }
    }
 
@@ -661,7 +661,7 @@ do_flush_locked(struct brw_context *brw, int in_fence_fd, int *out_fence_fd)
          flags |= I915_EXEC_RENDER;
       }
       if (batch->needs_sol_reset)
-	 flags |= I915_EXEC_GEN7_SOL_RESET;
+         flags |= I915_EXEC_GEN7_SOL_RESET;
 
       if (ret == 0) {
          uint32_t hw_ctx = batch->ring == RENDER_RING ? brw->hw_ctx : 0;

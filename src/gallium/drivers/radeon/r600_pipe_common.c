@@ -103,7 +103,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 			      unsigned event, unsigned event_flags,
 			      unsigned data_sel,
 			      struct r600_resource *buf, uint64_t va,
-			      uint32_t old_fence, uint32_t new_fence)
+			      uint32_t new_fence, unsigned query_type)
 {
 	struct radeon_winsys_cs *cs = ctx->gfx.cs;
 	unsigned op = EVENT_TYPE(event) |
@@ -111,6 +111,29 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 		      event_flags;
 
 	if (ctx->chip_class >= GFX9) {
+		/* A ZPASS_DONE or PIXEL_STAT_DUMP_EVENT (of the DB occlusion
+		 * counters) must immediately precede every timestamp event to
+		 * prevent a GPU hang on GFX9.
+		 *
+		 * Occlusion queries don't need to do it here, because they
+		 * always do ZPASS_DONE before the timestamp.
+		 */
+		if (ctx->chip_class == GFX9 &&
+		    query_type != PIPE_QUERY_OCCLUSION_COUNTER &&
+		    query_type != PIPE_QUERY_OCCLUSION_PREDICATE) {
+			struct r600_resource *scratch = ctx->eop_bug_scratch;
+
+			assert(16 * ctx->screen->info.num_render_backends <=
+			       scratch->b.b.width0);
+			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 2, 0));
+			radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_ZPASS_DONE) | EVENT_INDEX(1));
+			radeon_emit(cs, scratch->gpu_address);
+			radeon_emit(cs, scratch->gpu_address >> 32);
+
+			radeon_add_to_buffer_list(ctx, &ctx->gfx, scratch,
+						  RADEON_USAGE_WRITE, RADEON_PRIO_QUERY);
+		}
+
 		radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, 6, 0));
 		radeon_emit(cs, op);
 		radeon_emit(cs, EOP_DATA_SEL(data_sel));
@@ -122,6 +145,9 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 	} else {
 		if (ctx->chip_class == CIK ||
 		    ctx->chip_class == VI) {
+			struct r600_resource *scratch = ctx->eop_bug_scratch;
+			uint64_t va = scratch->gpu_address;
+
 			/* Two EOP events are required to make all engines go idle
 			 * (and optional cache flushes executed) before the timestamp
 			 * is written.
@@ -130,8 +156,11 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 			radeon_emit(cs, op);
 			radeon_emit(cs, va);
 			radeon_emit(cs, ((va >> 32) & 0xffff) | EOP_DATA_SEL(data_sel));
-			radeon_emit(cs, old_fence); /* immediate data */
+			radeon_emit(cs, 0); /* immediate data */
 			radeon_emit(cs, 0); /* unused */
+
+			radeon_add_to_buffer_list(ctx, &ctx->gfx, scratch,
+						  RADEON_USAGE_WRITE, RADEON_PRIO_QUERY);
 		}
 
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
@@ -466,7 +495,7 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
 void radeon_save_cs(struct radeon_winsys *ws, struct radeon_winsys_cs *cs,
 		    struct radeon_saved_cs *saved, bool get_buffer_list)
 {
-	void *buf;
+	uint32_t *buf;
 	unsigned i;
 
 	/* Save the IB chunks. */
@@ -655,6 +684,16 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	r600_query_init(rctx);
 	cayman_init_msaa(&rctx->b);
 
+	if (rctx->chip_class == CIK ||
+	    rctx->chip_class == VI ||
+	    rctx->chip_class == GFX9) {
+		rctx->eop_bug_scratch = (struct r600_resource*)
+			pipe_buffer_create(&rscreen->b, 0, PIPE_USAGE_DEFAULT,
+					   16 * rscreen->info.num_render_backends);
+		if (!rctx->eop_bug_scratch)
+			return false;
+	}
+
 	rctx->allocator_zeroed_memory =
 		u_suballocator_create(&rctx->b, rscreen->info.gart_page_size,
 				      0, PIPE_USAGE_DEFAULT, 0, true);
@@ -724,6 +763,7 @@ void r600_common_context_cleanup(struct r600_common_context *rctx)
 	}
 	rctx->ws->fence_reference(&rctx->last_gfx_fence, NULL);
 	rctx->ws->fence_reference(&rctx->last_sdma_fence, NULL);
+	r600_resource_reference(&rctx->eop_bug_scratch, NULL);
 }
 
 /*
@@ -775,7 +815,6 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "norbplus", DBG_NO_RB_PLUS, "Disable RB+." },
 	{ "sisched", DBG_SI_SCHED, "Enable LLVM SI Machine Instruction Scheduler." },
 	{ "mono", DBG_MONOLITHIC_SHADERS, "Use old-style monolithic shaders compiled on demand" },
-	{ "noce", DBG_NO_CE, "Disable the constant engine"},
 	{ "unsafemath", DBG_UNSAFE_MATH, "Enable unsafe math shader optimizations" },
 	{ "nodccfb", DBG_NO_DCC_FB, "Disable separate DCC on the main framebuffer" },
 
@@ -877,10 +916,17 @@ static void r600_disk_cache_create(struct r600_common_screen *rscreen)
 		}
 #endif
 		if (res != -1) {
+			/* These flags affect shader compilation. */
+			uint64_t shader_debug_flags =
+				rscreen->debug_flags &
+				(DBG_FS_CORRECT_DERIVS_AFTER_KILL |
+				 DBG_SI_SCHED |
+				 DBG_UNSAFE_MATH);
+
 			rscreen->disk_shader_cache =
 				disk_cache_create(r600_get_family_name(rscreen),
 						  timestamp_str,
-						  rscreen->debug_flags);
+						  shader_debug_flags);
 			free(timestamp_str);
 		}
 	}

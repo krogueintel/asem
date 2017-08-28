@@ -403,6 +403,7 @@ void
 fs_reg::init()
 {
    memset(this, 0, sizeof(*this));
+   type = BRW_REGISTER_TYPE_UD;
    stride = 1;
 }
 
@@ -5345,7 +5346,7 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
 
    if (inst->dst.stride != 1)
       fprintf(file, "<%u>", inst->dst.stride);
-   fprintf(file, ":%s, ", brw_reg_type_letters(inst->dst.type));
+   fprintf(file, ":%s, ", brw_reg_type_to_letters(inst->dst.type));
 
    for (int i = 0; i < inst->sources; i++) {
       if (inst->src[i].negate)
@@ -5442,7 +5443,7 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
          if (stride != 1)
             fprintf(file, "<%u>", stride);
 
-         fprintf(file, ":%s", brw_reg_type_letters(inst->src[i].type));
+         fprintf(file, ":%s", brw_reg_type_to_letters(inst->src[i].type));
       }
 
       if (i < inst->sources - 1 && inst->src[i + 1].file != BAD_FILE)
@@ -6543,6 +6544,8 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
        shader->info.fs.uses_sample_qualifier ||
        shader->info.outputs_read);
 
+   prog_data->has_render_target_reads = shader->info.outputs_read != 0ull;
+
    prog_data->early_fragment_tests = shader->info.fs.early_fragment_tests;
    prog_data->post_depth_coverage = shader->info.fs.post_depth_coverage;
    prog_data->inner_coverage = shader->info.fs.inner_coverage;
@@ -6748,8 +6751,6 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
 {
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
    shader = brw_nir_apply_sampler_key(shader, compiler, &key->tex, true);
-   brw_nir_lower_cs_shared(shader);
-   prog_data->base.total_shared += shader->num_shared;
 
    /* Now that we cloned the nir_shader, we can update num_uniforms based on
     * the thread_local_id_index.

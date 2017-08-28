@@ -28,6 +28,7 @@
 
 #include "radeon/radeon_uvd.h"
 #include "util/hash_table.h"
+#include "util/u_log.h"
 #include "util/u_memory.h"
 #include "util/u_suballoc.h"
 #include "util/u_tests.h"
@@ -54,10 +55,6 @@ static void si_destroy_context(struct pipe_context *context)
 
 	si_release_all_descriptors(sctx);
 
-	if (sctx->ce_suballocator)
-		u_suballocator_destroy(sctx->ce_suballocator);
-
-	r600_resource_reference(&sctx->ce_ram_saved_buffer, NULL);
 	pipe_resource_reference(&sctx->esgs_ring, NULL);
 	pipe_resource_reference(&sctx->gsvs_ring, NULL);
 	pipe_resource_reference(&sctx->tf_ring, NULL);
@@ -95,12 +92,7 @@ static void si_destroy_context(struct pipe_context *context)
 
 	LLVMDisposeTargetMachine(sctx->tm);
 
-	r600_resource_reference(&sctx->trace_buf, NULL);
-	r600_resource_reference(&sctx->last_trace_buf, NULL);
-	radeon_clear_saved_cs(&sctx->last_gfx);
-
-	pb_slabs_deinit(&sctx->bindless_descriptor_slabs);
-	util_dynarray_fini(&sctx->bindless_descriptors);
+	si_saved_cs_reference(&sctx->current_saved_cs, NULL);
 
 	_mesa_hash_table_destroy(sctx->tex_handles, NULL);
 	_mesa_hash_table_destroy(sctx->img_handles, NULL);
@@ -135,6 +127,9 @@ static void si_emit_string_marker(struct pipe_context *ctx,
 	struct si_context *sctx = (struct si_context *)ctx;
 
 	dd_parse_apitrace_marker(string, len, &sctx->apitrace_call_number);
+
+	if (sctx->b.log)
+		u_log_printf(sctx->b.log, "\nString marker: %*s\n", len, string);
 }
 
 static LLVMTargetMachineRef
@@ -157,6 +152,16 @@ si_create_llvm_target_machine(struct si_screen *sscreen)
 				       LLVMCodeModelDefault);
 }
 
+static void si_set_log_context(struct pipe_context *ctx,
+			       struct u_log_context *log)
+{
+	struct si_context *sctx = (struct si_context *)ctx;
+	sctx->b.log = log;
+
+	if (log)
+		u_log_add_auto_logger(log, si_auto_log_cs, sctx);
+}
+
 static struct pipe_context *si_create_context(struct pipe_screen *screen,
                                               unsigned flags)
 {
@@ -175,6 +180,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	sctx->b.b.priv = NULL;
 	sctx->b.b.destroy = si_destroy_context;
 	sctx->b.b.emit_string_marker = si_emit_string_marker;
+	sctx->b.b.set_log_context = si_set_log_context;
 	sctx->b.set_atom_dirty = (void *)si_set_atom_dirty;
 	sctx->screen = sscreen; /* Easy accessing of screen/winsys. */
 	sctx->is_debug = (flags & PIPE_CONTEXT_DEBUG) != 0;
@@ -200,33 +206,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 
 	sctx->b.gfx.cs = ws->cs_create(sctx->b.ctx, RING_GFX,
 				       si_context_gfx_flush, sctx);
-
-	/* SI + AMDGPU + CE = GPU hang */
-	if (!(sscreen->b.debug_flags & DBG_NO_CE) && ws->cs_add_const_ib &&
-	    sscreen->b.chip_class != SI &&
-	    /* These can't use CE due to a power gating bug in the kernel. */
-	    sscreen->b.family != CHIP_CARRIZO &&
-	    sscreen->b.family != CHIP_STONEY) {
-		sctx->ce_ib = ws->cs_add_const_ib(sctx->b.gfx.cs);
-		if (!sctx->ce_ib)
-			goto fail;
-
-		if (ws->cs_add_const_preamble_ib) {
-			sctx->ce_preamble_ib =
-			           ws->cs_add_const_preamble_ib(sctx->b.gfx.cs);
-
-			if (!sctx->ce_preamble_ib)
-				goto fail;
-		}
-
-		sctx->ce_suballocator =
-			u_suballocator_create(&sctx->b.b, 1024 * 1024, 0,
-					      PIPE_USAGE_DEFAULT,
-					      R600_RESOURCE_FLAG_UNMAPPABLE, false);
-		if (!sctx->ce_suballocator)
-			goto fail;
-	}
-
 	sctx->b.gfx.flush = si_context_gfx_flush;
 
 	/* Border colors. */
@@ -345,15 +324,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 				   max_threads_per_block / 64);
 
 	sctx->tm = si_create_llvm_target_machine(sscreen);
-
-	/* Create a slab allocator for all bindless descriptors. */
-	if (!pb_slabs_init(&sctx->bindless_descriptor_slabs, 6, 6, 1, sctx,
-			   si_bindless_descriptor_can_reclaim_slab,
-			   si_bindless_descriptor_slab_alloc,
-			   si_bindless_descriptor_slab_free))
-		goto fail;
-
-	util_dynarray_init(&sctx->bindless_descriptors, NULL);
 
 	/* Bindless handles. */
 	sctx->tex_handles = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
@@ -764,7 +734,7 @@ static int si_get_shader_param(struct pipe_screen* pscreen,
 			return PIPE_SHADER_IR_NIR;
 		return PIPE_SHADER_IR_TGSI;
 	case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-		return 3;
+		return 4;
 
 	/* Supported boolean features. */
 	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
@@ -775,6 +745,7 @@ static int si_get_shader_param(struct pipe_screen* pscreen,
 	case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
 	case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
+	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
 		return 1;
 
 	case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
@@ -794,7 +765,6 @@ static int si_get_shader_param(struct pipe_screen* pscreen,
 	/* Unsupported boolean features. */
 	case PIPE_SHADER_CAP_SUBROUTINES:
 	case PIPE_SHADER_CAP_SUPPORTED_IRS:
-	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
 		return 0;
 	}
@@ -1054,6 +1024,10 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws,
 	 */
 	sscreen->tess_offchip_block_dw_size =
 		sscreen->b.family == CHIP_HAWAII ? 4096 : 8192;
+
+	/* The mere presense of CLEAR_STATE in the IB causes random GPU hangs
+	 * on SI. */
+	sscreen->has_clear_state = sscreen->b.chip_class >= CIK;
 
 	sscreen->has_distributed_tess =
 		sscreen->b.chip_class >= VI &&

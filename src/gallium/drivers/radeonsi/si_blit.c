@@ -24,6 +24,7 @@
 #include "si_pipe.h"
 #include "si_compute.h"
 #include "util/u_format.h"
+#include "util/u_log.h"
 #include "util/u_surface.h"
 
 enum si_blitter_op /* bitmask */
@@ -338,6 +339,12 @@ si_decompress_depth(struct si_context *sctx,
 		}
 	}
 
+	if (unlikely(sctx->b.log))
+		u_log_printf(sctx->b.log,
+			     "\n------------------------------------------------\n"
+			     "Decompress Depth (levels %u - %u, levels Z: 0x%x S: 0x%x)\n\n",
+			     first_level, last_level, levels_z, levels_s);
+
 	/* We may have to allocate the flushed texture here when called from
 	 * si_decompress_subresource.
 	 */
@@ -374,39 +381,42 @@ si_decompress_depth(struct si_context *sctx,
 	}
 
 	if (inplace_planes) {
-		if (!tex->tc_compatible_htile) {
+		bool has_htile = r600_htile_enabled(tex, first_level);
+		bool tc_compat_htile = vi_tc_compat_htile_enabled(tex, first_level);
+
+		/* Don't decompress if there is no HTILE or when HTILE is
+		 * TC-compatible. */
+		if (has_htile && !tc_compat_htile) {
 			si_blit_decompress_zs_in_place(
 						sctx, tex,
 						levels_z, levels_s,
 						first_layer, last_layer);
+		} else {
+			/* This is only a cache flush.
+			 *
+			 * Only clear the mask that we are flushing, because
+			 * si_make_DB_shader_coherent() treats different levels
+			 * and depth and stencil differently.
+			 */
+			if (inplace_planes & PIPE_MASK_Z)
+				tex->dirty_level_mask &= ~levels_z;
+			if (inplace_planes & PIPE_MASK_S)
+				tex->stencil_dirty_level_mask &= ~levels_s;
 		}
 
 		/* Only in-place decompression needs to flush DB caches, or
 		 * when we don't decompress but TC-compatible planes are dirty.
 		 */
-		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_DB |
-				 SI_CONTEXT_INV_GLOBAL_L2 |
-				 SI_CONTEXT_INV_VMEM_L1;
-
-		/* If we flush DB caches for TC-compatible depth, the dirty
-		 * state becomes 0 for the whole mipmap tree and all planes.
-		 * (there is nothing else to flush)
-		 */
-		if (tex->tc_compatible_htile) {
-			if (r600_can_sample_zs(tex, false))
-				tex->dirty_level_mask = 0;
-			if (r600_can_sample_zs(tex, true))
-				tex->stencil_dirty_level_mask = 0;
-		}
+		si_make_DB_shader_coherent(sctx, tex->resource.b.b.nr_samples,
+					   inplace_planes & PIPE_MASK_S,
+					   tc_compat_htile);
 	}
 	/* set_framebuffer_state takes care of coherency for single-sample.
 	 * The DB->CB copy uses CB for the final writes.
 	 */
-	if (copy_planes && tex->resource.b.b.nr_samples > 1) {
-		sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
-				 SI_CONTEXT_INV_GLOBAL_L2 |
-				 SI_CONTEXT_FLUSH_AND_INV_CB;
-	}
+	if (copy_planes && tex->resource.b.b.nr_samples > 1)
+		si_make_CB_shader_coherent(sctx, tex->resource.b.b.nr_samples,
+					   false);
 }
 
 static void
@@ -453,6 +463,12 @@ static void si_blit_decompress_color(struct pipe_context *ctx,
 		level_mask &= rtex->dirty_level_mask;
 	if (!level_mask)
 		return;
+
+	if (unlikely(sctx->b.log))
+		u_log_printf(sctx->b.log,
+			     "\n------------------------------------------------\n"
+			     "Decompress Color (levels %u - %u, mask 0x%x)\n\n",
+			     first_level, last_level, level_mask);
 
 	if (rtex->dcc_offset && need_dcc_decompress) {
 		custom_blend = sctx->custom_blend_dcc_decompress;
@@ -511,10 +527,8 @@ static void si_blit_decompress_color(struct pipe_context *ctx,
 	}
 
 	sctx->decompression_enabled = false;
-
-	sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_CB |
-			 SI_CONTEXT_INV_GLOBAL_L2 |
-			 SI_CONTEXT_INV_VMEM_L1;
+	si_make_CB_shader_coherent(sctx, rtex->resource.b.b.nr_samples,
+				   vi_dcc_enabled(rtex, first_level));
 }
 
 static void
@@ -849,8 +863,8 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
 		}
 	}
 
-	if (zstex && zstex->htile_offset &&
-	    zsbuf->u.tex.level == 0 &&
+	if (zstex &&
+	    r600_htile_enabled(zstex, zsbuf->u.tex.level) &&
 	    zsbuf->u.tex.first_layer == 0 &&
 	    zsbuf->u.tex.last_layer == util_max_layer(&zstex->resource.b.b, 0)) {
 		/* TC-compatible HTILE only supports depth clears to 0 or 1. */
@@ -1203,9 +1217,7 @@ static void si_do_CB_resolve(struct si_context *sctx,
 	si_blitter_end(&sctx->b.b);
 
 	/* Flush caches for possible texturing. */
-	sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_CB |
-			 SI_CONTEXT_INV_GLOBAL_L2 |
-			 SI_CONTEXT_INV_VMEM_L1;
+	si_make_CB_shader_coherent(sctx, 1, false);
 }
 
 static bool do_hardware_msaa_resolve(struct pipe_context *ctx,

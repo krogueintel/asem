@@ -48,6 +48,8 @@ typedef unsigned int drm_drawable_t;
 typedef struct drm_clip_rect drm_clip_rect_t;
 #endif
 
+#include <stdint.h>
+
 /**
  * \name DRI interface structures
  *
@@ -1190,7 +1192,7 @@ struct __DRIdri2ExtensionRec {
  * by the driver (YUV planar formats) but serve as a base image for
  * creating sub-images for the different planes within the image.
  *
- * R8, GR88 and NONE should not be used with createImageFormName or
+ * R8, GR88 and NONE should not be used with createImageFromName or
  * createImage, and are returned by query from sub images created with
  * createImageFromNames (NONE, see above) and fromPlane (R8 & GR88).
  */
@@ -1211,7 +1213,7 @@ struct __DRIdri2ExtensionRec {
 
 #define __DRI_IMAGE_USE_SHARE		0x0001
 #define __DRI_IMAGE_USE_SCANOUT		0x0002
-#define __DRI_IMAGE_USE_CURSOR		0x0004 /* Depricated */
+#define __DRI_IMAGE_USE_CURSOR		0x0004 /* Deprecated */
 #define __DRI_IMAGE_USE_LINEAR		0x0008
 /* The buffer will only be read by an external process after SwapBuffers,
  * in contrary to gbm buffers, front buffers and fake front buffers, which

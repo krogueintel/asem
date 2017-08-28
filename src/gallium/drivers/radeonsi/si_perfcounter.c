@@ -403,6 +403,30 @@ static struct si_pc_block groups_VI[] = {
 
 };
 
+static struct si_pc_block groups_gfx9[] = {
+	{ &cik_CB, 438, 4 },
+	{ &cik_CPF, 32 },
+	{ &cik_DB, 328, 4 },
+	{ &cik_GRBM, 38 },
+	{ &cik_GRBMSE, 16 },
+	{ &cik_PA_SU, 292 },
+	{ &cik_PA_SC, 491 },
+	{ &cik_SPI, 196 },
+	{ &cik_SQ, 374 },
+	{ &cik_SX, 208 },
+	{ &cik_TA, 119, 16 },
+	{ &cik_TCA, 35, 2 },
+	{ &cik_TCC, 256, 16 },
+	{ &cik_TD, 57, 16 },
+	{ &cik_TCP, 85, 16 },
+	{ &cik_GDS, 121 },
+	{ &cik_VGT, 148 },
+	{ &cik_IA, 32 },
+	{ &cik_WD, 58 },
+	{ &cik_CPG, 59 },
+	{ &cik_CPC, 35 },
+};
+
 static void si_pc_get_size(struct r600_perfcounter_block *group,
 			unsigned count, unsigned *selectors,
 			unsigned *num_select_dw, unsigned *num_read_dw)
@@ -590,8 +614,9 @@ static void si_pc_emit_stop(struct r600_common_context *ctx,
 {
 	struct radeon_winsys_cs *cs = ctx->gfx.cs;
 
-	r600_gfx_write_event_eop(ctx, EVENT_TYPE_BOTTOM_OF_PIPE_TS, 0, 1,
-				 buffer, va, 1, 0);
+	r600_gfx_write_event_eop(ctx, EVENT_TYPE_BOTTOM_OF_PIPE_TS, 0,
+				 EOP_DATA_SEL_VALUE_32BIT,
+				 buffer, va, 0, R600_NOT_QUERY);
 	r600_gfx_wait_fence(ctx, va, 0, 0xffffffff);
 
 	radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
@@ -671,8 +696,11 @@ void si_init_perfcounters(struct si_screen *screen)
 		blocks = groups_VI;
 		num_blocks = ARRAY_SIZE(groups_VI);
 		break;
-	case SI:
 	case GFX9:
+		blocks = groups_gfx9;
+		num_blocks = ARRAY_SIZE(groups_gfx9);
+		break;
+	case SI:
 	default:
 		return; /* not implemented */
 	}

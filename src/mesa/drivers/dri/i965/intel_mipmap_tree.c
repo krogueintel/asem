@@ -25,6 +25,7 @@
 
 #include <GL/gl.h>
 #include <GL/internal/dri_interface.h>
+#include <drm_fourcc.h>
 
 #include "intel_batchbuffer.h"
 #include "intel_image.h"
@@ -596,6 +597,7 @@ make_surface(struct brw_context *brw, GLenum target, mesa_format format,
    mt->aux_state = NULL;
    mt->cpp = isl_format_get_layout(mt->surf.format)->bpb / 8;
    mt->compressed = _mesa_is_format_compressed(format);
+   mt->drm_modifier = DRM_FORMAT_MOD_INVALID;
 
    return mt;
 
@@ -618,7 +620,7 @@ make_separate_stencil_surface(struct brw_context *brw,
                                  mt->surf.samples, ISL_TILING_W_BIT,
                                  ISL_SURF_USAGE_STENCIL_BIT |
                                  ISL_SURF_USAGE_TEXTURE_BIT,
-                                 BO_ALLOC_FOR_RENDER, 0, NULL);
+                                 BO_ALLOC_BUSY, 0, NULL);
 
    if (!mt->stencil_mt)
       return false;
@@ -646,7 +648,7 @@ miptree_create(struct brw_context *brw,
                           ISL_TILING_W_BIT,
                           ISL_SURF_USAGE_STENCIL_BIT |
                           ISL_SURF_USAGE_TEXTURE_BIT,
-                          BO_ALLOC_FOR_RENDER,
+                          BO_ALLOC_BUSY,
                           0,
                           NULL);
 
@@ -664,7 +666,7 @@ miptree_create(struct brw_context *brw,
          first_level, last_level,
          width0, height0, depth0, num_samples, ISL_TILING_Y0_BIT,
          ISL_SURF_USAGE_DEPTH_BIT | ISL_SURF_USAGE_TEXTURE_BIT,
-         BO_ALLOC_FOR_RENDER, 0, NULL);
+         BO_ALLOC_BUSY, 0, NULL);
 
       if (needs_separate_stencil(brw, mt, format) &&
           !make_separate_stencil_surface(brw, mt)) {
@@ -687,7 +689,7 @@ miptree_create(struct brw_context *brw,
    etc_format = (format != tex_format) ? tex_format : MESA_FORMAT_NONE;
 
    if (flags & MIPTREE_CREATE_BUSY)
-      alloc_flags |= BO_ALLOC_FOR_RENDER;
+      alloc_flags |= BO_ALLOC_BUSY;
 
    isl_tiling_flags_t tiling_flags = (flags & MIPTREE_CREATE_LINEAR) ?
       ISL_TILING_LINEAR_BIT : ISL_TILING_ANY_MASK;
@@ -771,7 +773,7 @@ intel_miptree_create_for_bo(struct brw_context *brw,
                         brw->gen >= 6 ? depth_only_format : format,
                         0, 0, width, height, depth, 1, ISL_TILING_Y0_BIT,
                         ISL_SURF_USAGE_DEPTH_BIT | ISL_SURF_USAGE_TEXTURE_BIT,
-                        BO_ALLOC_FOR_RENDER, pitch, bo);
+                        BO_ALLOC_BUSY, pitch, bo);
       if (!mt)
          return NULL;
 
@@ -787,7 +789,7 @@ intel_miptree_create_for_bo(struct brw_context *brw,
                         ISL_TILING_W_BIT,
                         ISL_SURF_USAGE_STENCIL_BIT |
                         ISL_SURF_USAGE_TEXTURE_BIT,
-                        BO_ALLOC_FOR_RENDER, pitch, bo);
+                        BO_ALLOC_BUSY, pitch, bo);
       if (!mt)
          return NULL;
 
@@ -876,7 +878,60 @@ miptree_create_for_planar_image(struct brw_context *brw,
          planar_mt->plane[i - 1] = mt;
    }
 
+   planar_mt->drm_modifier = image->modifier;
+
    return planar_mt;
+}
+
+static bool
+create_ccs_buf_for_image(struct brw_context *brw,
+                         __DRIimage *image,
+                         struct intel_mipmap_tree *mt,
+                         enum isl_aux_state initial_state)
+{
+   struct isl_surf temp_ccs_surf;
+
+   /* CCS is only supported for very simple miptrees */
+   assert(image->aux_offset != 0 && image->aux_pitch != 0);
+   assert(image->tile_x == 0 && image->tile_y == 0);
+   assert(mt->surf.samples == 1);
+   assert(mt->surf.levels == 1);
+   assert(mt->surf.logical_level0_px.depth == 1);
+   assert(mt->surf.logical_level0_px.array_len == 1);
+   assert(mt->first_level == 0);
+   assert(mt->last_level == 0);
+
+   /* We shouldn't already have a CCS */
+   assert(!mt->mcs_buf);
+
+   if (!isl_surf_get_ccs_surf(&brw->isl_dev, &mt->surf, &temp_ccs_surf,
+                              image->aux_pitch))
+      return false;
+
+   assert(image->aux_offset < image->bo->size);
+   assert(temp_ccs_surf.size <= image->bo->size - image->aux_offset);
+
+   mt->mcs_buf = calloc(sizeof(*mt->mcs_buf), 1);
+   if (mt->mcs_buf == NULL)
+      return false;
+
+   mt->aux_state = create_aux_state_map(mt, initial_state);
+   if (!mt->aux_state) {
+      free(mt->mcs_buf);
+      mt->mcs_buf = NULL;
+      return false;
+   }
+
+   mt->mcs_buf->bo = image->bo;
+   brw_bo_reference(image->bo);
+
+   mt->mcs_buf->offset = image->aux_offset;
+   mt->mcs_buf->size = image->bo->size - image->aux_offset;
+   mt->mcs_buf->pitch = image->aux_pitch;
+   mt->mcs_buf->qpitch = 0;
+   mt->mcs_buf->surf = temp_ccs_surf;
+
+   return true;
 }
 
 struct intel_mipmap_tree *
@@ -928,15 +983,25 @@ intel_miptree_create_for_dri_image(struct brw_context *brw,
    if (!brw->ctx.TextureFormatSupported[format])
       return NULL;
 
+   const struct isl_drm_modifier_info *mod_info =
+      isl_drm_modifier_get_info(image->modifier);
+
+   enum intel_miptree_create_flags mt_create_flags = 0;
+
    /* If this image comes in from a window system, we have different
     * requirements than if it comes in via an EGL import operation.  Window
     * system images can use any form of auxiliary compression we wish because
     * they get "flushed" before being handed off to the window system and we
-    * have the opportunity to do resolves.  Window system buffers also may be
-    * used for scanout so we need to flag that appropriately.
+    * have the opportunity to do resolves.  Non window-system images, on the
+    * other hand, have no resolve point so we can't have aux without a
+    * modifier.
     */
-   const enum intel_miptree_create_flags mt_create_flags =
-      is_winsys_image ? 0 : MIPTREE_CREATE_NO_AUX;
+   if (!is_winsys_image)
+      mt_create_flags |= MIPTREE_CREATE_NO_AUX;
+
+   /* If we have a modifier which specifies aux, don't create one yet */
+   if (mod_info && mod_info->aux_usage != ISL_AUX_USAGE_NONE)
+      mt_create_flags |= MIPTREE_CREATE_NO_AUX;
 
    /* Disable creation of the texture's aux buffers because the driver exposes
     * no EGL API to manage them. That is, there is no API for resolving the aux
@@ -953,6 +1018,7 @@ intel_miptree_create_for_dri_image(struct brw_context *brw,
    mt->target = target;
    mt->level[0].level_x = image->tile_x;
    mt->level[0].level_y = image->tile_y;
+   mt->drm_modifier = image->modifier;
 
    /* From "OES_EGL_image" error reporting. We report GL_INVALID_OPERATION
     * for EGL images from non-tile aligned sufaces in gen4 hw and earlier which has
@@ -969,12 +1035,36 @@ intel_miptree_create_for_dri_image(struct brw_context *brw,
       }
    }
 
-   /* If this is a window-system image, then we can no longer assume it's
-    * cache-coherent because it may suddenly get scanned out which destroys
-    * coherency.
+   if (mod_info && mod_info->aux_usage != ISL_AUX_USAGE_NONE) {
+      assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E);
+
+      mt->aux_usage = mod_info->aux_usage;
+      /* If we are a window system buffer, then we can support fast-clears
+       * even if the modifier doesn't support them by doing a partial resolve
+       * as part of the flush operation.
+       */
+      mt->supports_fast_clear =
+         is_winsys_image || mod_info->supports_clear_color;
+
+      /* We don't know the actual state of the surface when we get it but we
+       * can make a pretty good guess based on the modifier.  What we do know
+       * for sure is that it isn't in the AUX_INVALID state, so we just assume
+       * a worst case of compression.
+       */
+      enum isl_aux_state initial_state =
+         mod_info->supports_clear_color ? ISL_AUX_STATE_COMPRESSED_CLEAR :
+                                          ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
+
+      if (!create_ccs_buf_for_image(brw, image, mt, initial_state)) {
+         intel_miptree_release(&mt);
+         return NULL;
+      }
+   }
+
+   /* Don't assume coherency for imported EGLimages.  We don't know what
+    * external clients are going to do with it.  They may scan it out.
     */
-   if (is_winsys_image)
-      image->bo->cache_coherent = false;
+   image->bo->cache_coherent = false;
 
    return mt;
 }
@@ -1656,7 +1746,7 @@ intel_miptree_alloc_ccs(struct brw_context *brw,
     * fast-clear operation.  In that case, being hot in caches more useful.
     */
    const uint32_t alloc_flags = mt->aux_usage == ISL_AUX_USAGE_CCS_E ?
-                                BO_ALLOC_ZEROED : BO_ALLOC_FOR_RENDER;
+                                BO_ALLOC_ZEROED : BO_ALLOC_BUSY;
    mt->mcs_buf = intel_alloc_aux_buffer(brw, "ccs-miptree",
                                         &temp_ccs_surf, alloc_flags, mt);
    if (!mt->mcs_buf) {
@@ -1721,7 +1811,7 @@ intel_miptree_alloc_hiz(struct brw_context *brw,
       isl_surf_get_hiz_surf(&brw->isl_dev, &mt->surf, &temp_hiz_surf);
    assert(ok);
 
-   const uint32_t alloc_flags = BO_ALLOC_FOR_RENDER;
+   const uint32_t alloc_flags = BO_ALLOC_BUSY;
    mt->hiz_buf = intel_alloc_aux_buffer(brw, "hiz-miptree",
                                         &temp_hiz_surf, alloc_flags, mt);
 
@@ -2481,7 +2571,20 @@ intel_miptree_texture_aux_usage(struct brw_context *brw,
 
    case ISL_AUX_USAGE_CCS_D:
    case ISL_AUX_USAGE_CCS_E:
-      if (mt->mcs_buf && can_texture_with_ccs(brw, mt, view_format))
+      if (!mt->mcs_buf) {
+         assert(mt->aux_usage == ISL_AUX_USAGE_CCS_D);
+         return ISL_AUX_USAGE_NONE;
+      }
+
+      /* If we don't have any unresolved color, report an aux usage of
+       * ISL_AUX_USAGE_NONE.  This way, texturing won't even look at the
+       * aux surface and we can save some bandwidth.
+       */
+      if (!intel_miptree_has_color_unresolved(mt, 0, INTEL_REMAINING_LEVELS,
+                                              0, INTEL_REMAINING_LAYERS))
+         return ISL_AUX_USAGE_NONE;
+
+      if (can_texture_with_ccs(brw, mt, view_format))
          return ISL_AUX_USAGE_CCS_E;
       break;
 
@@ -2651,6 +2754,37 @@ intel_miptree_finish_depth(struct brw_context *brw,
       intel_miptree_finish_write(brw, mt, level, start_layer, layer_count,
                                  mt->hiz_buf != NULL);
    }
+}
+
+void
+intel_miptree_prepare_external(struct brw_context *brw,
+                               struct intel_mipmap_tree *mt)
+{
+   enum isl_aux_usage aux_usage = ISL_AUX_USAGE_NONE;
+   bool supports_fast_clear = false;
+
+   const struct isl_drm_modifier_info *mod_info =
+      isl_drm_modifier_get_info(mt->drm_modifier);
+
+   if (mod_info && mod_info->aux_usage != ISL_AUX_USAGE_NONE) {
+      /* CCS_E is the only supported aux for external images and it's only
+       * supported on very simple images.
+       */
+      assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E);
+      assert(_mesa_is_format_color_format(mt->format));
+      assert(mt->first_level == 0 && mt->last_level == 0);
+      assert(mt->surf.logical_level0_px.depth == 1);
+      assert(mt->surf.logical_level0_px.array_len == 1);
+      assert(mt->surf.samples == 1);
+      assert(mt->mcs_buf != NULL);
+
+      aux_usage = mod_info->aux_usage;
+      supports_fast_clear = mod_info->supports_clear_color;
+   }
+
+   intel_miptree_prepare_access(brw, mt, 0, INTEL_REMAINING_LEVELS,
+                                0, INTEL_REMAINING_LAYERS,
+                                aux_usage, supports_fast_clear);
 }
 
 /**
@@ -2833,7 +2967,7 @@ intel_update_r8stencil(struct brw_context *brw,
                             src->surf.samples,
                             ISL_TILING_Y0_BIT,
                             ISL_SURF_USAGE_TEXTURE_BIT,
-                            BO_ALLOC_FOR_RENDER, 0, NULL);
+                            BO_ALLOC_BUSY, 0, NULL);
       assert(mt->r8stencil_mt);
    }
 

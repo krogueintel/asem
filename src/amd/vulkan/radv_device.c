@@ -178,6 +178,10 @@ static const VkExtensionProperties ext_sema_device_extensions[] = {
 		.extensionName = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
 		.specVersion = 1,
 	},
+	{
+		.extensionName = VK_KHX_MULTIVIEW_EXTENSION_NAME,
+		.specVersion = 1,
+	},
 };
 
 static VkResult
@@ -628,6 +632,13 @@ void radv_GetPhysicalDeviceFeatures2KHR(
 			features->variablePointers = false;
 			break;
 		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES_KHX: {
+			VkPhysicalDeviceMultiviewFeaturesKHX *features = (VkPhysicalDeviceMultiviewFeaturesKHX*)ext;
+			features->multiview = true;
+			features->multiviewGeometryShader = true;
+			features->multiviewTessellationShader = true;
+			break;
+		}
 		default:
 			break;
 		}
@@ -802,6 +813,12 @@ void radv_GetPhysicalDeviceProperties2KHR(
 			memcpy(properties->driverUUID, pdevice->driver_uuid, VK_UUID_SIZE);
 			memcpy(properties->deviceUUID, pdevice->device_uuid, VK_UUID_SIZE);
 			properties->deviceLUIDValid = false;
+			break;
+		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES_KHX: {
+			VkPhysicalDeviceMultiviewPropertiesKHX *properties = (VkPhysicalDeviceMultiviewPropertiesKHX*)ext;
+			properties->maxMultiviewViewCount = MAX_VIEWS;
+			properties->maxMultiviewInstanceIndex = INT_MAX;
 			break;
 		}
 		default:
@@ -2983,6 +3000,7 @@ radv_initialise_color_surface(struct radv_device *device,
 			S_028C74_PIPE_ALIGNED(meta.pipe_aligned);
 
 		cb->cb_color_base += iview->image->surface.u.gfx9.surf_offset >> 8;
+		cb->cb_color_base |= iview->image->surface.tile_swizzle;
 	} else {
 		const struct legacy_surf_level *level_info = &surf->u.legacy.level[iview->base_mip];
 		unsigned pitch_tile_max, slice_tile_max, tile_mode_index;
@@ -3024,8 +3042,7 @@ radv_initialise_color_surface(struct radv_device *device,
 	va = device->ws->buffer_get_va(iview->bo) + iview->image->offset;
 	va += iview->image->dcc_offset;
 	cb->cb_dcc_base = va >> 8;
-	if (device->physical_device->rad_info.chip_class < GFX9)
-		cb->cb_dcc_base |= iview->image->surface.tile_swizzle;
+	cb->cb_dcc_base |= iview->image->surface.tile_swizzle;
 
 	uint32_t max_slice = radv_surface_layer_count(iview);
 	cb->cb_color_view = S_028C6C_SLICE_START(iview->base_layer) |
@@ -3041,8 +3058,7 @@ radv_initialise_color_surface(struct radv_device *device,
 	if (iview->image->fmask.size) {
 		va = device->ws->buffer_get_va(iview->bo) + iview->image->offset + iview->image->fmask.offset;
 		cb->cb_color_fmask = va >> 8;
-		if (device->physical_device->rad_info.chip_class < GFX9)
-			cb->cb_color_fmask |= iview->image->fmask.tile_swizzle;
+		cb->cb_color_fmask |= iview->image->fmask.tile_swizzle;
 	} else {
 		cb->cb_color_fmask = cb->cb_color_base;
 	}
@@ -3131,9 +3147,9 @@ radv_initialise_color_surface(struct radv_device *device,
 		cb->cb_color_view |= S_028C6C_MIP_LEVEL(iview->base_mip);
 		cb->cb_color_attrib |= S_028C74_MIP0_DEPTH(mip0_depth) |
 			S_028C74_RESOURCE_TYPE(iview->image->surface.u.gfx9.resource_type);
-		cb->cb_color_attrib2 = S_028C68_MIP0_WIDTH(iview->image->info.width - 1) |
-			S_028C68_MIP0_HEIGHT(iview->image->info.height - 1) |
-			S_028C68_MAX_MIP(iview->image->info.levels);
+		cb->cb_color_attrib2 = S_028C68_MIP0_WIDTH(iview->extent.width - 1) |
+			S_028C68_MIP0_HEIGHT(iview->extent.height - 1) |
+			S_028C68_MAX_MIP(iview->image->info.levels - 1);
 
 		cb->gfx9_epitch = S_0287A0_EPITCH(iview->image->surface.u.gfx9.surf.epitch);
 
