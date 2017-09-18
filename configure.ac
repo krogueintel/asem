@@ -282,85 +282,50 @@ esac
 
 AM_CONDITIONAL(HAVE_ANDROID, test "x$android" = xyes)
 
-dnl Add flags for gcc and g++
-if test "x$GCC" = xyes; then
-    CFLAGS="$CFLAGS -Wall"
+dnl
+dnl Check compiler flags
+dnl
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall"])
+AX_CHECK_COMPILE_FLAG([-Werror=implicit-function-declaration], [CFLAGS="$CFLAGS -Werror=implicit-function-declaration"])
+AX_CHECK_COMPILE_FLAG([-Werror=missing-prototypes],            [CFLAGS="$CFLAGS -Werror=missing-prototypes"])
+AX_CHECK_COMPILE_FLAG([-Wmissing-prototypes],                  [CFLAGS="$CFLAGS -Wmissing-prototypes"])
+AX_CHECK_COMPILE_FLAG([-fno-math-errno],                       [CFLAGS="$CFLAGS -fno-math-errno"])
+AX_CHECK_COMPILE_FLAG([-fno-trapping-math],                    [CFLAGS="$CFLAGS -fno-trapping-math"])
+AX_CHECK_COMPILE_FLAG([-fvisibility=hidden],                   [VISIBILITY_CFLAGS="-fvisibility=hidden"])
 
+dnl
+dnl Check C++ compiler flags
+dnl
+AC_LANG_PUSH([C++])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall"])
+AX_CHECK_COMPILE_FLAG([-fno-math-errno],                       [CXXFLAGS="$CXXFLAGS -fno-math-errno"])
+AX_CHECK_COMPILE_FLAG([-fno-trapping-math],                    [CXXFLAGS="$CXXFLAGS -fno-trapping-math"])
+AX_CHECK_COMPILE_FLAG([-fvisibility=hidden],                   [VISIBILITY_CXXFLAGS="-fvisibility=hidden"])
+AC_LANG_POP([C++])
+
+# Flags to help ensure that certain portions of the code -- and only those
+# portions -- can be built with MSVC:
+# - src/util, src/gallium/auxiliary, rc/gallium/drivers/llvmpipe, and
+# - non-Linux/Posix OpenGL portions needs to build on MSVC 2013 (which
+#   supports most of C99)
+# - the rest has no compiler compiler restrictions
+AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CFLAGS="-Werror=pointer-arith"])
+AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CFLAGS="-Werror=vla"])
+AC_LANG_PUSH([C++])
+AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CXXFLAGS="-Werror=pointer-arith"])
+AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CXXFLAGS="-Werror=vla"])
+AC_LANG_POP([C++])
+
+AC_SUBST([MSVC2013_COMPAT_CFLAGS])
+AC_SUBST([MSVC2013_COMPAT_CXXFLAGS])
+
+if test "x$GCC" = xyes; then
     if test "x$USE_GNU99" = xyes; then
         CFLAGS="$CFLAGS -std=gnu99"
     else
         CFLAGS="$CFLAGS -std=c99"
     fi
-
-    # Enable -Werror=implicit-function-declaration and
-    # -Werror=missing-prototypes, if available, or otherwise, just
-    # -Wmissing-prototypes.  This is particularly useful to avoid
-    # generating a loadable driver module that has undefined symbols.
-    save_CFLAGS="$CFLAGS"
-    AC_MSG_CHECKING([whether $CC supports -Werror=missing-prototypes])
-    CFLAGS="$CFLAGS -Werror=implicit-function-declaration"
-    CFLAGS="$CFLAGS -Werror=missing-prototypes"
-    AC_LINK_IFELSE([AC_LANG_PROGRAM()],
-                   AC_MSG_RESULT([yes]),
-                   [CFLAGS="$save_CFLAGS -Wmissing-prototypes";
-                    AC_MSG_RESULT([no])])
-
-    # Enable -fvisibility=hidden if using a gcc that supports it
-    save_CFLAGS="$CFLAGS"
-    AC_MSG_CHECKING([whether $CC supports -fvisibility=hidden])
-    VISIBILITY_CFLAGS="-fvisibility=hidden"
-    CFLAGS="$CFLAGS $VISIBILITY_CFLAGS"
-    AC_LINK_IFELSE([AC_LANG_PROGRAM()], AC_MSG_RESULT([yes]),
-                   [VISIBILITY_CFLAGS=""; AC_MSG_RESULT([no])])
-
-    # Restore CFLAGS; VISIBILITY_CFLAGS are added to it where needed.
-    CFLAGS=$save_CFLAGS
-
-    # We don't want floating-point math functions to set errno or trap
-    CFLAGS="$CFLAGS -fno-math-errno -fno-trapping-math"
-
-    # Flags to help ensure that certain portions of the code -- and only those
-    # portions -- can be built with MSVC:
-    # - src/util, src/gallium/auxiliary, rc/gallium/drivers/llvmpipe, and
-    # - non-Linux/Posix OpenGL portions needs to build on MSVC 2013 (which
-    #   supports most of C99)
-    # - the rest has no compiler compiler restrictions
-    MSVC2013_COMPAT_CFLAGS="-Werror=pointer-arith"
-    MSVC2013_COMPAT_CXXFLAGS="-Werror=pointer-arith"
-
-    # Enable -Werror=vla if compiler supports it
-    save_CFLAGS="$CFLAGS"
-    AC_MSG_CHECKING([whether $CC supports -Werror=vla])
-    CFLAGS="$CFLAGS -Werror=vla"
-    AC_LINK_IFELSE([AC_LANG_PROGRAM()],
-                   [MSVC2013_COMPAT_CFLAGS="$MSVC2013_COMPAT_CFLAGS -Werror=vla";
-                    MSVC2013_COMPAT_CXXFLAGS="$MSVC2013_COMPAT_CXXFLAGS -Werror=vla";
-                    AC_MSG_RESULT([yes])],
-                    AC_MSG_RESULT([no]))
-    CFLAGS="$save_CFLAGS"
 fi
-if test "x$GXX" = xyes; then
-    CXXFLAGS="$CXXFLAGS -Wall"
-
-    # Enable -fvisibility=hidden if using a gcc that supports it
-    save_CXXFLAGS="$CXXFLAGS"
-    AC_MSG_CHECKING([whether $CXX supports -fvisibility=hidden])
-    VISIBILITY_CXXFLAGS="-fvisibility=hidden"
-    CXXFLAGS="$CXXFLAGS $VISIBILITY_CXXFLAGS"
-    AC_LANG_PUSH([C++])
-    AC_LINK_IFELSE([AC_LANG_PROGRAM()], AC_MSG_RESULT([yes]),
-                   [VISIBILITY_CXXFLAGS="" ; AC_MSG_RESULT([no])])
-    AC_LANG_POP([C++])
-
-    # Restore CXXFLAGS; VISIBILITY_CXXFLAGS are added to it where needed.
-    CXXFLAGS=$save_CXXFLAGS
-
-    # We don't want floating-point math functions to set errno or trap
-    CXXFLAGS="$CXXFLAGS -fno-math-errno -fno-trapping-math"
-fi
-
-AC_SUBST([MSVC2013_COMPAT_CFLAGS])
-AC_SUBST([MSVC2013_COMPAT_CXXFLAGS])
 
 dnl even if the compiler appears to support it, using visibility attributes isn't
 dnl going to do anything useful currently on cygwin apart from emit lots of warnings
@@ -373,6 +338,10 @@ esac
 
 AC_SUBST([VISIBILITY_CFLAGS])
 AC_SUBST([VISIBILITY_CXXFLAGS])
+
+AX_CHECK_COMPILE_FLAG([-Wno-override-init],                    [WNO_OVERRIDE_INIT="-Wno-override-init"])         # gcc
+AX_CHECK_COMPILE_FLAG([-Wno-initializer-overrides],            [WNO_OVERRIDE_INIT="-Wno-initializer-overrides"]) # clang
+AC_SUBST([WNO_OVERRIDE_INIT])
 
 dnl
 dnl Optional flags, check for compiler support
@@ -826,6 +795,27 @@ AC_CHECK_HEADER([sys/sysctl.h], [DEFINES="$DEFINES -DHAVE_SYS_SYSCTL_H"])
 AC_CHECK_FUNC([strtof], [DEFINES="$DEFINES -DHAVE_STRTOF"])
 AC_CHECK_FUNC([mkostemp], [DEFINES="$DEFINES -DHAVE_MKOSTEMP"])
 
+AC_MSG_CHECKING([whether strtod has locale support])
+AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #define _GNU_SOURCE
+    #include <stdlib.h>
+    #include <locale.h>
+    #ifdef HAVE_XLOCALE_H
+    #include <xlocale.h>
+    #endif
+    int main() {
+       locale_t loc = newlocale(LC_CTYPE_MASK, "C", NULL);
+       const char *s = "1.0";
+       char *end;
+       double d = strtod_l(s, end, loc);
+       float f = strtof_l(s, end, loc);
+       freelocale(loc);
+       return 0;
+    }]])],
+  [DEFINES="$DEFINES -DHAVE_STRTOD_L"];
+   AC_MSG_RESULT([yes]),
+   AC_MSG_RESULT([no]))
+
 dnl Check to see if dlopen is in default libraries (like Solaris, which
 dnl has it in libc), or if libdl is needed to get it.
 AC_CHECK_FUNC([dlopen], [DEFINES="$DEFINES -DHAVE_DLOPEN"],
@@ -1238,9 +1228,14 @@ AC_ARG_ENABLE([vdpau],
    [enable_vdpau=auto])
 AC_ARG_ENABLE([omx],
    [AS_HELP_STRING([--enable-omx],
-         [enable OpenMAX library @<:@default=disabled@:>@])],
-   [enable_omx="$enableval"],
-   [enable_omx=no])
+         [DEPRECATED: Use --enable-omx-bellagio instead @<:@default=auto@:>@])],
+   [AC_MSG_ERROR([--enable-omx is deprecated. Use --enable-omx-bellagio instead.])],
+   [])
+AC_ARG_ENABLE([omx-bellagio],
+   [AS_HELP_STRING([--enable-omx-bellagio],
+         [enable OpenMAX Bellagio library @<:@default=disabled@:>@])],
+   [enable_omx_bellagio="$enableval"],
+   [enable_omx_bellagio=no])
 AC_ARG_ENABLE([va],
    [AS_HELP_STRING([--enable-va],
          [enable va library @<:@default=auto@:>@])],
@@ -1291,7 +1286,7 @@ if test "x$enable_opengl" = xno -a \
         "x$enable_xa" = xno -a \
         "x$enable_xvmc" = xno -a \
         "x$enable_vdpau" = xno -a \
-        "x$enable_omx" = xno -a \
+        "x$enable_omx_bellagio" = xno -a \
         "x$enable_va" = xno -a \
         "x$enable_opencl" = xno; then
     AC_MSG_ERROR([at least one API should be enabled])
@@ -2136,8 +2131,8 @@ if test -n "$with_gallium_drivers" -a "x$with_gallium_drivers" != xswrast; then
         PKG_CHECK_EXISTS([vdpau >= $VDPAU_REQUIRED], [enable_vdpau=yes], [enable_vdpau=no])
     fi
 
-    if test "x$enable_omx" = xauto -a "x$have_omx_platform" = xyes; then
-        PKG_CHECK_EXISTS([libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED], [enable_omx=yes], [enable_omx=no])
+    if test "x$enable_omx_bellagio" = xauto -a "x$have_omx_platform" = xyes; then
+        PKG_CHECK_EXISTS([libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED], [enable_omx_bellagio=yes], [enable_omx_bellagio=no])
     fi
 
     if test "x$enable_va" = xauto -a "x$have_va_platform" = xyes; then
@@ -2148,7 +2143,7 @@ fi
 if test "x$enable_dri" = xyes -o \
         "x$enable_xvmc" = xyes -o \
         "x$enable_vdpau" = xyes -o \
-        "x$enable_omx" = xyes -o \
+        "x$enable_omx_bellagio" = xyes -o \
         "x$enable_va" = xyes; then
     need_gallium_vl=yes
 fi
@@ -2156,7 +2151,7 @@ AM_CONDITIONAL(NEED_GALLIUM_VL, test "x$need_gallium_vl" = xyes)
 
 if test "x$enable_xvmc" = xyes -o \
         "x$enable_vdpau" = xyes -o \
-        "x$enable_omx" = xyes -o \
+        "x$enable_omx_bellagio" = xyes -o \
         "x$enable_va" = xyes; then
     PKG_CHECK_MODULES([VL], [x11-xcb xcb xcb-dri2 >= $XCBDRI2_REQUIRED])
     need_gallium_vl_winsys=yes
@@ -2182,14 +2177,14 @@ if test "x$enable_vdpau" = xyes; then
 fi
 AM_CONDITIONAL(HAVE_ST_VDPAU, test "x$enable_vdpau" = xyes)
 
-if test "x$enable_omx" = xyes; then
+if test "x$enable_omx_bellagio" = xyes; then
     if test "x$have_omx_platform" != xyes; then
         AC_MSG_ERROR([OMX requires at least one of the x11 or drm platforms])
     fi
-    PKG_CHECK_MODULES([OMX], [libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED])
-    gallium_st="$gallium_st omx"
+    PKG_CHECK_MODULES([OMX_BELLAGIO], [libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED])
+    gallium_st="$gallium_st omx_bellagio"
 fi
-AM_CONDITIONAL(HAVE_ST_OMX, test "x$enable_omx" = xyes)
+AM_CONDITIONAL(HAVE_ST_OMX_BELLAGIO, test "x$enable_omx_bellagio" = xyes)
 
 if test "x$enable_va" = xyes; then
     if test "x$have_va_platform" != xyes; then
@@ -2351,15 +2346,15 @@ AC_ARG_WITH([vdpau-libdir],
     [VDPAU_LIB_INSTALL_DIR='${libdir}/vdpau'])
 AC_SUBST([VDPAU_LIB_INSTALL_DIR])
 
-dnl Directory for OMX libs
+dnl Directory for OMX_BELLAGIO libs
 
-AC_ARG_WITH([omx-libdir],
-    [AS_HELP_STRING([--with-omx-libdir=DIR],
-        [directory for the OMX libraries])],
-    [OMX_LIB_INSTALL_DIR="$withval"],
-    [OMX_LIB_INSTALL_DIR=`$PKG_CONFIG --exists libomxil-bellagio && \
-                          $PKG_CONFIG --define-variable=libdir=\$libdir --variable=pluginsdir libomxil-bellagio`])
-AC_SUBST([OMX_LIB_INSTALL_DIR])
+AC_ARG_WITH([omx-bellagio-libdir],
+    [AS_HELP_STRING([--with-omx-bellagio-libdir=DIR],
+        [directory for the OMX_BELLAGIO libraries])],
+    [OMX_BELLAGIO_LIB_INSTALL_DIR="$withval"],
+    [OMX_BELLAGIO_LIB_INSTALL_DIR=`$PKG_CONFIG --exists libomxil-bellagio && \
+                                   $PKG_CONFIG --define-variable=libdir=\$libdir --variable=pluginsdir libomxil-bellagio`])
+AC_SUBST([OMX_BELLAGIO_LIB_INSTALL_DIR])
 
 dnl Directory for VA libs
 
@@ -2862,7 +2857,7 @@ AC_CONFIG_FILES([Makefile
                  src/gallium/state_trackers/dri/Makefile
                  src/gallium/state_trackers/glx/xlib/Makefile
                  src/gallium/state_trackers/nine/Makefile
-                 src/gallium/state_trackers/omx/Makefile
+                 src/gallium/state_trackers/omx_bellagio/Makefile
                  src/gallium/state_trackers/osmesa/Makefile
                  src/gallium/state_trackers/va/Makefile
                  src/gallium/state_trackers/vdpau/Makefile
@@ -2872,7 +2867,7 @@ AC_CONFIG_FILES([Makefile
                  src/gallium/targets/d3dadapter9/d3d.pc
                  src/gallium/targets/dri/Makefile
                  src/gallium/targets/libgl-xlib/Makefile
-                 src/gallium/targets/omx/Makefile
+                 src/gallium/targets/omx-bellagio/Makefile
                  src/gallium/targets/opencl/Makefile
                  src/gallium/targets/opencl/mesa.icd
                  src/gallium/targets/osmesa/Makefile
@@ -2931,6 +2926,7 @@ AC_CONFIG_FILES([Makefile
                  src/mesa/drivers/osmesa/osmesa.pc
                  src/mesa/drivers/x11/Makefile
                  src/mesa/main/tests/Makefile
+                 src/mesa/state_tracker/tests/Makefile
                  src/util/Makefile
                  src/util/tests/hash_table/Makefile
                  src/util/xmlpool/Makefile

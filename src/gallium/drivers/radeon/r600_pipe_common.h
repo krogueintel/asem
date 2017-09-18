@@ -61,7 +61,8 @@ struct u_log_context;
 /* Pipeline & streamout query controls. */
 #define R600_CONTEXT_START_PIPELINE_STATS	(1u << 1)
 #define R600_CONTEXT_STOP_PIPELINE_STATS	(1u << 2)
-#define R600_CONTEXT_PRIVATE_FLAG		(1u << 3)
+#define R600_CONTEXT_FLUSH_FOR_RENDER_COND	(1u << 3)
+#define R600_CONTEXT_PRIVATE_FLAG		(1u << 4)
 
 /* special primitive types */
 #define R600_PRIM_RECTANGLE_LIST	PIPE_PRIM_MAX
@@ -69,20 +70,19 @@ struct u_log_context;
 #define R600_NOT_QUERY		0xffffffff
 
 /* Debug flags. */
-/* logging and features */
-#define DBG_TEX			(1 << 0)
-#define DBG_NIR			(1 << 1)
-#define DBG_COMPUTE		(1 << 2)
-#define DBG_VM			(1 << 3)
+#define DBG_VS			(1 << PIPE_SHADER_VERTEX)
+#define DBG_PS			(1 << PIPE_SHADER_FRAGMENT)
+#define DBG_GS			(1 << PIPE_SHADER_GEOMETRY)
+#define DBG_TCS			(1 << PIPE_SHADER_TESS_CTRL)
+#define DBG_TES			(1 << PIPE_SHADER_TESS_EVAL)
+#define DBG_CS			(1 << PIPE_SHADER_COMPUTE)
+#define DBG_ALL_SHADERS		(DBG_FS - 1)
+#define DBG_FS			(1 << 6) /* fetch shader */
+#define DBG_TEX			(1 << 7)
+#define DBG_NIR			(1 << 8)
+#define DBG_COMPUTE		(1 << 9)
 /* gap */
-/* shader logging */
-#define DBG_FS			(1 << 5)
-#define DBG_VS			(1 << 6)
-#define DBG_GS			(1 << 7)
-#define DBG_PS			(1 << 8)
-#define DBG_CS			(1 << 9)
-#define DBG_TCS			(1 << 10)
-#define DBG_TES			(1 << 11)
+#define DBG_VM			(1 << 11)
 #define DBG_NO_IR		(1 << 12)
 #define DBG_NO_TGSI		(1 << 13)
 #define DBG_NO_ASM		(1 << 14)
@@ -116,6 +116,8 @@ struct u_log_context;
 #define DBG_TEST_VMFAULT_CP	(1ull << 51)
 #define DBG_TEST_VMFAULT_SDMA	(1ull << 52)
 #define DBG_TEST_VMFAULT_SHADER	(1ull << 53)
+#define DBG_NO_DPBB		(1ull << 54)
+#define DBG_NO_DFSM		(1ull << 55)
 
 #define R600_MAP_BUFFER_ALIGNMENT 64
 #define R600_MAX_VIEWPORTS        16
@@ -454,6 +456,11 @@ struct r600_common_screen {
 		 */
 		unsigned cp_to_L2;
 
+		/* Context flags to set so that all writes from earlier jobs
+		 * that end in L2 are seen by CP.
+		 */
+		unsigned L2_to_cp;
+
 		/* Context flags to set so that all writes from earlier
 		 * compute jobs are seen by L2 clients.
 		 */
@@ -569,6 +576,7 @@ struct r600_common_context {
 	unsigned			gpu_reset_counter;
 	unsigned			last_dirty_tex_counter;
 	unsigned			last_compressed_colortex_counter;
+	unsigned			last_num_draw_calls;
 
 	struct threaded_context		*tc;
 	struct u_suballocator		*allocator_zeroed_memory;
@@ -757,9 +765,10 @@ unsigned r600_gfx_write_fence_dwords(struct r600_common_screen *screen);
 void r600_gfx_wait_fence(struct r600_common_context *ctx,
 			 uint64_t va, uint32_t ref, uint32_t mask);
 void r600_draw_rectangle(struct blitter_context *blitter,
-			 int x1, int y1, int x2, int y2, float depth,
+			 int x1, int y1, int x2, int y2,
+			 float depth, unsigned num_instances,
 			 enum blitter_attrib_type type,
-			 const union pipe_color_union *attrib);
+			 const union blitter_attrib *attrib);
 bool r600_common_screen_init(struct r600_common_screen *rscreen,
 			     struct radeon_winsys *ws);
 void r600_destroy_common_screen(struct r600_common_screen *rscreen);

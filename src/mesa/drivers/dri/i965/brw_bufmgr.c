@@ -396,7 +396,8 @@ retry:
 
    pthread_mutex_unlock(&bufmgr->lock);
 
-   DBG("bo_create: buf %d (%s) %ldb\n", bo->gem_handle, bo->name, size);
+   DBG("bo_create: buf %d (%s) %llub\n", bo->gem_handle, bo->name,
+       (unsigned long long) size);
 
    return bo;
 
@@ -517,7 +518,7 @@ brw_bo_gem_create_from_name(struct brw_bufmgr *bufmgr,
    p_atomic_set(&bo->refcount, 1);
 
    bo->size = open_arg.size;
-   bo->offset64 = 0;
+   bo->gtt_offset = 0;
    bo->bufmgr = bufmgr;
    bo->gem_handle = open_arg.handle;
    bo->name = name;
@@ -944,8 +945,10 @@ brw_bo_map(struct brw_context *brw, struct brw_bo *bo, unsigned flags)
     * We skip MAP_RAW because we want to avoid map_gtt's fence detiling.
     */
    if (!map && !(flags & MAP_RAW)) {
-      perf_debug("Fallback GTT mapping for %s with access flags %x\n",
-                 bo->name, flags);
+      if (brw) {
+         perf_debug("Fallback GTT mapping for %s with access flags %x\n",
+                    bo->name, flags);
+      }
       map = brw_bo_map_gtt(brw, bo, flags);
    }
 
@@ -1331,7 +1334,7 @@ gem_param(int fd, int name)
  * \param fd File descriptor of the opened DRM device.
  */
 struct brw_bufmgr *
-brw_bufmgr_init(struct gen_device_info *devinfo, int fd, int batch_size)
+brw_bufmgr_init(struct gen_device_info *devinfo, int fd)
 {
    struct brw_bufmgr *bufmgr;
 

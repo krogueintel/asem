@@ -167,6 +167,15 @@ void r600_init_resource_fields(struct r600_common_screen *rscreen,
 			 RADEON_FLAG_GTT_WC;
 	}
 
+	/* Only displayable single-sample textures can be shared between
+	 * processes. */
+	if (res->b.b.target == PIPE_BUFFER ||
+	    res->b.b.nr_samples >= 2 ||
+	    (rtex->surface.micro_tile_mode != RADEON_MICRO_MODE_DISPLAY &&
+	     /* Raven doesn't use display micro mode for 32bpp, so check this: */
+	     !(res->b.b.bind & PIPE_BIND_SCANOUT)))
+		res->flags |= RADEON_FLAG_NO_INTERPROCESS_SHARING;
+
 	/* If VRAM is just stolen system memory, allow both VRAM and
 	 * GTT, whichever has free space. If a buffer is evicted from
 	 * VRAM to GTT, it will stay there.
@@ -383,7 +392,7 @@ static void *r600_buffer_transfer_map(struct pipe_context *ctx,
 	/* See if the buffer range being mapped has never been initialized,
 	 * in which case it can be mapped unsynchronized. */
 	if (!(usage & (PIPE_TRANSFER_UNSYNCHRONIZED |
-		       TC_TRANSFER_MAP_IGNORE_VALID_RANGE)) &&
+		       TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED)) &&
 	    usage & PIPE_TRANSFER_WRITE &&
 	    !rbuffer->b.is_shared &&
 	    !util_ranges_intersect(&rbuffer->valid_buffer_range, box->x, box->x + box->width)) {

@@ -1283,10 +1283,26 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 			si_shader_selector_key_vs(sctx, sctx->vs_shader.cso,
 						  key, &key->part.tcs.ls_prolog);
 			key->part.tcs.ls = sctx->vs_shader.cso;
+
+			/* When the LS VGPR fix is needed, monolithic shaders
+			 * can:
+			 *  - avoid initializing EXEC in both the LS prolog
+			 *    and the LS main part when !vs_needs_prolog
+			 *  - remove the fixup for unused input VGPRs
+			 */
+			key->part.tcs.ls_prolog.ls_vgpr_fix = sctx->ls_vgpr_fix;
+
+			/* The LS output / HS input layout can be communicated
+			 * directly instead of via user SGPRs for merged LS-HS.
+			 * The LS VGPR fix prefers this too.
+			 */
+			key->opt.prefer_mono = 1;
 		}
 
 		key->part.tcs.epilog.prim_mode =
 			sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_PRIM_MODE];
+		key->part.tcs.epilog.invoc0_tess_factors_are_def =
+			sel->tcs_info.tessfactors_are_def_in_all_invocs;
 		key->part.tcs.epilog.tes_reads_tess_factors =
 			sctx->tes_shader.cso->info.reads_tess_factors;
 
@@ -1355,6 +1371,7 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 				 sctx->framebuffer.spi_shader_col_format_alpha) |
 				(~blend->blend_enable_4bit & ~blend->need_src_alpha_4bit &
 				 sctx->framebuffer.spi_shader_col_format);
+			key->part.ps.epilog.spi_shader_col_format &= blend->cb_target_enabled_4bit;
 
 			/* The output for dual source blending should have
 			 * the same format as the first output.
@@ -1408,6 +1425,12 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 							     sctx->framebuffer.nr_samples <= 1;
 			key->part.ps.epilog.clamp_color = rs->clamp_fragment_color;
 
+			if (sctx->ps_iter_samples > 1 &&
+			    sel->info.reads_samplemask) {
+				key->part.ps.prolog.samplemask_log_ps_iter =
+					util_logbase2(util_next_power_of_two(sctx->ps_iter_samples));
+			}
+
 			if (rs->force_persample_interp &&
 			    rs->multisample_enable &&
 			    sctx->framebuffer.nr_samples > 1 &&
@@ -1439,6 +1462,9 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 					sel->info.uses_linear_center +
 					sel->info.uses_linear_centroid +
 					sel->info.uses_linear_sample > 1;
+
+				if (sel->info.opcode_count[TGSI_OPCODE_INTERP_SAMPLE])
+					key->mono.u.ps.interpolate_at_sample_force_center = 1;
 			}
 		}
 
@@ -1769,7 +1795,7 @@ static void si_parse_next_shader_property(const struct tgsi_shader_info *info,
  * si_shader_selector initialization. Since it can be done asynchronously,
  * there is no way to report compile failures to applications.
  */
-void si_init_shader_selector_async(void *job, int thread_index)
+static void si_init_shader_selector_async(void *job, int thread_index)
 {
 	struct si_shader_selector *sel = (struct si_shader_selector *)job;
 	struct si_screen *sscreen = sel->screen;
@@ -1989,6 +2015,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 		}
 
 		tgsi_scan_shader(state->tokens, &sel->info);
+		tgsi_scan_tess_ctrl(state->tokens, &sel->info, &sel->tcs_info);
 	} else {
 		assert(state->type == PIPE_SHADER_IR_NIR);
 
@@ -2484,6 +2511,7 @@ void si_destroy_shader_selector(struct si_context *sctx,
 	util_queue_fence_destroy(&sel->ready);
 	mtx_destroy(&sel->mutex);
 	free(sel->tokens);
+	ralloc_free(sel->nir);
 	free(sel);
 }
 
@@ -3283,6 +3311,8 @@ bool si_update_shaders(struct si_context *sctx)
 		if (sctx->ps_db_shader_control != db_shader_control) {
 			sctx->ps_db_shader_control = db_shader_control;
 			si_mark_atom_dirty(sctx, &sctx->db_render_state);
+			if (sctx->screen->dpbb_allowed)
+				si_mark_atom_dirty(sctx, &sctx->dpbb_state);
 		}
 
 		if (sctx->smoothing_enabled != sctx->ps_shader.current->key.part.ps.epilog.poly_line_smoothing) {

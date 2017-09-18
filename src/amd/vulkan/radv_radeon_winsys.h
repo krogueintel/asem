@@ -51,7 +51,8 @@ enum radeon_bo_flag { /* bitfield */
 	RADEON_FLAG_GTT_WC =        (1 << 0),
 	RADEON_FLAG_CPU_ACCESS =    (1 << 1),
 	RADEON_FLAG_NO_CPU_ACCESS = (1 << 2),
-	RADEON_FLAG_VIRTUAL =       (1 << 3)
+	RADEON_FLAG_VIRTUAL =       (1 << 3),
+	RADEON_FLAG_VA_UNCACHED =   (1 << 4),
 };
 
 enum radeon_bo_usage { /* bitfield */
@@ -155,6 +156,11 @@ struct radeon_winsys {
 	void (*query_info)(struct radeon_winsys *ws,
 			   struct radeon_info *info);
 
+	bool (*read_registers)(struct radeon_winsys *ws, unsigned reg_offset,
+			       unsigned num_registers, uint32_t *out);
+
+	const char *(*get_chip_name)(struct radeon_winsys *ws);
+
 	struct radeon_winsys_bo *(*buffer_create)(struct radeon_winsys *ws,
 						  uint64_t size,
 						  unsigned alignment,
@@ -216,7 +222,7 @@ struct radeon_winsys {
 	void (*cs_execute_secondary)(struct radeon_winsys_cs *parent,
 				    struct radeon_winsys_cs *child);
 
-	void (*cs_dump)(struct radeon_winsys_cs *cs, FILE* file, uint32_t trace_id);
+	void (*cs_dump)(struct radeon_winsys_cs *cs, FILE* file, const int *trace_ids, int trace_id_count);
 
 	int (*surface_init)(struct radeon_winsys *ws,
 			    const struct ac_surf_info *surf_info,

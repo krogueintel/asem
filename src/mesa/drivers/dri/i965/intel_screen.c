@@ -799,7 +799,14 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
    case __DRI_IMAGE_ATTRIB_FOURCC:
       return intel_lookup_fourcc(image->dri_format, value);
    case __DRI_IMAGE_ATTRIB_NUM_PLANES:
-      *value = isl_drm_modifier_has_aux(image->modifier) ? 2 : 1;
+      if (isl_drm_modifier_has_aux(image->modifier)) {
+         assert(!image->planar_format || image->planar_format->nplanes == 1);
+         *value = 2;
+      } else if (image->planar_format) {
+         *value = image->planar_format->nplanes;
+      } else {
+         *value = 1;
+      }
       return true;
    case __DRI_IMAGE_ATTRIB_OFFSET:
       *value = image->offset;
@@ -812,6 +819,27 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
       return true;
 
   default:
+      return false;
+   }
+}
+
+static GLboolean
+intel_query_format_modifier_attribs(__DRIscreen *dri_screen,
+                                    uint32_t fourcc, uint64_t modifier,
+                                    int attrib, uint64_t *value)
+{
+   struct intel_screen *screen = dri_screen->driverPrivate;
+   const struct intel_image_format *f = intel_image_format_lookup(fourcc);
+
+   if (!modifier_is_supported(&screen->devinfo, f, 0, modifier))
+      return false;
+
+   switch (attrib) {
+   case __DRI_IMAGE_FORMAT_MODIFIER_ATTRIB_PLANE_COUNT:
+      *value = isl_drm_modifier_has_aux(modifier) ? 2 : f->nplanes;
+      return true;
+
+   default:
       return false;
    }
 }
@@ -1260,7 +1288,7 @@ intel_from_planar(__DRIimage *parent, int plane, void *loaderPrivate)
 }
 
 static const __DRIimageExtension intelImageExtension = {
-    .base = { __DRI_IMAGE, 15 },
+    .base = { __DRI_IMAGE, 16 },
 
     .createImageFromName                = intel_create_image_from_name,
     .createImageFromRenderbuffer        = intel_create_image_from_renderbuffer,
@@ -1282,6 +1310,7 @@ static const __DRIimageExtension intelImageExtension = {
     .createImageFromDmaBufs2            = intel_create_image_from_dma_bufs2,
     .queryDmaBufFormats                 = intel_query_dma_buf_formats,
     .queryDmaBufModifiers               = intel_query_dma_buf_modifiers,
+    .queryDmaBufFormatModifierAttribs   = intel_query_format_modifier_attribs,
 };
 
 static uint64_t
@@ -1613,7 +1642,7 @@ intel_init_bufmgr(struct intel_screen *screen)
    if (getenv("INTEL_NO_HW") != NULL)
       screen->no_hw = true;
 
-   screen->bufmgr = brw_bufmgr_init(&screen->devinfo, dri_screen->fd, BATCH_SZ);
+   screen->bufmgr = brw_bufmgr_init(&screen->devinfo, dri_screen->fd);
    if (screen->bufmgr == NULL) {
       fprintf(stderr, "[%s:%u] Error initializing buffer manager.\n",
 	      __func__, __LINE__);
@@ -1846,6 +1875,20 @@ intel_supported_msaa_modes(const struct intel_screen  *screen)
    }
 }
 
+static unsigned
+intel_loader_get_cap(const __DRIscreen *dri_screen, enum dri_loader_cap cap)
+{
+   if (dri_screen->dri2.loader && dri_screen->dri2.loader->base.version >= 4 &&
+       dri_screen->dri2.loader->getCapability)
+      return dri_screen->dri2.loader->getCapability(dri_screen->loaderPrivate, cap);
+
+   if (dri_screen->image.loader && dri_screen->image.loader->base.version >= 2 &&
+       dri_screen->image.loader->getCapability)
+      return dri_screen->image.loader->getCapability(dri_screen->loaderPrivate, cap);
+
+   return 0;
+}
+
 static __DRIconfig**
 intel_screen_make_configs(__DRIscreen *dri_screen)
 {
@@ -1882,15 +1925,21 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
    };
 
    static const uint8_t singlesample_samples[1] = {0};
-   static const uint8_t multisample_samples[2]  = {4, 8};
 
    struct intel_screen *screen = dri_screen->driverPrivate;
    const struct gen_device_info *devinfo = &screen->devinfo;
    uint8_t depth_bits[4], stencil_bits[4];
    __DRIconfig **configs = NULL;
 
+   /* Expose only BGRA ordering if the loader doesn't support RGBA ordering. */
+   unsigned num_formats;
+   if (intel_loader_get_cap(dri_screen, DRI_LOADER_CAP_RGBA_ORDERING))
+      num_formats = ARRAY_SIZE(formats);
+   else
+      num_formats = 3;
+
    /* Generate singlesample configs without accumulation buffer. */
-   for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
+   for (unsigned i = 0; i < num_formats; i++) {
       __DRIconfig **new_configs;
       int num_depth_stencil_bits = 2;
 
@@ -1966,6 +2015,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
       __DRIconfig **new_configs;
       const int num_depth_stencil_bits = 2;
       int num_msaa_modes = 0;
+      const uint8_t *multisample_samples = NULL;
 
       depth_bits[0] = 0;
       stencil_bits[0] = 0;
@@ -1978,10 +2028,23 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
          stencil_bits[1] = 8;
       }
 
-      if (devinfo->gen >= 7)
-         num_msaa_modes = 2;
-      else if (devinfo->gen == 6)
-         num_msaa_modes = 1;
+      if (devinfo->gen >= 9) {
+         static const uint8_t multisample_samples_gen9[] = {2, 4, 8, 16};
+         multisample_samples = multisample_samples_gen9;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen9);
+      } else if (devinfo->gen == 8) {
+         static const uint8_t multisample_samples_gen8[] = {2, 4, 8};
+         multisample_samples = multisample_samples_gen8;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen8);
+      } else if (devinfo->gen == 7) {
+         static const uint8_t multisample_samples_gen7[] = {4, 8};
+         multisample_samples = multisample_samples_gen7;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen7);
+      } else if (devinfo->gen == 6) {
+         static const uint8_t multisample_samples_gen6[] = {4};
+         multisample_samples = multisample_samples_gen6;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen6);
+      }
 
       new_configs = driCreateConfigs(formats[i],
                                      depth_bits,

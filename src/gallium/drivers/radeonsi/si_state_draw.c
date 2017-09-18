@@ -195,11 +195,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	 */
 	*num_patches = MIN2(*num_patches, 40);
 
-	if (sctx->b.chip_class == SI ||
-	    /* TODO: fix GFX9 where a threadgroup contains more than 1 wave and
-	     * LS vertices per patch > HS vertices per patch. Piglit: 16in-1out */
-	    (sctx->b.chip_class == GFX9 &&
-	     num_tcs_input_cp > num_tcs_output_cp)) {
+	if (sctx->b.chip_class == SI) {
 		/* SI bug workaround, related to power management. Limit LS-HS
 		 * threadgroups to only one wave.
 		 */
@@ -217,7 +213,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	 * doesn't work correctly on SI when there is no other
 	 * SE to switch to.
 	 */
-	if (has_primid_instancing_bug)
+	if (has_primid_instancing_bug && tess_uses_primid)
 		*num_patches = 1;
 
 	sctx->last_num_patches = *num_patches;
@@ -237,8 +233,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 
 	tcs_in_layout = S_VS_STATE_LS_OUT_PATCH_SIZE(input_patch_size / 4) |
 			S_VS_STATE_LS_OUT_VERTEX_SIZE(input_vertex_size / 4);
-	tcs_out_layout = (output_patch_size / 4) |
-			 ((output_vertex_size / 4) << 13);
+	tcs_out_layout = output_patch_size / 4;
 	tcs_out_offsets = (output_patch0_offset / 16) |
 			  ((perpatch_output_offset / 16) << 16);
 	offchip_layout = *num_patches |
@@ -912,7 +907,8 @@ void si_emit_cache_flush(struct si_context *sctx)
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_CB_META) | EVENT_INDEX(0));
 	}
-	if (rctx->flags & SI_CONTEXT_FLUSH_AND_INV_DB) {
+	if (rctx->flags & (SI_CONTEXT_FLUSH_AND_INV_DB |
+			   SI_CONTEXT_FLUSH_AND_INV_DB_META)) {
 		/* Flush HTILE. SURFACE_SYNC will wait for idle. */
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_DB_META) | EVENT_INDEX(0));
@@ -1263,6 +1259,27 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 		sctx->do_update_shaders = true;
 	}
 
+	if (sctx->tes_shader.cso &&
+	    (sctx->b.family == CHIP_VEGA10 || sctx->b.family == CHIP_RAVEN)) {
+		/* Determine whether the LS VGPR fix should be applied.
+		 *
+		 * It is only required when num input CPs > num output CPs,
+		 * which cannot happen with the fixed function TCS. We should
+		 * also update this bit when switching from TCS to fixed
+		 * function TCS.
+		 */
+		struct si_shader_selector *tcs = sctx->tcs_shader.cso;
+		bool ls_vgpr_fix =
+			tcs &&
+			info->vertices_per_patch >
+			tcs->info.properties[TGSI_PROPERTY_TCS_VERTICES_OUT];
+
+		if (ls_vgpr_fix != sctx->ls_vgpr_fix) {
+			sctx->ls_vgpr_fix = ls_vgpr_fix;
+			sctx->do_update_shaders = true;
+		}
+	}
+
 	if (sctx->gs_shader.cso) {
 		/* Determine whether the GS triangle strip adjacency fix should
 		 * be applied. Rotate every other triangle if
@@ -1392,9 +1409,13 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 		 * the wait and the draw)
 		 */
 		struct r600_atom *shader_pointers = &sctx->shader_pointers.atom;
+		unsigned masked_atoms = 1u << shader_pointers->id;
 
-		/* Emit all states except shader pointers. */
-		si_emit_all_states(sctx, info, 1 << shader_pointers->id);
+		if (unlikely(sctx->b.flags & R600_CONTEXT_FLUSH_FOR_RENDER_COND))
+			masked_atoms |= 1u << sctx->b.render_cond_atom.id;
+
+		/* Emit all states except shader pointers and render condition. */
+		si_emit_all_states(sctx, info, masked_atoms);
 		si_emit_cache_flush(sctx);
 
 		/* <-- CUs are idle here. */
@@ -1402,10 +1423,11 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 			return;
 
 		/* Set shader pointers after descriptors are uploaded. */
-		if (si_is_atom_dirty(sctx, shader_pointers)) {
+		if (si_is_atom_dirty(sctx, shader_pointers))
 			shader_pointers->emit(&sctx->b, NULL);
-			sctx->dirty_atoms = 0;
-		}
+		if (si_is_atom_dirty(sctx, &sctx->b.render_cond_atom))
+			sctx->b.render_cond_atom.emit(&sctx->b, NULL);
+		sctx->dirty_atoms = 0;
 
 		si_emit_draw_packets(sctx, info, indexbuf, index_size, index_offset);
 		/* <-- CUs are busy here. */

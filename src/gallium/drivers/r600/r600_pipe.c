@@ -401,6 +401,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
 	case PIPE_CAP_QUERY_SO_OVERFLOW:
 	case PIPE_CAP_MEMOBJ:
+	case PIPE_CAP_LOAD_CONSTBUF:
 		return 0;
 
 	case PIPE_CAP_DOUBLES:
@@ -666,7 +667,7 @@ struct pipe_screen *r600_screen_create(struct radeon_winsys *ws,
 	if (debug_get_bool_option("R600_DEBUG_COMPUTE", FALSE))
 		rscreen->b.debug_flags |= DBG_COMPUTE;
 	if (debug_get_bool_option("R600_DUMP_SHADERS", FALSE))
-		rscreen->b.debug_flags |= DBG_FS | DBG_VS | DBG_GS | DBG_PS | DBG_CS | DBG_TCS | DBG_TES;
+		rscreen->b.debug_flags |= DBG_ALL_SHADERS | DBG_FS;
 	if (!debug_get_bool_option("R600_HYPERZ", TRUE))
 		rscreen->b.debug_flags |= DBG_NO_HYPERZ;
 

@@ -55,6 +55,7 @@ struct si_state_blend {
 	/* Set 0xf or 0x0 (4 bits) per render target if the following is
 	 * true. ANDed with spi_shader_col_format.
 	 */
+	unsigned		cb_target_enabled_4bit;
 	unsigned		blend_enable_4bit;
 	unsigned		need_src_alpha_4bit;
 };
@@ -90,8 +91,13 @@ struct si_dsa_stencil_ref_part {
 
 struct si_state_dsa {
 	struct si_pm4_state		pm4;
-	unsigned			alpha_func;
 	struct si_dsa_stencil_ref_part	stencil_ref;
+	ubyte				alpha_func:3;
+	bool				depth_enabled:1;
+	bool				depth_write_enabled:1;
+	bool				stencil_enabled:1;
+	bool				stencil_write_enabled:1;
+	bool				db_can_write:1;
 };
 
 struct si_stencil_ref {
@@ -147,6 +153,7 @@ union si_state_atoms {
 		struct r600_atom *framebuffer;
 		struct r600_atom *msaa_sample_locs;
 		struct r600_atom *db_render_state;
+		struct r600_atom *dpbb_state;
 		struct r600_atom *msaa_config;
 		struct r600_atom *sample_mask;
 		struct r600_atom *cb_render_state;
@@ -367,12 +374,14 @@ si_create_sampler_view_custom(struct pipe_context *ctx,
 			      unsigned force_level);
 void si_update_fb_dirtiness_after_rendering(struct si_context *sctx);
 
-/* si_state_shader.c */
+/* si_state_binning.c */
+void si_emit_dpbb_state(struct si_context *sctx, struct r600_atom *state);
+
+/* si_state_shaders.c */
 bool si_update_shaders(struct si_context *sctx);
 void si_init_shader_functions(struct si_context *sctx);
 bool si_init_shader_cache(struct si_screen *sscreen);
 void si_destroy_shader_cache(struct si_screen *sscreen);
-void si_init_shader_selector_async(void *job, int thread_index);
 void si_get_active_slot_masks(const struct tgsi_shader_info *info,
 			      uint32_t *const_and_shader_buffers,
 			      uint64_t *samplers_and_images);

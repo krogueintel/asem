@@ -40,6 +40,7 @@
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
+#include "util/debug.h"
 #include "util/macros.h"
 
 #include "egl_dri2.h"
@@ -1289,6 +1290,7 @@ static const __DRIextension *dri3_image_loader_extensions[] = {
    &dri3_image_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
+   &background_callable_extension.base,
    NULL,
 };
 
@@ -1385,6 +1387,7 @@ static const __DRIextension *dri2_loader_extensions_old[] = {
 static const __DRIextension *dri2_loader_extensions[] = {
    &dri2_loader_extension.base,
    &image_lookup_extension.base,
+   &use_invalidate.base,
    &background_callable_extension.base,
    NULL,
 };
@@ -1456,9 +1459,9 @@ dri2_initialize_x11(_EGLDriver *drv, _EGLDisplay *disp)
 {
    EGLBoolean initialized = EGL_FALSE;
 
-   if (!getenv("LIBGL_ALWAYS_SOFTWARE")) {
+   if (!env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false)) {
 #ifdef HAVE_DRI3
-      if (!getenv("LIBGL_DRI3_DISABLE"))
+      if (!env_var_as_boolean("LIBGL_DRI3_DISABLE", false))
          initialized = dri2_initialize_x11_dri3(drv, disp);
 #endif
 

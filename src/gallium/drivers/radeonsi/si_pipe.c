@@ -371,8 +371,7 @@ static struct pipe_context *si_pipe_create_context(struct pipe_screen *screen,
 
 	/* When shaders are logged to stderr, asynchronous compilation is
 	 * disabled too. */
-	if (sscreen->b.debug_flags & (DBG_VS | DBG_TCS | DBG_TES | DBG_GS |
-				      DBG_PS | DBG_CS))
+	if (sscreen->b.debug_flags & DBG_ALL_SHADERS)
 		return ctx;
 
 	return threaded_context_create(ctx, &sscreen->b.pool_transfers,
@@ -487,6 +486,7 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
 	case PIPE_CAP_QUERY_SO_OVERFLOW:
 	case PIPE_CAP_MEMOBJ:
+	case PIPE_CAP_LOAD_CONSTBUF:
 		return 1;
 
 	case PIPE_CAP_INT64:
@@ -1050,6 +1050,11 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws,
 					    sscreen->b.family <= CHIP_POLARIS12) ||
 					   sscreen->b.family == CHIP_VEGA10 ||
 					   sscreen->b.family == CHIP_RAVEN;
+	sscreen->dpbb_allowed = sscreen->b.chip_class >= GFX9 &&
+				!(sscreen->b.debug_flags & DBG_NO_DPBB);
+	sscreen->dfsm_allowed = sscreen->dpbb_allowed &&
+				!(sscreen->b.debug_flags & DBG_NO_DFSM);
+
 	/* While it would be nice not to have this flag, we are constrained
 	 * by the reality that LLVM 5.0 doesn't have working VGPR indexing
 	 * on GFX9.
@@ -1078,13 +1083,15 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws,
 
 	sscreen->b.barrier_flags.cp_to_L2 = SI_CONTEXT_INV_SMEM_L1 |
 					    SI_CONTEXT_INV_VMEM_L1;
-	if (sscreen->b.chip_class <= VI)
+	if (sscreen->b.chip_class <= VI) {
 		sscreen->b.barrier_flags.cp_to_L2 |= SI_CONTEXT_INV_GLOBAL_L2;
+		sscreen->b.barrier_flags.L2_to_cp |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+	}
 
 	sscreen->b.barrier_flags.compute_to_L2 = SI_CONTEXT_CS_PARTIAL_FLUSH;
 
 	if (debug_get_bool_option("RADEON_DUMP_SHADERS", false))
-		sscreen->b.debug_flags |= DBG_FS | DBG_VS | DBG_GS | DBG_PS | DBG_CS;
+		sscreen->b.debug_flags |= DBG_ALL_SHADERS;
 
 	for (i = 0; i < num_compiler_threads; i++)
 		sscreen->tm[i] = si_create_llvm_target_machine(sscreen);

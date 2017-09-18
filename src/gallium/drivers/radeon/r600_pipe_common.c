@@ -109,6 +109,12 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 	unsigned op = EVENT_TYPE(event) |
 		      EVENT_INDEX(5) |
 		      event_flags;
+	unsigned sel = EOP_DATA_SEL(data_sel);
+
+	/* Wait for write confirmation before writing data, but don't send
+	 * an interrupt. */
+	if (ctx->chip_class >= SI && data_sel != EOP_DATA_SEL_DISCARD)
+		sel |= EOP_INT_SEL(EOP_INT_SEL_SEND_DATA_AFTER_WR_CONFIRM);
 
 	if (ctx->chip_class >= GFX9) {
 		/* A ZPASS_DONE or PIXEL_STAT_DUMP_EVENT (of the DB occlusion
@@ -136,7 +142,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 
 		radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, 6, 0));
 		radeon_emit(cs, op);
-		radeon_emit(cs, EOP_DATA_SEL(data_sel));
+		radeon_emit(cs, sel);
 		radeon_emit(cs, va);		/* address lo */
 		radeon_emit(cs, va >> 32);	/* address hi */
 		radeon_emit(cs, new_fence);	/* immediate data lo */
@@ -155,7 +161,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
 			radeon_emit(cs, op);
 			radeon_emit(cs, va);
-			radeon_emit(cs, ((va >> 32) & 0xffff) | EOP_DATA_SEL(data_sel));
+			radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
 			radeon_emit(cs, 0); /* immediate data */
 			radeon_emit(cs, 0); /* unused */
 
@@ -166,7 +172,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, 0));
 		radeon_emit(cs, op);
 		radeon_emit(cs, va);
-		radeon_emit(cs, ((va >> 32) & 0xffff) | EOP_DATA_SEL(data_sel));
+		radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
 		radeon_emit(cs, new_fence); /* immediate data */
 		radeon_emit(cs, 0); /* unused */
 	}
@@ -205,9 +211,10 @@ void r600_gfx_wait_fence(struct r600_common_context *ctx,
 }
 
 void r600_draw_rectangle(struct blitter_context *blitter,
-			 int x1, int y1, int x2, int y2, float depth,
+			 int x1, int y1, int x2, int y2,
+			 float depth, unsigned num_instances,
 			 enum blitter_attrib_type type,
-			 const union pipe_color_union *attrib)
+			 const union blitter_attrib *attrib)
 {
 	struct r600_common_context *rctx =
 		(struct r600_common_context*)util_blitter_get_pipe(blitter);
@@ -215,11 +222,6 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	struct pipe_resource *buf = NULL;
 	unsigned offset = 0;
 	float *vb;
-
-	if (type == UTIL_BLITTER_ATTRIB_TEXCOORD) {
-		util_blitter_draw_rectangle(blitter, x1, y1, x2, y2, depth, type, attrib);
-		return;
-	}
 
 	/* Some operations (like color resolve on r6xx) don't work
 	 * with the conventional primitive types.
@@ -235,7 +237,7 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	rctx->b.set_viewport_states(&rctx->b, 0, 1, &viewport);
 
 	/* Upload vertices. The hw rectangle has only 3 vertices,
-	 * I guess the 4th one is derived from the first 3.
+	 * The 4th one is derived from the first 3.
 	 * The vertex specification should match u_blitter's vertex element state. */
 	u_upload_alloc(rctx->b.stream_uploader, 0, sizeof(float) * 24,
 		       rctx->screen->info.tcc_cache_line_size,
@@ -258,15 +260,36 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	vb[18] = depth;
 	vb[19] = 1;
 
-	if (attrib) {
-		memcpy(vb+4, attrib->f, sizeof(float)*4);
-		memcpy(vb+12, attrib->f, sizeof(float)*4);
-		memcpy(vb+20, attrib->f, sizeof(float)*4);
+	switch (type) {
+	case UTIL_BLITTER_ATTRIB_COLOR:
+		memcpy(vb+4, attrib->color, sizeof(float)*4);
+		memcpy(vb+12, attrib->color, sizeof(float)*4);
+		memcpy(vb+20, attrib->color, sizeof(float)*4);
+		break;
+	case UTIL_BLITTER_ATTRIB_TEXCOORD_XYZW:
+	case UTIL_BLITTER_ATTRIB_TEXCOORD_XY:
+		vb[6] = vb[14] = vb[22] = attrib->texcoord.z;
+		vb[7] = vb[15] = vb[23] = attrib->texcoord.w;
+		/* fall through */
+		vb[4] = attrib->texcoord.x1;
+		vb[5] = attrib->texcoord.y1;
+		vb[12] = attrib->texcoord.x1;
+		vb[13] = attrib->texcoord.y2;
+		vb[20] = attrib->texcoord.x2;
+		vb[21] = attrib->texcoord.y1;
+		break;
+	default:; /* Nothing to do. */
 	}
 
 	/* draw */
-	util_draw_vertex_buffer(&rctx->b, NULL, buf, blitter->vb_slot, offset,
-				R600_PRIM_RECTANGLE_LIST, 3, 2);
+	struct pipe_vertex_buffer vbuffer = {};
+	vbuffer.buffer.resource = buf;
+	vbuffer.stride = 2 * 4 * sizeof(float); /* vertex size */
+	vbuffer.buffer_offset = offset;
+
+	rctx->b.set_vertex_buffers(&rctx->b, blitter->vb_slot, 1, &vbuffer);
+	util_draw_arrays_instanced(&rctx->b, R600_PRIM_RECTANGLE_LIST, 0, 3,
+				   0, num_instances);
 	pipe_resource_reference(&buf, NULL);
 }
 
@@ -388,6 +411,50 @@ void r600_postflush_resume_features(struct r600_common_context *ctx)
 		r600_resume_queries(ctx);
 }
 
+static void r600_add_fence_dependency(struct r600_common_context *rctx,
+				      struct pipe_fence_handle *fence)
+{
+	struct radeon_winsys *ws = rctx->ws;
+
+	if (rctx->dma.cs)
+		ws->cs_add_fence_dependency(rctx->dma.cs, fence);
+	ws->cs_add_fence_dependency(rctx->gfx.cs, fence);
+}
+
+static void r600_fence_server_sync(struct pipe_context *ctx,
+				   struct pipe_fence_handle *fence)
+{
+	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
+	struct r600_multi_fence *rfence = (struct r600_multi_fence *)fence;
+
+	/* Only amdgpu needs to handle fence dependencies (for fence imports).
+	 * radeon synchronizes all rings by default and will not implement
+	 * fence imports.
+	 */
+	if (rctx->screen->info.drm_major == 2)
+		return;
+
+	/* Only imported fences need to be handled by fence_server_sync,
+	 * because the winsys handles synchronizations automatically for BOs
+	 * within the process.
+	 *
+	 * Simply skip unflushed fences here, and the winsys will drop no-op
+	 * dependencies (i.e. dependencies within the same ring).
+	 */
+	if (rfence->gfx_unflushed.ctx)
+		return;
+
+	/* All unflushed commands will not start execution before
+	 * this fence dependency is signalled.
+	 *
+	 * Should we flush the context to allow more GPU parallelism?
+	 */
+	if (rfence->sdma)
+		r600_add_fence_dependency(rctx, rfence->sdma);
+	if (rfence->gfx)
+		r600_add_fence_dependency(rctx, rfence->gfx);
+}
+
 static void r600_flush_from_st(struct pipe_context *ctx,
 			       struct pipe_fence_handle **fence,
 			       unsigned flags)
@@ -430,8 +497,11 @@ static void r600_flush_from_st(struct pipe_context *ctx,
 	if (fence) {
 		struct r600_multi_fence *multi_fence =
 			CALLOC_STRUCT(r600_multi_fence);
-		if (!multi_fence)
-			return;
+		if (!multi_fence) {
+			ws->fence_reference(&sdma_fence, NULL);
+			ws->fence_reference(&gfx_fence, NULL);
+			goto finish;
+		}
 
 		multi_fence->reference.count = 1;
 		/* If both fences are NULL, fence_finish will always return true. */
@@ -446,7 +516,7 @@ static void r600_flush_from_st(struct pipe_context *ctx,
 		screen->fence_reference(screen, fence, NULL);
 		*fence = (struct pipe_fence_handle*)multi_fence;
 	}
-
+finish:
 	if (!(flags & PIPE_FLUSH_DEFERRED)) {
 		if (rctx->dma.cs)
 			ws->cs_sync_flush(rctx->dma.cs);
@@ -658,6 +728,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	rctx->b.memory_barrier = r600_memory_barrier;
 	rctx->b.flush = r600_flush_from_st;
 	rctx->b.set_debug_callback = r600_set_debug_callback;
+	rctx->b.fence_server_sync = r600_fence_server_sync;
 	rctx->dma_clear_buffer = r600_dma_clear_buffer_fallback;
 
 	/* evergreen_compute.c has a special codepath for global buffers.
@@ -817,6 +888,8 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "mono", DBG_MONOLITHIC_SHADERS, "Use old-style monolithic shaders compiled on demand" },
 	{ "unsafemath", DBG_UNSAFE_MATH, "Enable unsafe math shader optimizations" },
 	{ "nodccfb", DBG_NO_DCC_FB, "Disable separate DCC on the main framebuffer" },
+	{ "nodpbb", DBG_NO_DPBB, "Disable DPBB." },
+	{ "nodfsm", DBG_NO_DFSM, "Disable DFSM." },
 
 	DEBUG_NAMED_VALUE_END /* must be last */
 };
@@ -893,8 +966,7 @@ static const char *r600_get_family_name(const struct r600_common_screen *rscreen
 static void r600_disk_cache_create(struct r600_common_screen *rscreen)
 {
 	/* Don't use the cache if shader dumping is enabled. */
-	if (rscreen->debug_flags &
-	    (DBG_FS | DBG_VS | DBG_TCS | DBG_TES | DBG_GS | DBG_PS | DBG_CS))
+	if (rscreen->debug_flags & DBG_ALL_SHADERS)
 		return;
 
 	uint32_t mesa_timestamp;
@@ -1482,8 +1554,11 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("uvd_fw_version = %u\n", rscreen->info.uvd_fw_version);
 		printf("vce_fw_version = %u\n", rscreen->info.vce_fw_version);
 		printf("me_fw_version = %i\n", rscreen->info.me_fw_version);
+		printf("me_fw_feature = %i\n", rscreen->info.me_fw_feature);
 		printf("pfp_fw_version = %i\n", rscreen->info.pfp_fw_version);
+		printf("pfp_fw_feature = %i\n", rscreen->info.pfp_fw_feature);
 		printf("ce_fw_version = %i\n", rscreen->info.ce_fw_version);
+		printf("ce_fw_feature = %i\n", rscreen->info.ce_fw_feature);
 		printf("vce_harvest_config = %i\n", rscreen->info.vce_harvest_config);
 		printf("clock_crystal_freq = %i\n", rscreen->info.clock_crystal_freq);
 		printf("tcc_cache_line_size = %u\n", rscreen->info.tcc_cache_line_size);
@@ -1529,22 +1604,7 @@ void r600_destroy_common_screen(struct r600_common_screen *rscreen)
 bool r600_can_dump_shader(struct r600_common_screen *rscreen,
 			  unsigned processor)
 {
-	switch (processor) {
-	case PIPE_SHADER_VERTEX:
-		return (rscreen->debug_flags & DBG_VS) != 0;
-	case PIPE_SHADER_TESS_CTRL:
-		return (rscreen->debug_flags & DBG_TCS) != 0;
-	case PIPE_SHADER_TESS_EVAL:
-		return (rscreen->debug_flags & DBG_TES) != 0;
-	case PIPE_SHADER_GEOMETRY:
-		return (rscreen->debug_flags & DBG_GS) != 0;
-	case PIPE_SHADER_FRAGMENT:
-		return (rscreen->debug_flags & DBG_PS) != 0;
-	case PIPE_SHADER_COMPUTE:
-		return (rscreen->debug_flags & DBG_CS) != 0;
-	default:
-		return false;
-	}
+	return rscreen->debug_flags & (1 << processor);
 }
 
 bool r600_extra_shader_checks(struct r600_common_screen *rscreen, unsigned processor)

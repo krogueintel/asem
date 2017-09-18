@@ -969,7 +969,7 @@ static void get_mjpeg_slice_header(struct ruvd_decoder *dec, struct pipe_mjpeg_p
 			continue;
 
 		buf[size++] = i;
-		memcpy((buf + size), &pic->quantization_table.quantiser_table, 64);
+		memcpy((buf + size), &pic->quantization_table.quantiser_table[i], 64);
 		size += 64;
 	}
 
@@ -1011,6 +1011,17 @@ static void get_mjpeg_slice_header(struct ruvd_decoder *dec, struct pipe_mjpeg_p
 	*bs = util_bswap16(size - saved_size - 2);
 
 	saved_size = size;
+
+	/* DRI */
+	if (pic->slice_parameter.restart_interval) {
+		buf[size++] = 0xff;
+		buf[size++] = 0xdd;
+		buf[size++] = 0x00;
+		buf[size++] = 0x04;
+		bs = (uint16_t*)&buf[size++];
+		*bs = util_bswap16(pic->slice_parameter.restart_interval);
+		saved_size = ++size;
+	}
 
 	/* SOF */
 	buf[size++] = 0xff;
@@ -1577,9 +1588,11 @@ void ruvd_set_dt_surfaces(struct ruvd_msg *msg, struct radeon_surf *luma,
 			msg->body.decode.dt_chroma_bottom_offset = msg->body.decode.dt_chroma_top_offset;
 		}
 
-		assert(luma->u.legacy.bankw == chroma->u.legacy.bankw);
-		assert(luma->u.legacy.bankh == chroma->u.legacy.bankh);
-		assert(luma->u.legacy.mtilea == chroma->u.legacy.mtilea);
+		if (chroma) {
+			assert(luma->u.legacy.bankw == chroma->u.legacy.bankw);
+			assert(luma->u.legacy.bankh == chroma->u.legacy.bankh);
+			assert(luma->u.legacy.mtilea == chroma->u.legacy.mtilea);
+		}
 
 		msg->body.decode.dt_surf_tile_config |= RUVD_BANK_WIDTH(bank_wh(luma->u.legacy.bankw));
 		msg->body.decode.dt_surf_tile_config |= RUVD_BANK_HEIGHT(bank_wh(luma->u.legacy.bankh));

@@ -29,7 +29,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "radv_debug.h"
 #include "radv_private.h"
+#include "radv_shader.h"
 #include "radv_cs.h"
 #include "util/disk_cache.h"
 #include "util/strtod.h"
@@ -166,6 +168,10 @@ static const VkExtensionProperties common_device_extensions[] = {
 	},
 	{
 		.extensionName = VK_KHR_VARIABLE_POINTERS_EXTENSION_NAME,
+		.specVersion = 1,
+	},
+	{
+		.extensionName = VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
 		.specVersion = 1,
 	},
 };
@@ -408,14 +414,32 @@ static const struct debug_control radv_debug_options[] = {
 	{"unsafemath", RADV_DEBUG_UNSAFE_MATH},
 	{"allbos", RADV_DEBUG_ALL_BOS},
 	{"noibs", RADV_DEBUG_NO_IBS},
+	{"spirv", RADV_DEBUG_DUMP_SPIRV},
+	{"vmfaults", RADV_DEBUG_VM_FAULTS},
+	{"zerovram", RADV_DEBUG_ZERO_VRAM},
+	{"syncshaders", RADV_DEBUG_SYNC_SHADERS},
 	{NULL, 0}
 };
 
+const char *
+radv_get_debug_option_name(int id)
+{
+	assert(id < ARRAY_SIZE(radv_debug_options) - 1);
+	return radv_debug_options[id].string;
+}
+
 static const struct debug_control radv_perftest_options[] = {
-	{"batchchain", RADV_PERFTEST_BATCHCHAIN},
+	{"nobatchchain", RADV_PERFTEST_NO_BATCHCHAIN},
 	{"sisched", RADV_PERFTEST_SISCHED},
 	{NULL, 0}
 };
+
+const char *
+radv_get_perftest_option_name(int id)
+{
+	assert(id < ARRAY_SIZE(radv_debug_options) - 1);
+	return radv_perftest_options[id].string;
+}
 
 VkResult radv_CreateInstance(
 	const VkInstanceCreateInfo*                 pCreateInfo,
@@ -998,6 +1022,8 @@ radv_queue_finish(struct radv_queue *queue)
 	if (queue->hw_ctx)
 		queue->device->ws->ctx_destroy(queue->hw_ctx);
 
+	if (queue->initial_full_flush_preamble_cs)
+		queue->device->ws->cs_destroy(queue->initial_full_flush_preamble_cs);
 	if (queue->initial_preamble_cs)
 		queue->device->ws->cs_destroy(queue->initial_preamble_cs);
 	if (queue->continue_preamble_cs)
@@ -1176,51 +1202,10 @@ VkResult radv_CreateDevice(
 			break;
 		}
 		device->ws->cs_finalize(device->empty_cs[family]);
-
-		device->flush_cs[family] = device->ws->cs_create(device->ws, family);
-		switch (family) {
-		case RADV_QUEUE_GENERAL:
-		case RADV_QUEUE_COMPUTE:
-			si_cs_emit_cache_flush(device->flush_cs[family],
-					       false,
-			                       device->physical_device->rad_info.chip_class,
-					       NULL, 0,
-			                       family == RADV_QUEUE_COMPUTE && device->physical_device->rad_info.chip_class >= CIK,
-			                       RADV_CMD_FLAG_INV_ICACHE |
-			                       RADV_CMD_FLAG_INV_SMEM_L1 |
-			                       RADV_CMD_FLAG_INV_VMEM_L1 |
-			                       RADV_CMD_FLAG_INV_GLOBAL_L2);
-			break;
-		}
-		device->ws->cs_finalize(device->flush_cs[family]);
-
-		device->flush_shader_cs[family] = device->ws->cs_create(device->ws, family);
-		switch (family) {
-		case RADV_QUEUE_GENERAL:
-		case RADV_QUEUE_COMPUTE:
-			si_cs_emit_cache_flush(device->flush_shader_cs[family],
-					       false,
-			                       device->physical_device->rad_info.chip_class,
-					       NULL, 0,
-			                       family == RADV_QUEUE_COMPUTE && device->physical_device->rad_info.chip_class >= CIK,
-					       family == RADV_QUEUE_COMPUTE ? RADV_CMD_FLAG_CS_PARTIAL_FLUSH : (RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_PS_PARTIAL_FLUSH) |
-			                       RADV_CMD_FLAG_INV_ICACHE |
-			                       RADV_CMD_FLAG_INV_SMEM_L1 |
-			                       RADV_CMD_FLAG_INV_VMEM_L1 |
-			                       RADV_CMD_FLAG_INV_GLOBAL_L2);
-			break;
-		}
-		device->ws->cs_finalize(device->flush_shader_cs[family]);
 	}
 
 	if (getenv("RADV_TRACE_FILE")) {
-		device->trace_bo = device->ws->buffer_create(device->ws, 4096, 8,
-							     RADEON_DOMAIN_VRAM, RADEON_FLAG_CPU_ACCESS);
-		if (!device->trace_bo)
-			goto fail;
-
-		device->trace_id_ptr = device->ws->buffer_map(device->trace_bo);
-		if (!device->trace_id_ptr)
+		if (!radv_init_trace(device))
 			goto fail;
 	}
 
@@ -1284,10 +1269,6 @@ void radv_DestroyDevice(
 			vk_free(&device->alloc, device->queues[i]);
 		if (device->empty_cs[i])
 			device->ws->cs_destroy(device->empty_cs[i]);
-		if (device->flush_cs[i])
-			device->ws->cs_destroy(device->flush_cs[i]);
-		if (device->flush_shader_cs[i])
-			device->ws->cs_destroy(device->flush_shader_cs[i]);
 	}
 	radv_device_finish_meta(device);
 
@@ -1376,21 +1357,6 @@ void radv_GetDeviceQueue(
 	RADV_FROM_HANDLE(radv_device, device, _device);
 
 	*pQueue = radv_queue_to_handle(&device->queues[queueFamilyIndex][queueIndex]);
-}
-
-static void radv_dump_trace(struct radv_device *device,
-			    struct radeon_winsys_cs *cs)
-{
-	const char *filename = getenv("RADV_TRACE_FILE");
-	FILE *f = fopen(filename, "w");
-	if (!f) {
-		fprintf(stderr, "Failed to write trace dump to %s\n", filename);
-		return;
-	}
-
-	fprintf(f, "Trace ID: %x\n", *device->trace_id_ptr);
-	device->ws->cs_dump(cs, f, *device->trace_id_ptr);
-	fclose(f);
 }
 
 static void
@@ -1595,6 +1561,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 		     uint32_t gsvs_ring_size,
 		     bool needs_tess_rings,
 		     bool needs_sample_positions,
+		     struct radeon_winsys_cs **initial_full_flush_preamble_cs,
                      struct radeon_winsys_cs **initial_preamble_cs,
                      struct radeon_winsys_cs **continue_preamble_cs)
 {
@@ -1605,7 +1572,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 	struct radeon_winsys_bo *gsvs_ring_bo = NULL;
 	struct radeon_winsys_bo *tess_factor_ring_bo = NULL;
 	struct radeon_winsys_bo *tess_offchip_ring_bo = NULL;
-	struct radeon_winsys_cs *dest_cs[2] = {0};
+	struct radeon_winsys_cs *dest_cs[3] = {0};
 	bool add_tess_rings = false, add_sample_positions = false;
 	unsigned tess_factor_ring_size = 0, tess_offchip_ring_size = 0;
 	unsigned max_offchip_buffers;
@@ -1630,6 +1597,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 	    gsvs_ring_size <= queue->gsvs_ring_size &&
 	    !add_tess_rings && !add_sample_positions &&
 	    queue->initial_preamble_cs) {
+		*initial_full_flush_preamble_cs = queue->initial_full_flush_preamble_cs;
 		*initial_preamble_cs = queue->initial_preamble_cs;
 		*continue_preamble_cs = queue->continue_preamble_cs;
 		if (!scratch_size && !compute_scratch_size && !esgs_ring_size && !gsvs_ring_size)
@@ -1731,7 +1699,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 	} else
 		descriptor_bo = queue->descriptor_bo;
 
-	for(int i = 0; i < 2; ++i) {
+	for(int i = 0; i < 3; ++i) {
 		struct radeon_winsys_cs *cs = NULL;
 		cs = queue->device->ws->cs_create(queue->device->ws,
 						  queue->queue_family_index ? RING_COMPUTE : RING_GFX);
@@ -1850,7 +1818,19 @@ radv_get_preamble_cs(struct radv_queue *queue,
 			radeon_emit(cs, rsrc1);
 		}
 
-		if (!i) {
+		if (i == 0) {
+			si_cs_emit_cache_flush(cs,
+					       false,
+			                       queue->device->physical_device->rad_info.chip_class,
+					       NULL, 0,
+			                       queue->queue_family_index == RING_COMPUTE &&
+			                         queue->device->physical_device->rad_info.chip_class >= CIK,
+			                       (queue->queue_family_index == RADV_QUEUE_COMPUTE ? RADV_CMD_FLAG_CS_PARTIAL_FLUSH : (RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_PS_PARTIAL_FLUSH)) |
+			                       RADV_CMD_FLAG_INV_ICACHE |
+			                       RADV_CMD_FLAG_INV_SMEM_L1 |
+			                       RADV_CMD_FLAG_INV_VMEM_L1 |
+			                       RADV_CMD_FLAG_INV_GLOBAL_L2);
+		} else if (i == 1) {
 			si_cs_emit_cache_flush(cs,
 					       false,
 			                       queue->device->physical_device->rad_info.chip_class,
@@ -1867,14 +1847,18 @@ radv_get_preamble_cs(struct radv_queue *queue,
 			goto fail;
 	}
 
+	if (queue->initial_full_flush_preamble_cs)
+			queue->device->ws->cs_destroy(queue->initial_full_flush_preamble_cs);
+
 	if (queue->initial_preamble_cs)
 			queue->device->ws->cs_destroy(queue->initial_preamble_cs);
 
 	if (queue->continue_preamble_cs)
 			queue->device->ws->cs_destroy(queue->continue_preamble_cs);
 
-	queue->initial_preamble_cs = dest_cs[0];
-	queue->continue_preamble_cs = dest_cs[1];
+	queue->initial_full_flush_preamble_cs = dest_cs[0];
+	queue->initial_preamble_cs = dest_cs[1];
+	queue->continue_preamble_cs = dest_cs[2];
 
 	if (scratch_bo != queue->scratch_bo) {
 		if (queue->scratch_bo)
@@ -1923,6 +1907,7 @@ radv_get_preamble_cs(struct radv_queue *queue,
 	if (add_sample_positions)
 		queue->has_sample_positions = true;
 
+	*initial_full_flush_preamble_cs = queue->initial_full_flush_preamble_cs;
 	*initial_preamble_cs = queue->initial_preamble_cs;
 	*continue_preamble_cs = queue->continue_preamble_cs;
 	if (!scratch_size && !compute_scratch_size && !esgs_ring_size && !gsvs_ring_size)
@@ -2047,7 +2032,7 @@ VkResult radv_QueueSubmit(
 	uint32_t scratch_size = 0;
 	uint32_t compute_scratch_size = 0;
 	uint32_t esgs_ring_size = 0, gsvs_ring_size = 0;
-	struct radeon_winsys_cs *initial_preamble_cs = NULL, *continue_preamble_cs = NULL;
+	struct radeon_winsys_cs *initial_preamble_cs = NULL, *initial_flush_preamble_cs = NULL, *continue_preamble_cs = NULL;
 	VkResult result;
 	bool fence_emitted = false;
 	bool tess_rings_needed = false;
@@ -2072,7 +2057,7 @@ VkResult radv_QueueSubmit(
 
 	result = radv_get_preamble_cs(queue, scratch_size, compute_scratch_size,
 	                              esgs_ring_size, gsvs_ring_size, tess_rings_needed,
-				      sample_positions_needed,
+				      sample_positions_needed, &initial_flush_preamble_cs,
 	                              &initial_preamble_cs, &continue_preamble_cs);
 	if (result != VK_SUCCESS)
 		return result;
@@ -2080,7 +2065,7 @@ VkResult radv_QueueSubmit(
 	for (uint32_t i = 0; i < submitCount; i++) {
 		struct radeon_winsys_cs **cs_array;
 		bool do_flush = !i || pSubmits[i].pWaitDstStageMask;
-		bool can_patch = !do_flush;
+		bool can_patch = true;
 		uint32_t advance;
 		struct radv_winsys_sem_info sem_info;
 
@@ -2110,35 +2095,31 @@ VkResult radv_QueueSubmit(
 		}
 
 		cs_array = malloc(sizeof(struct radeon_winsys_cs *) *
-					        (pSubmits[i].commandBufferCount + do_flush));
-
-		if(do_flush)
-			cs_array[0] = pSubmits[i].waitSemaphoreCount ?
-				queue->device->flush_shader_cs[queue->queue_family_index] :
-				queue->device->flush_cs[queue->queue_family_index];
+					        (pSubmits[i].commandBufferCount));
 
 		for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; j++) {
 			RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer,
 					 pSubmits[i].pCommandBuffers[j]);
 			assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
-			cs_array[j + do_flush] = cmd_buffer->cs;
+			cs_array[j] = cmd_buffer->cs;
 			if ((cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT))
 				can_patch = false;
 		}
 
-		for (uint32_t j = 0; j < pSubmits[i].commandBufferCount + do_flush; j += advance) {
+		for (uint32_t j = 0; j < pSubmits[i].commandBufferCount; j += advance) {
+			struct radeon_winsys_cs *initial_preamble = (do_flush && !j) ? initial_flush_preamble_cs : initial_preamble_cs;
 			advance = MIN2(max_cs_submission,
-				       pSubmits[i].commandBufferCount + do_flush - j);
+				       pSubmits[i].commandBufferCount - j);
 
 			if (queue->device->trace_bo)
 				*queue->device->trace_id_ptr = 0;
 
 			sem_info.cs_emit_wait = j == 0;
-			sem_info.cs_emit_signal = j + advance == pSubmits[i].commandBufferCount + do_flush;
+			sem_info.cs_emit_signal = j + advance == pSubmits[i].commandBufferCount;
 
 			ret = queue->device->ws->cs_submit(ctx, queue->queue_idx, cs_array + j,
-							advance, initial_preamble_cs, continue_preamble_cs,
+							advance, initial_preamble, continue_preamble_cs,
 							   &sem_info,
 							can_patch, base_fence);
 
@@ -2148,16 +2129,7 @@ VkResult radv_QueueSubmit(
 			}
 			fence_emitted = true;
 			if (queue->device->trace_bo) {
-				bool success = queue->device->ws->ctx_wait_idle(
-							queue->hw_ctx,
-							radv_queue_family_to_ring(
-								queue->queue_family_index),
-							queue->queue_idx);
-
-				if (!success) { /* Hang */
-					radv_dump_trace(queue->device, cs_array[j]);
-					abort();
-				}
+				radv_check_gpu_hangs(queue, cs_array[j]);
 			}
 		}
 
@@ -2839,7 +2811,7 @@ VkResult radv_CreateEvent(
 
 	event->bo = device->ws->buffer_create(device->ws, 8, 8,
 					      RADEON_DOMAIN_GTT,
-					      RADEON_FLAG_CPU_ACCESS);
+					      RADEON_FLAG_VA_UNCACHED | RADEON_FLAG_CPU_ACCESS);
 	if (!event->bo) {
 		vk_free2(&device->alloc, pAllocator, event);
 		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -3141,8 +3113,8 @@ radv_initialise_color_surface(struct radv_device *device,
 	}
 
 	if (device->physical_device->rad_info.chip_class >= GFX9) {
-		uint32_t max_slice = radv_surface_layer_count(iview);
-		unsigned mip0_depth = iview->base_layer + max_slice - 1;
+		unsigned mip0_depth = iview->image->type == VK_IMAGE_TYPE_3D ?
+		  (iview->extent.depth - 1) : (iview->image->info.array_size - 1);
 
 		cb->cb_color_view |= S_028C6C_MIP_LEVEL(iview->base_mip);
 		cb->cb_color_attrib |= S_028C74_MIP0_DEPTH(mip0_depth) |
@@ -3191,7 +3163,7 @@ radv_initialise_ds_surface(struct radv_device *device,
 	}
 
 	format = radv_translate_dbformat(iview->image->vk_format);
-	stencil_format = iview->image->surface.flags & RADEON_SURF_SBUFFER ?
+	stencil_format = iview->image->surface.has_stencil ?
 		V_028044_STENCIL_8 : V_028044_STENCIL_INVALID;
 
 	uint32_t max_slice = radv_surface_layer_count(iview);
@@ -3226,7 +3198,7 @@ radv_initialise_ds_surface(struct radv_device *device,
 		if (iview->image->surface.htile_size && !level) {
 			ds->db_z_info |= S_028038_TILE_SURFACE_ENABLE(1);
 
-			if (!(iview->image->surface.flags & RADEON_SURF_SBUFFER))
+			if (!iview->image->surface.has_stencil)
 				/* Use all of the htile_buffer for depth if there's no stencil. */
 				ds->db_stencil_info |= S_02803C_TILE_STENCIL_DISABLE(1);
 			va = device->ws->buffer_get_va(iview->bo) + iview->image->offset +
@@ -3289,7 +3261,7 @@ radv_initialise_ds_surface(struct radv_device *device,
 		if (iview->image->surface.htile_size && !level) {
 			ds->db_z_info |= S_028040_TILE_SURFACE_ENABLE(1);
 
-			if (!(iview->image->surface.flags & RADEON_SURF_SBUFFER))
+			if (!iview->image->surface.has_stencil)
 				/* Use all of the htile_buffer for depth if there's no stencil. */
 				ds->db_stencil_info |= S_028044_TILE_STENCIL_DISABLE(1);
 

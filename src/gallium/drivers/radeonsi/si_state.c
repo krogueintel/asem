@@ -115,7 +115,7 @@ static void si_emit_cb_render_state(struct si_context *sctx, struct r600_atom *a
 	/* GFX9: Flush DFSM when CB_TARGET_MASK changes.
 	 * I think we don't have to do anything between IBs.
 	 */
-	if (sctx->b.chip_class >= GFX9 &&
+	if (sctx->screen->dfsm_allowed &&
 	    sctx->last_cb_target_mask != cb_target_mask) {
 		sctx->last_cb_target_mask = cb_target_mask;
 
@@ -441,6 +441,8 @@ static void *si_create_blend_state_mode(struct pipe_context *ctx,
 		blend->need_src_alpha_4bit |= 0xf;
 
 	blend->cb_target_mask = 0;
+	blend->cb_target_enabled_4bit = 0;
+
 	for (int i = 0; i < 8; i++) {
 		/* state->rt entries > 0 only written if independent blending */
 		const int j = state->independent_blend_enable ? i : 0;
@@ -482,6 +484,8 @@ static void *si_create_blend_state_mode(struct pipe_context *ctx,
 
 		/* cb_render_state will disable unused ones */
 		blend->cb_target_mask |= (unsigned)state->rt[j].colormask << (4 * i);
+		if (state->rt[j].colormask)
+			blend->cb_target_enabled_4bit |= 0xf << (4 * i);
 
 		if (!state->rt[j].colormask || !state->rt[j].blend_enable) {
 			si_pm4_set_reg(pm4, R_028780_CB_BLEND0_CONTROL + i * 4, blend_cntl);
@@ -619,6 +623,13 @@ static void si_bind_blend_state(struct pipe_context *ctx, void *state)
 	    old_blend->blend_enable_4bit != blend->blend_enable_4bit ||
 	    old_blend->need_src_alpha_4bit != blend->need_src_alpha_4bit)
 		sctx->do_update_shaders = true;
+
+	if (sctx->screen->dpbb_allowed &&
+	    (!old_blend ||
+	     old_blend->alpha_to_coverage != blend->alpha_to_coverage ||
+	     old_blend->blend_enable_4bit != blend->blend_enable_4bit ||
+	     old_blend->cb_target_enabled_4bit != blend->cb_target_enabled_4bit))
+		si_mark_atom_dirty(sctx, &sctx->dpbb_state);
 }
 
 static void si_delete_blend_state(struct pipe_context *ctx, void *state)
@@ -1040,6 +1051,14 @@ static uint32_t si_translate_stencil_op(int s_op)
 	return 0;
 }
 
+static bool si_dsa_writes_stencil(const struct pipe_stencil_state *s)
+{
+	return s->enabled && s->writemask &&
+	       (s->fail_op  != PIPE_STENCIL_OP_KEEP ||
+		s->zfail_op != PIPE_STENCIL_OP_KEEP ||
+		s->zpass_op != PIPE_STENCIL_OP_KEEP);
+}
+
 static void *si_create_dsa_state(struct pipe_context *ctx,
 				 const struct pipe_depth_stencil_alpha_state *state)
 {
@@ -1097,6 +1116,15 @@ static void *si_create_dsa_state(struct pipe_context *ctx,
 		si_pm4_set_reg(pm4, R_028024_DB_DEPTH_BOUNDS_MAX, fui(state->depth.bounds_max));
 	}
 
+	dsa->depth_enabled = state->depth.enabled;
+	dsa->depth_write_enabled = state->depth.enabled &&
+				   state->depth.writemask;
+	dsa->stencil_enabled = state->stencil[0].enabled;
+	dsa->stencil_write_enabled = state->stencil[0].enabled &&
+				     (si_dsa_writes_stencil(&state->stencil[0]) ||
+				      si_dsa_writes_stencil(&state->stencil[1]));
+	dsa->db_can_write = dsa->depth_write_enabled ||
+			    dsa->stencil_write_enabled;
 	return dsa;
 }
 
@@ -1119,6 +1147,13 @@ static void si_bind_dsa_state(struct pipe_context *ctx, void *state)
 
 	if (!old_dsa || old_dsa->alpha_func != dsa->alpha_func)
 		sctx->do_update_shaders = true;
+
+	if (sctx->screen->dpbb_allowed &&
+	    (!old_dsa ||
+	     (old_dsa->depth_enabled != dsa->depth_enabled ||
+	      old_dsa->stencil_enabled != dsa->stencil_enabled ||
+	      old_dsa->db_can_write != dsa->db_can_write)))
+		si_mark_atom_dirty(sctx, &sctx->dpbb_state);
 }
 
 static void si_delete_dsa_state(struct pipe_context *ctx, void *state)
@@ -1257,6 +1292,8 @@ static void si_emit_db_render_state(struct si_context *sctx, struct r600_atom *s
 static uint32_t si_translate_colorformat(enum pipe_format format)
 {
 	const struct util_format_description *desc = util_format_description(format);
+	if (!desc)
+		return V_028C70_COLOR_INVALID;
 
 #define HAS_SIZE(x,y,z,w) \
 	(desc->channel[0].size == (x) && desc->channel[1].size == (y) && \
@@ -1761,7 +1798,11 @@ static unsigned si_tex_dim(struct si_screen *sscreen, struct r600_texture *rtex,
 
 static bool si_is_sampler_format_supported(struct pipe_screen *screen, enum pipe_format format)
 {
-	return si_translate_texformat(screen, format, util_format_description(format),
+	const struct util_format_description *desc = util_format_description(format);
+	if (!desc)
+		return false;
+
+	return si_translate_texformat(screen, format, desc,
 				      util_format_get_first_non_void_channel(format)) != ~0U;
 }
 
@@ -1890,6 +1931,8 @@ static unsigned si_is_vertex_format_supported(struct pipe_screen *screen,
 			  PIPE_BIND_VERTEX_BUFFER)) == 0);
 
 	desc = util_format_description(format);
+	if (!desc)
+		return 0;
 
 	/* There are no native 8_8_8 or 16_16_16 data formats, and we currently
 	 * select 8_8_8_8 and 16_16_16_16 instead. This works reasonably well
@@ -2140,36 +2183,36 @@ static void si_initialize_color_surface(struct si_context *sctx,
 	unsigned color_info, color_attrib, color_view;
 	unsigned format, swap, ntype, endian;
 	const struct util_format_description *desc;
-	int i;
+	int firstchan;
 	unsigned blend_clamp = 0, blend_bypass = 0;
 
 	color_view = S_028C6C_SLICE_START(surf->base.u.tex.first_layer) |
 		     S_028C6C_SLICE_MAX(surf->base.u.tex.last_layer);
 
 	desc = util_format_description(surf->base.format);
-	for (i = 0; i < 4; i++) {
-		if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
+	for (firstchan = 0; firstchan < 4; firstchan++) {
+		if (desc->channel[firstchan].type != UTIL_FORMAT_TYPE_VOID) {
 			break;
 		}
 	}
-	if (i == 4 || desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT) {
+	if (firstchan == 4 || desc->channel[firstchan].type == UTIL_FORMAT_TYPE_FLOAT) {
 		ntype = V_028C70_NUMBER_FLOAT;
 	} else {
 		ntype = V_028C70_NUMBER_UNORM;
 		if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
 			ntype = V_028C70_NUMBER_SRGB;
-		else if (desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED) {
-			if (desc->channel[i].pure_integer) {
+		else if (desc->channel[firstchan].type == UTIL_FORMAT_TYPE_SIGNED) {
+			if (desc->channel[firstchan].pure_integer) {
 				ntype = V_028C70_NUMBER_SINT;
 			} else {
-				assert(desc->channel[i].normalized);
+				assert(desc->channel[firstchan].normalized);
 				ntype = V_028C70_NUMBER_SNORM;
 			}
-		} else if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED) {
-			if (desc->channel[i].pure_integer) {
+		} else if (desc->channel[firstchan].type == UTIL_FORMAT_TYPE_UNSIGNED) {
+			if (desc->channel[firstchan].pure_integer) {
 				ntype = V_028C70_NUMBER_UINT;
 			} else {
-				assert(desc->channel[i].normalized);
+				assert(desc->channel[firstchan].normalized);
 				ntype = V_028C70_NUMBER_UNORM;
 			}
 		}
@@ -2292,7 +2335,7 @@ static void si_init_depth_surface(struct si_context *sctx,
 	uint32_t z_info, s_info;
 
 	format = si_translate_dbformat(rtex->db_render_format);
-	stencil_format = rtex->surface.flags & RADEON_SURF_SBUFFER ?
+	stencil_format = rtex->surface.has_stencil ?
 				 V_028044_STENCIL_8 : V_028044_STENCIL_INVALID;
 
 	assert(format != V_028040_Z_INVALID);
@@ -2337,7 +2380,7 @@ static void si_init_depth_surface(struct si_context *sctx,
 				s_info |= S_02803C_ITERATE_FLUSH(1);
 			}
 
-			if (rtex->surface.flags & RADEON_SURF_SBUFFER) {
+			if (rtex->surface.has_stencil) {
 				/* Stencil buffer workaround ported from the SI-CI-VI code.
 				 * See that for explanation.
 				 */
@@ -2403,7 +2446,7 @@ static void si_init_depth_surface(struct si_context *sctx,
 			z_info |= S_028040_TILE_SURFACE_ENABLE(1) |
 				  S_028040_ALLOW_EXPCLEAR(1);
 
-			if (rtex->surface.flags & RADEON_SURF_SBUFFER) {
+			if (rtex->surface.has_stencil) {
 				/* Workaround: For a not yet understood reason, the
 				 * combination of MSAA, fast stencil clear and stencil
 				 * decompress messes with subsequent stencil buffer
@@ -2459,7 +2502,7 @@ void si_update_fb_dirtiness_after_rendering(struct si_context *sctx)
 
 		rtex->dirty_level_mask |= 1 << surf->u.tex.level;
 
-		if (rtex->surface.flags & RADEON_SURF_SBUFFER)
+		if (rtex->surface.has_stencil)
 			rtex->stencil_dirty_level_mask |= 1 << surf->u.tex.level;
 	}
 	if (sctx->framebuffer.compressed_cb_mask) {
@@ -2576,9 +2619,18 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	 * individual generate_mipmap blits.
 	 * Note that lower mipmap levels aren't compressed.
 	 */
-	if (sctx->generate_mipmap_for_depth)
+	if (sctx->generate_mipmap_for_depth) {
 		si_make_DB_shader_coherent(sctx, 1, false,
 					   sctx->framebuffer.DB_has_shader_readable_metadata);
+	} else if (sctx->b.chip_class == GFX9) {
+		/* It appears that DB metadata "leaks" in a sequence of:
+		 *  - depth clear
+		 *  - DCC decompress for shader image writes (with DB disabled)
+		 *  - render with DEPTH_BEFORE_SHADER=1
+		 * Flushing DB metadata works around the problem.
+		 */
+		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_DB_META;
+	}
 
 	/* Take the maximum of the old and new count. If the new count is lower,
 	 * dirtying is needed to disable the unbound colorbuffers.
@@ -2669,6 +2721,9 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	si_update_poly_offset_state(sctx);
 	si_mark_atom_dirty(sctx, &sctx->cb_render_state);
 	si_mark_atom_dirty(sctx, &sctx->framebuffer.atom);
+
+	if (sctx->screen->dpbb_allowed)
+		si_mark_atom_dirty(sctx, &sctx->dpbb_state);
 
 	if (sctx->framebuffer.any_dst_linear != old_any_dst_linear)
 		si_mark_atom_dirty(sctx, &sctx->msaa_config);
@@ -2955,7 +3010,7 @@ static void si_emit_framebuffer_state(struct si_context *sctx, struct r600_atom 
 	radeon_set_context_reg(cs, R_028208_PA_SC_WINDOW_SCISSOR_BR,
 			       S_028208_BR_X(state->width) | S_028208_BR_Y(state->height));
 
-	if (sctx->b.chip_class >= GFX9) {
+	if (sctx->screen->dfsm_allowed) {
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 		radeon_emit(cs, EVENT_TYPE(V_028A90_BREAK_BATCH) | EVENT_INDEX(0));
 	}
@@ -3033,7 +3088,7 @@ static void si_emit_msaa_config(struct si_context *sctx, struct r600_atom *atom)
 				sc_mode_cntl_1);
 
 	/* GFX9: Flush DFSM when the AA mode changes. */
-	if (sctx->b.chip_class >= GFX9) {
+	if (sctx->screen->dfsm_allowed) {
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_DFSM) | EVENT_INDEX(0));
 	}
@@ -3051,6 +3106,8 @@ static void si_set_min_samples(struct pipe_context *ctx, unsigned min_samples)
 
 	if (sctx->framebuffer.nr_samples > 1)
 		si_mark_atom_dirty(sctx, &sctx->msaa_config);
+	if (sctx->screen->dpbb_allowed)
+		si_mark_atom_dirty(sctx, &sctx->dpbb_state);
 }
 
 /*
@@ -4110,6 +4167,7 @@ void si_init_state_functions(struct si_context *sctx)
 	si_init_atom(sctx, &sctx->framebuffer.atom, &sctx->atoms.s.framebuffer, si_emit_framebuffer_state);
 	si_init_atom(sctx, &sctx->msaa_sample_locs.atom, &sctx->atoms.s.msaa_sample_locs, si_emit_msaa_sample_locs);
 	si_init_atom(sctx, &sctx->db_render_state, &sctx->atoms.s.db_render_state, si_emit_db_render_state);
+	si_init_atom(sctx, &sctx->dpbb_state, &sctx->atoms.s.dpbb_state, si_emit_dpbb_state);
 	si_init_atom(sctx, &sctx->msaa_config, &sctx->atoms.s.msaa_config, si_emit_msaa_config);
 	si_init_atom(sctx, &sctx->sample_mask.atom, &sctx->atoms.s.sample_mask, si_emit_sample_mask);
 	si_init_atom(sctx, &sctx->cb_render_state, &sctx->atoms.s.cb_render_state, si_emit_cb_render_state);
@@ -4639,26 +4697,39 @@ static void si_init_config(struct si_context *sctx)
 		}
 		si_pm4_set_reg(pm4, R_00B21C_SPI_SHADER_PGM_RSRC3_GS, S_00B21C_CU_EN(0xffff));
 
-		if (sscreen->b.info.num_good_compute_units /
-		    (sscreen->b.info.max_se * sscreen->b.info.max_sh_per_se) <= 4) {
+		/* Compute LATE_ALLOC_VS.LIMIT. */
+		unsigned num_cu_per_sh = sscreen->b.info.num_good_compute_units /
+					 (sscreen->b.info.max_se *
+					  sscreen->b.info.max_sh_per_se);
+		unsigned late_alloc_limit; /* The limit is per SH. */
+
+		if (sctx->b.family == CHIP_KABINI) {
+			late_alloc_limit = 0; /* Potential hang on Kabini. */
+		} else if (num_cu_per_sh <= 4) {
 			/* Too few available compute units per SH. Disallowing
-			 * VS to run on CU0 could hurt us more than late VS
+			 * VS to run on one CU could hurt us more than late VS
 			 * allocation would help.
 			 *
-			 * LATE_ALLOC_VS = 2 is the highest safe number.
+			 * 2 is the highest safe number that allows us to keep
+			 * all CUs enabled.
 			 */
-			si_pm4_set_reg(pm4, R_00B118_SPI_SHADER_PGM_RSRC3_VS, S_00B118_CU_EN(0xffff));
-			si_pm4_set_reg(pm4, R_00B11C_SPI_SHADER_LATE_ALLOC_VS, S_00B11C_LIMIT(2));
+			late_alloc_limit = 2;
 		} else {
-			/* Set LATE_ALLOC_VS == 31. It should be less than
-			 * the number of scratch waves. Limitations:
-			 * - VS can't execute on CU0.
-			 * - If HS writes outputs to LDS, LS can't execute on CU0.
+			/* This is a good initial value, allowing 1 late_alloc
+			 * wave per SIMD on num_cu - 2.
 			 */
-			si_pm4_set_reg(pm4, R_00B118_SPI_SHADER_PGM_RSRC3_VS, S_00B118_CU_EN(0xfffe));
-			si_pm4_set_reg(pm4, R_00B11C_SPI_SHADER_LATE_ALLOC_VS, S_00B11C_LIMIT(31));
+			late_alloc_limit = (num_cu_per_sh - 2) * 4;
+
+			/* The limit is 0-based, so 0 means 1. */
+			assert(late_alloc_limit > 0 && late_alloc_limit <= 64);
+			late_alloc_limit -= 1;
 		}
 
+		/* VS can't execute on one CU if the limit is > 2. */
+		si_pm4_set_reg(pm4, R_00B118_SPI_SHADER_PGM_RSRC3_VS,
+			       S_00B118_CU_EN(late_alloc_limit > 2 ? 0xfffe : 0xffff));
+		si_pm4_set_reg(pm4, R_00B11C_SPI_SHADER_LATE_ALLOC_VS,
+			       S_00B11C_LIMIT(late_alloc_limit));
 		si_pm4_set_reg(pm4, R_00B01C_SPI_SHADER_PGM_RSRC3_PS, S_00B01C_CU_EN(0xffff));
 	}
 
@@ -4709,12 +4780,6 @@ static void si_init_config(struct si_context *sctx)
 			assert(0);
 		}
 
-		si_pm4_set_reg(pm4, R_028060_DB_DFSM_CONTROL,
-			       S_028060_PUNCHOUT_MODE(V_028060_FORCE_OFF));
-		/* TODO: Enable the binner: */
-		si_pm4_set_reg(pm4, R_028C44_PA_SC_BINNER_CNTL_0,
-			       S_028C44_BINNING_MODE(V_028C44_DISABLE_BINNING_USE_LEGACY_SC) |
-			       S_028C44_DISABLE_START_OF_PRIM(1));
 		si_pm4_set_reg(pm4, R_028C48_PA_SC_BINNER_CNTL_1,
 			       S_028C48_MAX_ALLOC_COUNT(MIN2(128, pc_lines / (4 * num_se))) |
 			       S_028C48_MAX_PRIM_PER_BATCH(1023));

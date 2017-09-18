@@ -360,7 +360,7 @@ void FetchJit::JitLoadVertices(const FETCH_COMPILE_STATE &fetchState, Value* str
         Value *startOffset;
         if(ied.InstanceEnable)
         {
-            Value* stepRate = C(ied.InstanceDataStepRate);
+            Value* stepRate = C(ied.InstanceAdvancementState);
 
             // prevent a div by 0 for 0 step rate
             Value* isNonZeroStep = ICMP_UGT(stepRate, C(0));
@@ -375,6 +375,10 @@ void FetchJit::JitLoadVertices(const FETCH_COMPILE_STATE &fetchState, Value* str
             vCurIndices = VBROADCAST(calcInstance);
 
             startOffset = startInstance;
+        }
+        else if (ied.InstanceStrideEnable)
+        {
+            SWR_ASSERT((0), "TODO: Fill out more once driver sends this down.");
         }
         else
         {
@@ -825,7 +829,7 @@ void FetchJit::JitGatherVertices(const FETCH_COMPILE_STATE &fetchState,
         Value *startOffset;
         if(ied.InstanceEnable)
         {
-            Value* stepRate = C(ied.InstanceDataStepRate);
+            Value* stepRate = C(ied.InstanceAdvancementState);
 
             // prevent a div by 0 for 0 step rate
             Value* isNonZeroStep = ICMP_UGT(stepRate, C(0));
@@ -840,6 +844,10 @@ void FetchJit::JitGatherVertices(const FETCH_COMPILE_STATE &fetchState,
             vCurIndices = VBROADCAST(calcInstance);
 
             startOffset = startInstance;
+        }
+        else if (ied.InstanceStrideEnable)
+        {
+            SWR_ASSERT((0), "TODO: Fill out more once driver sends this down.");
         }
         else
         {
@@ -1005,7 +1013,12 @@ void FetchJit::JitGatherVertices(const FETCH_COMPILE_STATE &fetchState,
                                 Value *vMask = vGatherMask;
 
                                 // Gather a SIMD of vertices
-                                vVertexElements[currentVertexElement++] = GATHERPS(gatherSrc, pStreamBase, vOffsets, vMask, C((char)1));
+                                // APIs allow a 4GB range for offsets
+                                // However, GATHERPS uses signed 32-bit offsets, so only a 2GB range :(
+                                // But, we know that elements must be aligned for FETCH. :)
+                                // Right shift the offset by a bit and then scale by 2 to remove the sign extension.
+                                Value* vShiftedOffsets = VPSRLI(vOffsets, C(1));
+                                vVertexElements[currentVertexElement++] = GATHERPS(gatherSrc, pStreamBase, vShiftedOffsets, vMask, C((char)2));
                             }
                             else
                             {

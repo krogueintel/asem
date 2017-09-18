@@ -436,11 +436,19 @@ enum brw_gpu_ring {
    BLT_RING,
 };
 
+struct brw_reloc_list {
+   struct drm_i915_gem_relocation_entry *relocs;
+   int reloc_count;
+   int reloc_array_size;
+};
+
 struct intel_batchbuffer {
    /** Current batchbuffer being queued up. */
    struct brw_bo *bo;
    /** Last BO submitted to the hardware.  Used for glFinish(). */
    struct brw_bo *last_bo;
+   /** Current statebuffer being queued up. */
+   struct brw_bo *state_bo;
 
 #ifdef DEBUG
    uint16_t emit, total;
@@ -448,18 +456,18 @@ struct intel_batchbuffer {
    uint16_t reserved_space;
    uint32_t *map_next;
    uint32_t *map;
-   uint32_t *cpu_map;
-#define BATCH_SZ (8192*sizeof(uint32_t))
+   uint32_t *batch_cpu_map;
+   uint32_t *state_cpu_map;
+   uint32_t *state_map;
+   uint32_t state_used;
 
-   uint32_t state_batch_offset;
    enum brw_gpu_ring ring;
    bool use_batch_first;
    bool needs_sol_reset;
    bool state_base_address_emitted;
 
-   struct drm_i915_gem_relocation_entry *relocs;
-   int reloc_count;
-   int reloc_array_size;
+   struct brw_reloc_list batch_relocs;
+   struct brw_reloc_list state_relocs;
    unsigned int valid_reloc_flags;
 
    /** The validation list */
@@ -473,7 +481,8 @@ struct intel_batchbuffer {
 
    struct {
       uint32_t *map_next;
-      int reloc_count;
+      int batch_reloc_count;
+      int state_reloc_count;
       int exec_count;
    } saved;
 
@@ -746,34 +755,9 @@ struct brw_context
 
    uint64_t max_gtt_map_object_size;
 
-   int gen;
-   int gt;
-
-   bool is_g4x;
-   bool is_baytrail;
-   bool is_haswell;
-   bool is_cherryview;
-   bool is_broxton;
-
    bool has_hiz;
    bool has_separate_stencil;
-   bool must_use_separate_stencil;
-   bool has_llc;
    bool has_swizzling;
-   bool has_surface_tile_offset;
-   bool has_compr4;
-   bool has_negative_rhw_bug;
-   bool has_pln;
-   bool no_simd8;
-
-   /**
-    * Some versions of Gen hardware don't do centroid interpolation correctly
-    * on unlit pixels, causing incorrect values for derivatives near triangle
-    * edges.  Enabling this flag causes the fragment shader to use
-    * non-centroid interpolation for unlit pixels, at the expense of two extra
-    * fragment shader instructions.
-    */
-   bool needs_unlit_centroid_workaround;
 
    /** Derived stencil states. */
    bool stencil_enabled;

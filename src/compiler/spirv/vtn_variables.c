@@ -102,10 +102,15 @@ vtn_access_link_as_ssa(struct vtn_builder *b, struct vtn_access_link link,
    if (link.mode == vtn_access_mode_literal) {
       return nir_imm_int(&b->nb, link.id * stride);
    } else if (stride == 1) {
-      return vtn_ssa_value(b, link.id)->def;
+       nir_ssa_def *ssa = vtn_ssa_value(b, link.id)->def;
+       if (ssa->bit_size != 32)
+          ssa = nir_u2u32(&b->nb, ssa);
+      return ssa;
    } else {
-      return nir_imul(&b->nb, vtn_ssa_value(b, link.id)->def,
-                              nir_imm_int(&b->nb, stride));
+      nir_ssa_def *src0 = vtn_ssa_value(b, link.id)->def;
+      if (src0->bit_size != 32)
+         src0 = nir_u2u32(&b->nb, src0);
+      return nir_imul(&b->nb, src0, nir_imm_int(&b->nb, stride));
    }
 }
 
@@ -599,7 +604,7 @@ vtn_type_block_size(struct vtn_type *type)
       return type->stride * glsl_get_length(type->type);
 
    default:
-      assert(!"Invalid block type");
+      unreachable("Invalid block type");
       return 0;
    }
 }
@@ -825,7 +830,7 @@ vtn_block_load(struct vtn_builder *b, struct vtn_pointer *src)
                                        &access_offset, &access_size);
       break;
    default:
-      assert(!"Invalid block variable mode");
+      unreachable("Invalid block variable mode");
    }
 
    nir_ssa_def *offset, *index = NULL;
@@ -1121,6 +1126,10 @@ vtn_get_builtin_location(struct vtn_builder *b,
       *location = FRAG_RESULT_DEPTH;
       assert(*mode == nir_var_shader_out);
       break;
+   case SpvBuiltInHelperInvocation:
+      *location = SYSTEM_VALUE_HELPER_INVOCATION;
+      set_mode_system_value(mode);
+      break;
    case SpvBuiltInNumWorkgroups:
       *location = SYSTEM_VALUE_NUM_WORK_GROUPS;
       set_mode_system_value(mode);
@@ -1161,7 +1170,6 @@ vtn_get_builtin_location(struct vtn_builder *b,
       *location = SYSTEM_VALUE_VIEW_INDEX;
       set_mode_system_value(mode);
       break;
-   case SpvBuiltInHelperInvocation:
    default:
       unreachable("unsupported builtin");
    }
@@ -1422,7 +1430,7 @@ vtn_storage_class_to_mode(SpvStorageClass class,
          mode = vtn_variable_mode_ssbo;
          nir_mode = 0;
       } else {
-         assert(!"Invalid uniform variable type");
+         unreachable("Invalid uniform variable type");
       }
       break;
    case SpvStorageClassStorageBuffer:
@@ -1437,7 +1445,7 @@ vtn_storage_class_to_mode(SpvStorageClass class,
          mode = vtn_variable_mode_sampler;
          nir_mode = nir_var_uniform;
       } else {
-         assert(!"Invalid uniform constant variable type");
+         unreachable("Invalid uniform constant variable type");
       }
       break;
    case SpvStorageClassPushConstant:

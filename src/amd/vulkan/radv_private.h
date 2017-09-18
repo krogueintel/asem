@@ -55,7 +55,6 @@
 #include "ac_nir_to_llvm.h"
 #include "ac_gpu_info.h"
 #include "ac_surface.h"
-#include "radv_debug.h"
 #include "radv_descriptor_set.h"
 
 #include <llvm-c/TargetMachine.h>
@@ -331,9 +330,6 @@ radv_pipeline_cache_insert_shader(struct radv_pipeline_cache *cache,
 				  struct radv_shader_variant *variant,
 				  const void *code, unsigned code_size);
 
-void radv_shader_variant_destroy(struct radv_device *device,
-				 struct radv_shader_variant *variant);
-
 struct radv_meta_state {
 	VkAllocationCallbacks alloc;
 
@@ -500,6 +496,7 @@ struct radv_queue {
 	struct radeon_winsys_bo *tess_factor_ring_bo;
 	struct radeon_winsys_bo *tess_offchip_ring_bo;
 	struct radeon_winsys_cs *initial_preamble_cs;
+	struct radeon_winsys_cs *initial_full_flush_preamble_cs;
 	struct radeon_winsys_cs *continue_preamble_cs;
 };
 
@@ -516,8 +513,6 @@ struct radv_device {
 	struct radv_queue *queues[RADV_MAX_QUEUE_FAMILIES];
 	int queue_count[RADV_MAX_QUEUE_FAMILIES];
 	struct radeon_winsys_cs *empty_cs[RADV_MAX_QUEUE_FAMILIES];
-	struct radeon_winsys_cs *flush_cs[RADV_MAX_QUEUE_FAMILIES];
-	struct radeon_winsys_cs *flush_shader_cs[RADV_MAX_QUEUE_FAMILIES];
 	uint64_t debug_flags;
 
 	bool llvm_supports_spill;
@@ -556,6 +551,9 @@ struct radv_device {
 	uint32_t fmask_mrt_offset_counter;
 	struct list_head shader_slabs;
 	mtx_t shader_slab_mutex;
+
+	/* For detecting VM faults reported by dmesg. */
+	uint64_t dmesg_timestamp;
 };
 
 struct radv_device_memory {
@@ -746,6 +744,13 @@ extern const struct radv_dynamic_state default_dynamic_state;
 void radv_dynamic_state_copy(struct radv_dynamic_state *dest,
 			     const struct radv_dynamic_state *src,
 			     uint32_t copy_mask);
+
+const char *
+radv_get_debug_option_name(int id);
+
+const char *
+radv_get_perftest_option_name(int id);
+
 /**
  * Attachment state when recording a renderpass instance.
  *
@@ -759,9 +764,10 @@ struct radv_attachment_state {
 };
 
 struct radv_cmd_state {
-	uint32_t                                      vb_dirty;
+	bool                                          vb_dirty;
 	radv_cmd_dirty_mask_t                         dirty;
 	bool                                          push_descriptors_dirty;
+	bool predicating;
 
 	struct radv_pipeline *                        pipeline;
 	struct radv_pipeline *                        emitted_pipeline;
@@ -776,8 +782,8 @@ struct radv_cmd_state {
 	struct radv_attachment_state *                attachments;
 	VkRect2D                                     render_area;
 	uint32_t                                     index_type;
-	uint64_t                                     index_va;
 	uint32_t                                     max_index_count;
+	uint64_t                                     index_va;
 	int32_t                                      last_primitive_reset_en;
 	uint32_t                                     last_primitive_reset_index;
 	enum radv_cmd_flush_bits                     flush_bits;
@@ -786,7 +792,6 @@ struct radv_cmd_state {
 	uint32_t                                      descriptors_dirty;
 	uint32_t                                      trace_id;
 	uint32_t                                      last_ia_multi_vgt_param;
-	bool predicating;
 };
 
 struct radv_cmd_pool {
@@ -833,7 +838,7 @@ struct radv_cmd_buffer {
 	bool tess_rings_needed;
 	bool sample_positions_needed;
 
-	bool record_fail;
+	VkResult record_result;
 
 	int ring_offsets_idx; /* just used for verification */
 	uint32_t gfx9_fence_offset;
@@ -949,15 +954,7 @@ struct radv_event {
 	uint64_t *map;
 };
 
-struct nir_shader;
-
-struct radv_shader_module {
-	struct nir_shader *                          nir;
-	unsigned char                                sha1[20];
-	uint32_t                                     size;
-	char                                         data[0];
-};
-
+struct radv_shader_module;
 struct ac_shader_variant_key;
 
 void
@@ -988,35 +985,6 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 		     __tmp = (gl_shader_stage)((stage_bits) & RADV_STAGE_MASK);	\
 	     stage = __builtin_ffs(__tmp) - 1, __tmp;			\
 	     __tmp &= ~(1 << (stage)))
-
-
-struct radv_shader_slab {
-	struct list_head slabs;
-	struct list_head shaders;
-	struct radeon_winsys_bo *bo;
-	uint64_t size;
-	char *ptr;
-};
-
-struct radv_shader_variant {
-	uint32_t ref_count;
-
-	struct radeon_winsys_bo *bo;
-	uint64_t bo_offset;
-	struct ac_shader_config config;
-	struct ac_shader_variant_info info;
-	unsigned rsrc1;
-	unsigned rsrc2;
-	uint32_t code_size;
-
-	struct list_head slab_list;
-};
-
-
-void *radv_alloc_shader_memory(struct radv_device *device,
-                              struct radv_shader_variant *shader);
-
-void radv_destroy_shader_slabs(struct radv_device *device);
 
 struct radv_depth_stencil_state {
 	uint32_t db_depth_control;
@@ -1075,6 +1043,16 @@ struct radv_tessellation_state {
 	uint32_t tf_param;
 };
 
+struct radv_vertex_elements_info {
+	uint32_t rsrc_word3[MAX_VERTEX_ATTRIBS];
+	uint32_t format_size[MAX_VERTEX_ATTRIBS];
+	uint32_t binding[MAX_VERTEX_ATTRIBS];
+	uint32_t offset[MAX_VERTEX_ATTRIBS];
+	uint32_t count;
+};
+
+#define SI_GS_PER_ES 128
+
 struct radv_pipeline {
 	struct radv_device *                          device;
 	uint32_t                                     dynamic_state_mask;
@@ -1088,11 +1066,8 @@ struct radv_pipeline {
 	struct radv_shader_variant *gs_copy_shader;
 	VkShaderStageFlags                           active_stages;
 
-	uint32_t va_rsrc_word3[MAX_VERTEX_ATTRIBS];
-	uint32_t va_format_size[MAX_VERTEX_ATTRIBS];
-	uint32_t va_binding[MAX_VERTEX_ATTRIBS];
-	uint32_t va_offset[MAX_VERTEX_ATTRIBS];
-	uint32_t num_vertex_attribs;
+	struct radv_vertex_elements_info             vertex_elements;
+
 	uint32_t                                     binding_stride[MAX_VBS];
 
 	union {
@@ -1109,6 +1084,8 @@ struct radv_pipeline {
 			uint32_t vgt_gs_mode;
 			bool vgt_primitiveid_en;
 			bool prim_restart_enable;
+			bool partial_es_wave;
+			uint8_t primgroup_size;
 			unsigned esgs_ring_size;
 			unsigned gsvs_ring_size;
 			uint32_t ps_input_cntl[32];
@@ -1116,6 +1093,10 @@ struct radv_pipeline {
 			uint32_t pa_cl_vs_out_cntl;
 			uint32_t vgt_shader_stages_en;
 			uint32_t vtx_base_sgpr;
+			uint32_t base_ia_multi_vgt_param;
+			bool wd_switch_on_eop;
+			bool ia_switch_on_eoi;
+			bool partial_vs_wave;
 			uint8_t vtx_emit_num;
 			struct radv_prim_vertex_count prim_vertex_count;
  			bool can_use_guardband;
@@ -1136,7 +1117,6 @@ static inline bool radv_pipeline_has_tess(struct radv_pipeline *pipeline)
 	return pipeline->shaders[MESA_SHADER_TESS_EVAL] ? true : false;
 }
 
-uint32_t radv_shader_stage_to_user_data_0(gl_shader_stage stage, bool has_gs, bool has_tess);
 struct ac_userdata_info *radv_lookup_user_sgpr(struct radv_pipeline *pipeline,
 					       gl_shader_stage stage,
 					       int idx);
@@ -1190,6 +1170,8 @@ bool radv_format_pack_clear_color(VkFormat format,
 				  uint32_t clear_vals[2],
 				  VkClearColorValue *value);
 bool radv_is_colorbuffer_format_supported(VkFormat format, bool *blendable);
+bool radv_dcc_formats_compatible(VkFormat format1,
+                                 VkFormat format2);
 
 struct radv_fmask_info {
 	uint64_t offset;
@@ -1226,17 +1208,16 @@ struct radv_image {
 	 */
 	VkFormat vk_format;
 	VkImageAspectFlags aspects;
-	struct ac_surf_info info;
 	VkImageUsageFlags usage; /**< Superset of VkImageCreateInfo::usage. */
+	struct ac_surf_info info;
 	VkImageTiling tiling; /** VkImageCreateInfo::tiling */
 	VkImageCreateFlags flags; /** VkImageCreateInfo::flags */
 
 	VkDeviceSize size;
 	uint32_t alignment;
 
-	bool exclusive;
 	unsigned queue_family_mask;
-
+	bool exclusive;
 	bool shareable;
 
 	/* Set when bound */
@@ -1342,8 +1323,7 @@ struct radv_buffer_view {
 };
 void radv_buffer_view_init(struct radv_buffer_view *view,
 			   struct radv_device *device,
-			   const VkBufferViewCreateInfo* pCreateInfo,
-			   struct radv_cmd_buffer *cmd_buffer);
+			   const VkBufferViewCreateInfo* pCreateInfo);
 
 static inline struct VkExtent3D
 radv_sanitize_image_extent(const VkImageType imageType,

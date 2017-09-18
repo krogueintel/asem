@@ -47,6 +47,11 @@ class Extension:
 EXTENSIONS = [
     Extension('VK_KHR_dedicated_allocation',              1, True),
     Extension('VK_KHR_descriptor_update_template',        1, True),
+    Extension('VK_KHR_external_fence',                    1,
+              'device->has_syncobj_wait'),
+    Extension('VK_KHR_external_fence_capabilities',       1, True),
+    Extension('VK_KHR_external_fence_fd',                 1,
+              'device->has_syncobj_wait'),
     Extension('VK_KHR_external_memory',                   1, True),
     Extension('VK_KHR_external_memory_capabilities',      1, True),
     Extension('VK_KHR_external_memory_fd',                1, True),
@@ -70,6 +75,7 @@ EXTENSIONS = [
     Extension('VK_KHR_xcb_surface',                       6, 'VK_USE_PLATFORM_XCB_KHR'),
     Extension('VK_KHR_xlib_surface',                      6, 'VK_USE_PLATFORM_XLIB_KHR'),
     Extension('VK_KHX_multiview',                         1, True),
+    Extension('VK_EXT_debug_report',                      8, True),
 ]
 
 class VkVersion:

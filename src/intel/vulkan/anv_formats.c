@@ -250,6 +250,15 @@ static const struct anv_format anv_formats[] = {
 
 #undef fmt
 
+static bool
+format_supported(VkFormat vk_format)
+{
+   if (vk_format >= ARRAY_SIZE(anv_formats))
+      return false;
+
+   return anv_formats[vk_format].isl_format != ISL_FORMAT_UNSUPPORTED;
+}
+
 /**
  * Exactly one bit must be set in \a aspect.
  */
@@ -257,10 +266,10 @@ struct anv_format
 anv_get_format(const struct gen_device_info *devinfo, VkFormat vk_format,
                VkImageAspectFlags aspect, VkImageTiling tiling)
 {
-   struct anv_format format = anv_formats[vk_format];
+   if (!format_supported(vk_format))
+      return anv_formats[VK_FORMAT_UNDEFINED];
 
-   if (format.isl_format == ISL_FORMAT_UNSUPPORTED)
-      return format;
+   struct anv_format format = anv_formats[vk_format];
 
    if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
       assert(vk_format_aspects(vk_format) & VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -391,7 +400,7 @@ anv_physical_device_get_format_properties(struct anv_physical_device *physical_d
       gen += 5;
 
    VkFormatFeatureFlags linear = 0, tiled = 0, buffer = 0;
-   if (anv_formats[format].isl_format == ISL_FORMAT_UNSUPPORTED) {
+   if (!format_supported(format)) {
       /* Nothing to do here */
    } else if (vk_format_is_depth_or_stencil(format)) {
       tiled |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -489,7 +498,7 @@ anv_get_image_format_properties(
    uint32_t maxArraySize;
    VkSampleCountFlags sampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
-   if (anv_formats[info->format].isl_format == ISL_FORMAT_UNSUPPORTED)
+   if (!format_supported(info->format))
       goto unsupported;
 
    anv_physical_device_get_format_properties(physical_device, info->format,
@@ -721,7 +730,8 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2KHR(
           *    vkGetPhysicalDeviceImageFormatProperties2KHR returns
           *    VK_ERROR_FORMAT_NOT_SUPPORTED.
           */
-         result = vk_errorf(VK_ERROR_FORMAT_NOT_SUPPORTED,
+         result = vk_errorf(physical_device->instance, physical_device,
+                            VK_ERROR_FORMAT_NOT_SUPPORTED,
                             "unsupported VkExternalMemoryTypeFlagBitsKHR 0x%x",
                             external_info->handleType);
          goto fail;
@@ -739,7 +749,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2KHR(
        *    the implementation for use in vkCreateImage, then all members of
        *    imageFormatProperties will be filled with zero.
        */
-      base_props->imageFormatProperties = (VkImageFormatProperties) {0};
+      base_props->imageFormatProperties = (VkImageFormatProperties) {};
    }
 
    return result;
