@@ -107,6 +107,13 @@ gen_disasm_disassemble(struct gen_disasm *disasm, const void *assembly,
    ralloc_free(disasm_info);
 }
 
+int
+gen_disasm_assembly_length(struct gen_disasm *disasm,
+                           const void *assembly, int start)
+{
+   return gen_disasm_find_end(disasm, assembly, start) - start;
+}
+
 struct gen_disasm *
 gen_disasm_create(int pciid)
 {
