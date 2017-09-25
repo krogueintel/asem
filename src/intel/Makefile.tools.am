@@ -30,6 +30,8 @@ noinst_PROGRAMS += \
 intellib_LTLIBRARIES = \
 	tools/libi965_batchbuffer_logger.la
 
+intelbin_PROGRAMS = tools/i965_batchbuffer_dump_show
+
 intelbin_SCRIPTS = tools/i965_batchbuffer_logger_sh
 CLEANFILES += $(intelbin_SCRIPTS)
 
@@ -98,3 +100,6 @@ tools_libi965_batchbuffer_logger_la_LDFLAGS = \
 intel_sed_prefix_vars = sed -e 's,[@]libdir[@],$(intellibdir),g'
 tools/i965_batchbuffer_logger_sh: tools/i965_batchbuffer_logger_sh.in
 	$(intel_sed_prefix_vars) < tools/i965_batchbuffer_logger_sh.in > tools/i965_batchbuffer_logger_sh
+
+tools_i965_batchbuffer_dump_show_SOURCES = \
+	tools/i965_batchbuffer_dump_show.c
