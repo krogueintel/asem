@@ -35,6 +35,8 @@
 
 #include "util/hash_table.h"
 
+#include "tools/i965_batchbuffer_logger.h"
+
 #include <xf86drm.h>
 #include <i915_drm.h>
 
@@ -294,10 +296,12 @@ grow_buffer(struct brw_context *brw,
             uint32_t **map_ptr,
             uint32_t **cpu_map_ptr,
             unsigned existing_bytes,
-            unsigned new_size)
+            unsigned new_size,
+            bool is_commandbuffer)
 {
    struct intel_batchbuffer *batch = &brw->batch;
    struct brw_bufmgr *bufmgr = brw->bufmgr;
+   struct i965_batchbuffer_logger *logger = brw->screen->batchbuffer_logger;
 
    uint32_t *old_map = *map_ptr;
    struct brw_bo *old_bo = *bo_ptr;
@@ -313,6 +317,24 @@ grow_buffer(struct brw_context *brw,
    } else {
       new_map = brw_bo_map(brw, new_bo, MAP_READ | MAP_WRITE);
       memcpy(new_map, old_map, existing_bytes);
+   }
+
+   /* if BatchbufferLogger is active we need to tell it about the migration
+    * to the new batchbuffer so that API calls are correctly associated to
+    * the new batchbuffer.
+    */
+   if (is_commandbuffer && logger) {
+      struct i965_logged_batchbuffer from, to;
+      int fd = brw_bufmgr_fd(bufmgr);
+
+      from.gem_bo = old_bo->gem_handle;
+      from.fd = fd;
+
+      to.gem_bo = new_bo->gem_handle;
+      to.fd = fd;
+      to.driver_data = &brw->batch;
+
+      logger->migrate_batchbuffer(logger, &from, &to);
    }
 
    /* Try to put the new BO at the same GTT offset as the old BO (which
@@ -377,7 +399,7 @@ intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz,
          const unsigned new_size =
             MIN2(batch->bo->size + batch->bo->size / 2, MAX_BATCH_SIZE);
          grow_buffer(brw, &batch->bo, &batch->map, &batch->batch_cpu_map,
-                     batch_used, new_size);
+                     batch_used, new_size, true);
          batch->map_next = (void *) batch->map + batch_used;
          assert(batch_used + sz < batch->bo->size);
       }
@@ -1056,7 +1078,8 @@ brw_state_batch(struct brw_context *brw,
             MIN2(batch->state_bo->size + batch->state_bo->size / 2,
                  MAX_STATE_SIZE);
          grow_buffer(brw, &batch->state_bo, &batch->state_map,
-                     &batch->state_cpu_map, batch->state_used, new_size);
+                     &batch->state_cpu_map, batch->state_used,
+                     new_size, false);
          assert(offset + size < batch->state_bo->size);
       }
    }

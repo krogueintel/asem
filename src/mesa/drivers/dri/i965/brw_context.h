@@ -142,6 +142,7 @@ struct brw_wm_prog_key;
 struct brw_wm_prog_data;
 struct brw_cs_prog_key;
 struct brw_cs_prog_data;
+struct i965_logged_batchbuffer;
 
 enum brw_pipeline {
    BRW_RENDER_PIPELINE,
@@ -1226,6 +1227,12 @@ struct brw_context
     */
    bool draw_aux_buffer_disabled[MAX_DRAW_BUFFERS];
 
+   /* Set to true if the brw_context is in a state (i.e. not in the middle
+    * of construction or deconstruction) that it has an active batchbuffer
+    * and it can report "where" it is in that batchbuffer.
+    */
+   bool have_active_batchbuffer;
+
    __DRIcontext *driContext;
    struct intel_screen *screen;
 };
@@ -1672,6 +1679,11 @@ void gen7_emit_cs_stall_flush(struct brw_context *brw);
 void brw_query_internal_format(struct gl_context *ctx, GLenum target,
                                GLenum internalFormat, GLenum pname,
                                GLint *params);
+
+/* i965_batchbuffer_logger */
+void brw_batchbuffer_log(struct brw_context *brw, const char *fmt, ...);
+void brw_get_active_batchbuffer(struct brw_context *brw,
+                                struct i965_logged_batchbuffer *dst);
 
 #ifdef __cplusplus
 }
