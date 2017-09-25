@@ -32,7 +32,8 @@ intellib_LTLIBRARIES = \
 
 intelbin_PROGRAMS = tools/i965_batchbuffer_dump_show \
 	tools/i965_batchbuffer_dump_show_xml \
-	tools/i965_batchbuffer_dump_show_json
+	tools/i965_batchbuffer_dump_show_json \
+	tools/gen_shader_disassembler
 
 intelbin_SCRIPTS = tools/i965_batchbuffer_logger_sh
 CLEANFILES += $(intelbin_SCRIPTS)
@@ -111,3 +112,21 @@ tools_i965_batchbuffer_dump_show_xml_SOURCES = \
 
 tools_i965_batchbuffer_dump_show_json_SOURCES = \
 	tools/i965_batchbuffer_dump_show_json.cpp
+
+tools_gen_shader_disassembler_SOURCES = \
+	tools/gen_shader_disassembler.c \
+	tools/disasm.c \
+	tools/gen_disasm.h
+
+tools_gen_shader_disassembler_LDADD = \
+	common/libintel_common.la \
+	compiler/libintel_compiler.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(PTHREAD_LIBS) \
+	$(EXPAT_LIBS) \
+	$(ZLIB_LIBS)
+
+tools_gen_shader_disassembler_CFLAGS = \
+	$(AM_CFLAGS) \
+	$(EXPAT_CFLAGS) \
+	$(ZLIB_CFLAGS)

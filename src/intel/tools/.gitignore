@@ -4,3 +4,4 @@
 /i965_batchbuffer_dump_show
 /i965_batchbuffer_dump_show_xml
 /i965_batchbuffer_dump_show_json
+/gen_shader_disassembler
