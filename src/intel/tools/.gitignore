@@ -3,3 +3,4 @@
 /i965_batchbuffer_logger_sh
 /i965_batchbuffer_dump_show
 /i965_batchbuffer_dump_show_xml
+/i965_batchbuffer_dump_show_json
