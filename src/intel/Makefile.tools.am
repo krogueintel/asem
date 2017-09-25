@@ -19,7 +19,9 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+intelbindir = $(bindir)
 intellibdir = $(libdir)
+intelincludedir = $(includedir)
 
 noinst_PROGRAMS += \
 	tools/aubinator \
@@ -27,6 +29,12 @@ noinst_PROGRAMS += \
 
 intellib_LTLIBRARIES = \
 	tools/libi965_batchbuffer_logger.la
+
+intelbin_SCRIPTS = tools/i965_batchbuffer_logger_sh
+CLEANFILES += $(intelbin_SCRIPTS)
+
+intelinclude_HEADERS = tools/i965_batchbuffer_logger_app.h \
+       tools/i965_batchbuffer_logger_output.h
 
 tools_aubinator_SOURCES = \
 	tools/aubinator.c \
@@ -86,3 +94,7 @@ tools_libi965_batchbuffer_logger_la_CXXFLAGS = \
 
 tools_libi965_batchbuffer_logger_la_LDFLAGS = \
 	-no-undefined -avoid-version -shared -shrext .so
+
+intel_sed_prefix_vars = sed -e 's,[@]libdir[@],$(intellibdir),g'
+tools/i965_batchbuffer_logger_sh: tools/i965_batchbuffer_logger_sh.in
+	$(intel_sed_prefix_vars) < tools/i965_batchbuffer_logger_sh.in > tools/i965_batchbuffer_logger_sh
