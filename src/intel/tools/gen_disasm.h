@@ -32,7 +32,7 @@ struct gen_disasm;
 
 struct gen_disasm *gen_disasm_create(int pciid);
 void gen_disasm_disassemble(struct gen_disasm *disasm,
-                            void *assembly, int start, FILE *out);
+                            const void *assembly, int start, FILE *out);
 
 void gen_disasm_destroy(struct gen_disasm *disasm);
 
