@@ -340,13 +340,22 @@ void
 brw_disassemble(const struct gen_device_info *devinfo,
                 const void *assembly, int start, int end, FILE *out)
 {
+   brw_disassemble_print_offset_option(devinfo, assembly, start, end, out,
+                                       false);
+}
+
+void
+brw_disassemble_print_offset_option(const struct gen_device_info *devinfo,
+                                    const void *assembly, int start, int end,
+                                    FILE *out, bool print_offsets)
+{
    bool dump_hex = (INTEL_DEBUG & DEBUG_HEX) != 0;
 
    for (int offset = start; offset < end;) {
       const brw_inst *insn = assembly + offset;
       brw_inst uncompacted;
       bool compacted = brw_inst_cmpt_control(devinfo, insn);
-      if (0)
+      if (print_offsets)
          fprintf(out, "0x%08x: ", offset);
 
       if (compacted) {

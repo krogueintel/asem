@@ -128,6 +128,9 @@ int brw_disassemble_inst(FILE *file, const struct gen_device_info *devinfo,
                          const struct brw_inst *inst, bool is_compacted);
 void brw_disassemble(const struct gen_device_info *devinfo,
                      const void *assembly, int start, int end, FILE *out);
+void brw_disassemble_print_offset_option(const struct gen_device_info *devinfo,
+                                         const void *assembly, int start, int end,
+                                         FILE *out, bool print_offsets);
 const unsigned *brw_get_program( struct brw_codegen *p, unsigned *sz );
 
 brw_inst *brw_next_insn(struct brw_codegen *p, unsigned opcode);
