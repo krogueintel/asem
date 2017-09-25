@@ -97,7 +97,7 @@ gen_disasm_disassemble(struct gen_disasm *disasm, const void *assembly,
       int start_offset = group->offset;
       int end_offset = next->offset;
 
-      brw_disassemble(devinfo, assembly, start_offset, end_offset, out);
+      brw_disassemble(devinfo, assembly, start_offset, end_offset, false, out);
 
       if (group->error) {
          fputs(group->error, out);

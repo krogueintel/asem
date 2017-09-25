@@ -338,7 +338,8 @@ const unsigned *brw_get_program( struct brw_codegen *p,
 
 void
 brw_disassemble(const struct gen_device_info *devinfo,
-                const void *assembly, int start, int end, FILE *out)
+                const void *assembly, int start, int end,
+                bool print_offsets, FILE *out)
 {
    bool dump_hex = (INTEL_DEBUG & DEBUG_HEX) != 0;
 
@@ -346,7 +347,7 @@ brw_disassemble(const struct gen_device_info *devinfo,
       const brw_inst *insn = assembly + offset;
       brw_inst uncompacted;
       bool compacted = brw_inst_cmpt_control(devinfo, insn);
-      if (0)
+      if (print_offsets)
          fprintf(out, "0x%08x: ", offset);
 
       if (compacted) {

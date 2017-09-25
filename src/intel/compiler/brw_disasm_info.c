@@ -72,7 +72,9 @@ dump_assembly(void *assembly, struct disasm_info *disasm)
             fprintf(stderr, "   %s\n", last_annotation_string);
       }
 
-      brw_disassemble(devinfo, assembly, start_offset, end_offset, stderr);
+      brw_disassemble(devinfo, assembly, start_offset, end_offset,
+                      INTEL_DEBUG & DEBUG_PRINT_OFFSETS,
+                      stderr);
 
       if (group->error) {
          fputs(group->error, stderr);
