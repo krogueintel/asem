@@ -19,9 +19,14 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+intellibdir = $(libdir)
+
 noinst_PROGRAMS += \
 	tools/aubinator \
 	tools/aubinator_error_decode
+
+intellib_LTLIBRARIES = \
+	tools/libi965_batchbuffer_logger.la
 
 tools_aubinator_SOURCES = \
 	tools/aubinator.c \
@@ -59,3 +64,25 @@ tools_aubinator_error_decode_LDADD = \
 tools_aubinator_error_decode_CFLAGS = \
 	$(AM_CFLAGS) \
 	$(ZLIB_CFLAGS)
+
+tools_libi965_batchbuffer_logger_la_SOURCES = \
+	tools/i965_batchbuffer_logger.cpp \
+	tools/gen_disasm.h \
+	tools/disasm.c \
+	tools/intel_aub.h
+
+tools_libi965_batchbuffer_logger_la_LIBADD = \
+	common/libintel_common.la \
+	compiler/libintel_compiler.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	isl/libisl.la \
+	$(PTHREAD_LIBS) \
+	$(EXPAT_LIBS) \
+	$(ZLIB_LIBS)
+
+tools_libi965_batchbuffer_logger_la_CXXFLAGS = \
+	-std=c++11
+
+tools_libi965_batchbuffer_logger_la_LDFLAGS = \
+	-no-undefined -avoid-version -shared -shrext .so
