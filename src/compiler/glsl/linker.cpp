@@ -1652,7 +1652,6 @@ validate_xfb_buffer_stride(struct gl_context *ctx, unsigned idx,
 static void
 link_xfb_stride_layout_qualifiers(struct gl_context *ctx,
                                   struct gl_shader_program *prog,
-                                  struct gl_linked_shader *linked_shader,
                                   struct gl_shader **shader_list,
                                   unsigned num_shaders)
 {
@@ -1690,7 +1689,6 @@ link_xfb_stride_layout_qualifiers(struct gl_context *ctx,
  */
 static void
 link_bindless_layout_qualifiers(struct gl_shader_program *prog,
-                                struct gl_program *gl_prog,
                                 struct gl_shader **shader_list,
                                 unsigned num_shaders)
 {
@@ -2286,10 +2284,9 @@ link_intrastage_shaders(void *mem_ctx,
    link_cs_input_layout_qualifiers(prog, gl_prog, shader_list, num_shaders);
 
    if (linked->Stage != MESA_SHADER_FRAGMENT)
-      link_xfb_stride_layout_qualifiers(ctx, prog, linked, shader_list,
-                                        num_shaders);
+      link_xfb_stride_layout_qualifiers(ctx, prog, shader_list, num_shaders);
 
-   link_bindless_layout_qualifiers(prog, gl_prog, shader_list, num_shaders);
+   link_bindless_layout_qualifiers(prog, shader_list, num_shaders);
 
    populate_symbol_table(linked);
 
@@ -2654,12 +2651,14 @@ assign_attribute_or_color_locations(void *mem_ctx,
    } to_assign[32];
    assert(max_index <= 32);
 
-   /* Temporary array for the set of attributes that have locations assigned.
+   /* Temporary array for the set of attributes that have locations assigned,
+    * for the purpose of checking overlapping slots/components of (non-ES)
+    * fragment shader outputs.
     */
-   ir_variable *assigned[16];
+   ir_variable *assigned[12 * 4]; /* (max # of FS outputs) * # components */
+   unsigned assigned_attr = 0;
 
    unsigned num_attr = 0;
-   unsigned assigned_attr = 0;
 
    foreach_in_list(ir_instruction, node, sh->ir) {
       ir_variable *const var = node->as_variable();
@@ -2898,6 +2897,18 @@ assign_attribute_or_color_locations(void *mem_ctx,
                }
             }
 
+            if (target_index == MESA_SHADER_FRAGMENT && !prog->IsES) {
+               /* Only track assigned variables for non-ES fragment shaders
+                * to avoid overflowing the array.
+                *
+                * At most one variable per fragment output component should
+                * reach this.
+                */
+               assert(assigned_attr < ARRAY_SIZE(assigned));
+               assigned[assigned_attr] = var;
+               assigned_attr++;
+            }
+
             used_locations |= (use_mask << attr);
 
             /* From the GL 4.5 core spec, section 11.1.1 (Vertex Attributes):
@@ -2923,9 +2934,6 @@ assign_attribute_or_color_locations(void *mem_ctx,
             if (var->type->without_array()->is_dual_slot())
                double_storage_locations |= (use_mask << attr);
          }
-
-         assigned[assigned_attr] = var;
-         assigned_attr++;
 
          continue;
       }

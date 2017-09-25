@@ -379,8 +379,21 @@ int main() {
 }]])], GCC_ATOMIC_BUILTINS_SUPPORTED=1)
 if test "x$GCC_ATOMIC_BUILTINS_SUPPORTED" = x1; then
     DEFINES="$DEFINES -DUSE_GCC_ATOMIC_BUILTINS"
+    dnl On some platforms, new-style atomics need a helper library
+    AC_MSG_CHECKING(whether -latomic is needed)
+    AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #include <stdint.h>
+    uint64_t v;
+    int main() {
+        return (int)__atomic_load_n(&v, __ATOMIC_ACQUIRE);
+    }]])], GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC=no, GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC=yes)
+    AC_MSG_RESULT($GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC)
+    if test "x$GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC" = xyes; then
+        LIBATOMIC_LIBS="-latomic"
+    fi
 fi
 AM_CONDITIONAL([GCC_ATOMIC_BUILTINS_SUPPORTED], [test x$GCC_ATOMIC_BUILTINS_SUPPORTED = x1])
+AC_SUBST([LIBATOMIC_LIBS])
 
 dnl Check if host supports 64-bit atomics
 dnl note that lack of support usually results in link (not compile) error
@@ -1710,7 +1723,8 @@ for plat in $platforms; do
     case "$plat" in
     wayland)
 
-        PKG_CHECK_MODULES([WAYLAND], [wayland-client >= $WAYLAND_REQUIRED wayland-server >= $WAYLAND_REQUIRED])
+        PKG_CHECK_MODULES([WAYLAND_CLIENT], [wayland-client >= $WAYLAND_REQUIRED])
+        PKG_CHECK_MODULES([WAYLAND_SERVER], [wayland-server >= $WAYLAND_REQUIRED])
 
         if test "x$WAYLAND_SCANNER" = "x:"; then
                 AC_MSG_ERROR([wayland-scanner is needed to compile the wayland platform])
@@ -1718,7 +1732,7 @@ for plat in $platforms; do
         if test "x$have_wayland_protocols" = xno; then
                 AC_MSG_ERROR([wayland-protocols >= $WAYLAND_PROTOCOLS_REQUIRED is needed to compile the wayland platform])
         fi
-        DEFINES="$DEFINES -DHAVE_WAYLAND_PLATFORM"
+        DEFINES="$DEFINES -DHAVE_WAYLAND_PLATFORM -DWL_HIDE_DEPRECATED"
         ;;
 
     x11)

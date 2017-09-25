@@ -1414,7 +1414,6 @@ static LLVMValueRef emit_ddxy(struct ac_nir_context *ctx,
 	unsigned mask;
 	int idx;
 	LLVMValueRef result;
-	bool has_ds_bpermute = ctx->abi->chip_class >= VI;
 
 	if (op == nir_op_fddx_fine || op == nir_op_fddx)
 		mask = AC_TID_MASK_LEFT;
@@ -1431,9 +1430,7 @@ static LLVMValueRef emit_ddxy(struct ac_nir_context *ctx,
 	else
 		idx = 2;
 
-	result = ac_build_ddxy(&ctx->ac, has_ds_bpermute,
-			      mask, idx,
-			      src0);
+	result = ac_build_ddxy(&ctx->ac, mask, idx, src0);
 	return result;
 }
 
@@ -4550,15 +4547,13 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 	}
 
 	if (instr->sampler_dim == GLSL_SAMPLER_DIM_CUBE && coord) {
-		if (instr->is_array && instr->op != nir_texop_lod)
-			coords[3] = apply_round_slice(&ctx->ac, coords[3]);
 		for (chan = 0; chan < instr->coord_components; chan++)
 			coords[chan] = ac_to_float(&ctx->ac, coords[chan]);
 		if (instr->coord_components == 3)
 			coords[3] = LLVMGetUndef(ctx->ac.f32);
 		ac_prepare_cube_coords(&ctx->ac,
 			instr->op == nir_texop_txd, instr->is_array,
-			coords, derivs);
+			instr->op == nir_texop_lod, coords, derivs);
 		if (num_deriv_comp)
 			num_deriv_comp--;
 	}
@@ -6331,7 +6326,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(LLVMTargetMachineRef tm,
 	ctx.context = LLVMContextCreate();
 	ctx.module = LLVMModuleCreateWithNameInContext("shader", ctx.context);
 
-	ac_llvm_context_init(&ctx.ac, ctx.context);
+	ac_llvm_context_init(&ctx.ac, ctx.context, options->chip_class);
 	ctx.ac.module = ctx.module;
 
 	memset(shader_info, 0, sizeof(*shader_info));
@@ -6655,7 +6650,7 @@ void ac_create_gs_copy_shader(LLVMTargetMachineRef tm,
 	ctx.options = options;
 	ctx.shader_info = shader_info;
 
-	ac_llvm_context_init(&ctx.ac, ctx.context);
+	ac_llvm_context_init(&ctx.ac, ctx.context, options->chip_class);
 	ctx.ac.module = ctx.module;
 
 	ctx.is_gs_copy_shader = true;

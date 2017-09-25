@@ -215,7 +215,7 @@ enum brw_state_id {
    BRW_STATE_VIEWPORT_COUNT,
    BRW_STATE_CONSERVATIVE_RASTERIZATION,
    BRW_STATE_DRAW_CALL,
-   BRW_STATE_FAST_CLEAR_COLOR,
+   BRW_STATE_AUX,
    BRW_NUM_STATE_BITS
 };
 
@@ -307,7 +307,7 @@ enum brw_state_id {
 #define BRW_NEW_BLORP                   (1ull << BRW_STATE_BLORP)
 #define BRW_NEW_CONSERVATIVE_RASTERIZATION (1ull << BRW_STATE_CONSERVATIVE_RASTERIZATION)
 #define BRW_NEW_DRAW_CALL               (1ull << BRW_STATE_DRAW_CALL)
-#define BRW_NEW_FAST_CLEAR_COLOR        (1ull << BRW_STATE_FAST_CLEAR_COLOR)
+#define BRW_NEW_AUX_STATE               (1ull << BRW_STATE_AUX)
 
 struct brw_state_flags {
    /** State update flags signalled by mesa internals */
@@ -1520,7 +1520,6 @@ void
 gen6_set_sample_maps(struct gl_context *ctx);
 
 /* gen8_multisample_state.c */
-void gen8_emit_3dstate_multisample(struct brw_context *brw, unsigned num_samp);
 void gen8_emit_3dstate_sample_pattern(struct brw_context *brw);
 
 /* gen7_urb.c */

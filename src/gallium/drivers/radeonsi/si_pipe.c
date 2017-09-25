@@ -742,6 +742,8 @@ static int si_get_shader_param(struct pipe_screen* pscreen,
 	case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
 	case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
 	case PIPE_SHADER_CAP_INTEGERS:
+	case PIPE_SHADER_CAP_INT64_ATOMICS:
+	case PIPE_SHADER_CAP_FP16:
 	case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
 	case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
@@ -1045,7 +1047,13 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws,
 		 sscreen->b.info.pfp_fw_version >= 79 &&
 		 sscreen->b.info.me_fw_version >= 142);
 
-	sscreen->has_ds_bpermute = sscreen->b.chip_class >= VI;
+	sscreen->has_out_of_order_rast = sscreen->b.chip_class >= VI &&
+					 sscreen->b.info.max_se >= 2 &&
+					 !(sscreen->b.debug_flags & DBG_NO_OUT_OF_ORDER);
+	sscreen->assume_no_z_fights =
+		driQueryOptionb(config->options, "radeonsi_assume_no_z_fights");
+	sscreen->commutative_blend_add =
+		driQueryOptionb(config->options, "radeonsi_commutative_blend_add");
 	sscreen->has_msaa_sample_loc_bug = (sscreen->b.family >= CHIP_POLARIS10 &&
 					    sscreen->b.family <= CHIP_POLARIS12) ||
 					   sscreen->b.family == CHIP_VEGA10 ||
