@@ -30,7 +30,8 @@ noinst_PROGRAMS += \
 intellib_LTLIBRARIES = \
 	tools/libi965_batchbuffer_logger.la
 
-intelbin_PROGRAMS = tools/i965_batchbuffer_dump_show
+intelbin_PROGRAMS = tools/i965_batchbuffer_dump_show \
+	tools/i965_batchbuffer_dump_show_xml
 
 intelbin_SCRIPTS = tools/i965_batchbuffer_logger_sh
 CLEANFILES += $(intelbin_SCRIPTS)
@@ -103,3 +104,6 @@ tools/i965_batchbuffer_logger_sh: tools/i965_batchbuffer_logger_sh.in
 
 tools_i965_batchbuffer_dump_show_SOURCES = \
 	tools/i965_batchbuffer_dump_show.c
+
+tools_i965_batchbuffer_dump_show_xml_SOURCES = \
+	tools/i965_batchbuffer_dump_show_xml.cpp
