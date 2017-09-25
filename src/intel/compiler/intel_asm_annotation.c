@@ -181,8 +181,9 @@ annotation_insert_error(struct annotation_info *annotation, unsigned offset,
          continue;
 
       if (offset + sizeof(brw_inst) != next->offset) {
-         memmove(next, cur,
-                 (annotation->ann_count - i + 2) * sizeof(struct annotation));
+         int count;
+         count = annotation->ann_count - i;
+         memmove(next, cur, count * sizeof(struct annotation));
          cur->error = NULL;
          cur->error_length = 0;
          cur->block_end = NULL;
