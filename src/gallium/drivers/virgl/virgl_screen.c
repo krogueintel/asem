@@ -269,6 +269,8 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_QUERY_SO_OVERFLOW:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+   case PIPE_CAP_TILE_RASTER_ORDER:
       return 0;
    case PIPE_CAP_VENDOR_ID:
       return 0x1af4;
@@ -486,9 +488,7 @@ virgl_is_format_supported( struct pipe_screen *screen,
     */
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
-      if (util_format_s3tc_enabled)
-         goto out_lookup;
-      return FALSE;
+      goto out_lookup;
    }
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_RGTC) {
       goto out_lookup;
@@ -615,6 +615,5 @@ virgl_create_screen(struct virgl_winsys *vws)
 
    slab_create_parent(&screen->texture_transfer_pool, sizeof(struct virgl_transfer), 16);
 
-   util_format_s3tc_init();
    return &screen->base;
 }

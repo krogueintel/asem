@@ -866,9 +866,9 @@ init_attrib_groups(struct gl_context *ctx)
    if (!_mesa_init_texture( ctx ))
       return GL_FALSE;
 
-   _mesa_init_texture_s3tc( ctx );
-
    /* Miscellaneous */
+   ctx->TileRasterOrderIncreasingX = GL_TRUE;
+   ctx->TileRasterOrderIncreasingY = GL_TRUE;
    ctx->NewState = _NEW_ALL;
    ctx->NewDriverState = ~0;
    ctx->ErrorValue = GL_NO_ERROR;

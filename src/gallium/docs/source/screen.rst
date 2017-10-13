@@ -406,6 +406,11 @@ The integer capabilities:
 * ``PIPE_CAP_MEMOBJ``: Whether operations on memory objects are supported.
 * ``PIPE_CAP_LOAD_CONSTBUF``: True if the driver supports TGSI_OPCODE_LOAD use
   with constant buffers.
+* ``PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS``: Any TGSI register can be used as
+  an address for indirect register indexing.
+* ``PIPE_CAP_TILE_RASTER_ORDER``: Whether the driver supports
+  GL_MESA_tile_raster_order, using the tile_raster_order_* fields in
+  pipe_rasterizer_state.
 
 
 .. _pipe_capf:
@@ -485,6 +490,7 @@ MOV OUT[0], CONST[0][3]  # copy vector 3 of constbuf 0
   is supported. If it is, DTRUNC/DCEIL/DFLR/DROUND opcodes may be used.
 * ``PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED``: Whether DFRACEXP and
   DLDEXP are supported.
+* ``PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED``: Whether LDEXP is supported.
 * ``PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED``: Whether FMA and DFMA (doubles only)
   are supported.
 * ``PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE``: Whether the driver doesn't
@@ -670,7 +676,7 @@ get_paramf
 
 Get a floating-point screen parameter.
 
-**param** is one of the :ref:`PIPE_CAP` names.
+**param** is one of the :ref:`PIPE_CAPF` names.
 
 context_create
 ^^^^^^^^^^^^^^
@@ -739,9 +745,9 @@ For cube maps this must be 6, for other textures 1.
 **nr_samples** the nr of msaa samples. 0 (or 1) specifies a resource
 which isn't multisampled.
 
-**usage** one of the PIPE_USAGE flags.
+**usage** one of the :ref:`PIPE_USAGE` flags.
 
-**bind** bitmask of the PIPE_BIND flags.
+**bind** bitmask of the :ref:`PIPE_BIND` flags.
 
 **flags** bitmask of PIPE_RESOURCE_FLAG flags.
 

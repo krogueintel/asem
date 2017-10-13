@@ -580,6 +580,8 @@ struct brw_stage_state
    uint32_t sampler_count;
    uint32_t sampler_offset;
 
+   struct brw_image_param image_param[BRW_MAX_IMAGES];
+
    /** Need to re-emit 3DSTATE_CONSTANT_XS? */
    bool push_constants_dirty;
 };
@@ -779,9 +781,6 @@ struct brw_context
 
    struct brw_cache cache;
 
-   /** IDs for meta stencil blit shader programs. */
-   struct gl_shader_program *meta_stencil_blit_programs[2];
-
    /* Whether a meta-operation is in progress. */
    bool meta_in_progress;
 
@@ -815,6 +814,14 @@ struct brw_context
       int gl_drawid;
       struct brw_bo *draw_id_bo;
       uint32_t draw_id_offset;
+
+      /**
+       * Pointer to the the buffer storing the indirect draw parameters. It
+       * currently only stores the number of requested draw calls but more
+       * parameters could potentially be added.
+       */
+      struct brw_bo *draw_params_count_bo;
+      uint32_t draw_params_count_offset;
    } draw;
 
    struct {
@@ -878,12 +885,7 @@ struct brw_context
 
    /* Active vertex program:
     */
-   const struct gl_program *vertex_program;
-   const struct gl_program *geometry_program;
-   const struct gl_program *tess_ctrl_program;
-   const struct gl_program *tess_eval_program;
-   const struct gl_program *fragment_program;
-   const struct gl_program *compute_program;
+   struct gl_program *programs[MESA_SHADER_STAGES];
 
    /**
     * Number of samples in ctx->DrawBuffer, updated by BRW_NEW_NUM_SAMPLES so

@@ -315,6 +315,7 @@ nir_visitor::visit(ir_variable *ir)
    var->type = ir->type;
    var->name = ralloc_strdup(var, ir->name);
 
+   var->data.always_active_io = ir->data.always_active_io;
    var->data.read_only = ir->data.read_only;
    var->data.centroid = ir->data.centroid;
    var->data.sample = ir->data.sample;
@@ -1153,8 +1154,6 @@ nir_visitor::visit(ir_call *ir)
       case nir_intrinsic_vote_all:
       case nir_intrinsic_vote_eq: {
          nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 32, NULL);
-
-         instr->variables[0] = evaluate_deref(&instr->instr, ir->return_deref);
 
          ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
          instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));

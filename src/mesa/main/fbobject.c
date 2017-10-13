@@ -729,6 +729,7 @@ is_format_color_renderable(const struct gl_context *ctx, mesa_format format,
    case GL_RGB8I:
    case GL_RGB8UI:
    case GL_SRGB8:
+   case GL_RGB10:
    case GL_RGB9_E5:
    case GL_RG8_SNORM:
    case GL_R8_SNORM:
@@ -737,8 +738,11 @@ is_format_color_renderable(const struct gl_context *ctx, mesa_format format,
       break;
    }
 
-   if (format == MESA_FORMAT_B10G10R10A2_UNORM &&
-       internalFormat != GL_RGB10_A2) {
+   if (internalFormat != GL_RGB10_A2 &&
+       (format == MESA_FORMAT_B10G10R10A2_UNORM ||
+        format == MESA_FORMAT_B10G10R10X2_UNORM ||
+        format == MESA_FORMAT_R10G10B10A2_UNORM ||
+        format == MESA_FORMAT_R10G10B10X2_UNORM)) {
       return GL_FALSE;
    }
 
@@ -3220,11 +3224,19 @@ check_layer(struct gl_context *ctx, GLenum target, GLint layer,
  * \return true if no errors, false if errors
  */
 static bool
-check_level(struct gl_context *ctx, GLenum target, GLint level,
-            const char *caller)
+check_level(struct gl_context *ctx, struct gl_texture_object *texObj,
+            GLenum target, GLint level, const char *caller)
 {
-   if ((level < 0) ||
-       (level >= _mesa_max_texture_levels(ctx, target))) {
+   /* Section 9.2.8 of the OpenGL 4.6 specification says:
+    *
+    *    "If texture refers to an immutable-format texture, level must be
+    *     greater than or equal to zero and smaller than the value of
+    *     TEXTURE_VIEW_NUM_LEVELS for texture."
+    */
+   const int max_levels = texObj->Immutable ? texObj->ImmutableLevels :
+                          _mesa_max_texture_levels(ctx, target);
+
+   if (level < 0 || level >= max_levels) {
       _mesa_error(ctx, GL_INVALID_VALUE,
                   "%s(invalid level %d)", caller, level);
       return false;
@@ -3390,7 +3402,7 @@ framebuffer_texture_with_dims(int dims, GLenum target,
       if ((dims == 3) && !check_layer(ctx, texObj->Target, layer, caller))
          return;
 
-      if (!check_level(ctx, textarget, level, caller))
+      if (!check_level(ctx, texObj, textarget, level, caller))
          return;
    }
 
@@ -3536,7 +3548,7 @@ frame_buffer_texture(GLuint framebuffer, GLenum target,
                return;
          }
 
-         if (!check_level(ctx, texObj->Target, level, func))
+         if (!check_level(ctx, texObj, texObj->Target, level, func))
             return;
       }
 

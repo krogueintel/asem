@@ -572,8 +572,7 @@ get_max_samples_for_formats(struct pipe_screen *screen,
 void st_init_extensions(struct pipe_screen *screen,
                         struct gl_constants *consts,
                         struct gl_extensions *extensions,
-                        struct st_config_options *options,
-                        boolean has_lib_dxtc)
+                        struct st_config_options *options)
 {
    unsigned i;
    GLboolean *extension_table = (GLboolean *) extensions;
@@ -652,6 +651,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(AMD_seamless_cubemap_per_texture), PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE    },
       { o(ATI_separate_stencil),             PIPE_CAP_TWO_SIDED_STENCIL                },
       { o(ATI_texture_mirror_once),          PIPE_CAP_TEXTURE_MIRROR_CLAMP             },
+      { o(MESA_tile_raster_order),           PIPE_CAP_TILE_RASTER_ORDER                },
       { o(NV_conditional_render),            PIPE_CAP_CONDITIONAL_RENDER               },
       { o(NV_fill_rectangle),                PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE      },
       { o(NV_primitive_restart),             PIPE_CAP_PRIMITIVE_RESTART                },
@@ -774,6 +774,11 @@ void st_init_extensions(struct pipe_screen *screen,
         { PIPE_FORMAT_A8B8G8R8_SRGB,
           PIPE_FORMAT_B8G8R8A8_SRGB },
         GL_TRUE }, /* at least one format must be supported */
+
+      { { o(EXT_texture_type_2_10_10_10_REV) },
+        { PIPE_FORMAT_R10G10B10A2_UNORM,
+          PIPE_FORMAT_B10G10R10A2_UNORM },
+         GL_TRUE }, /* at least one format must be supported */
 
       { { o(ATI_texture_compression_3dc) },
         { PIPE_FORMAT_LATC2_UNORM } },
@@ -965,11 +970,6 @@ void st_init_extensions(struct pipe_screen *screen,
    consts->UniformBooleanTrue = consts->NativeIntegers ? ~0U : fui(1.0f);
 
    /* Below are the cases which cannot be moved into tables easily. */
-
-   if (!has_lib_dxtc && !options->force_s3tc_enable) {
-      extensions->EXT_texture_compression_s3tc = GL_FALSE;
-      extensions->ANGLE_texture_compression_dxt = GL_FALSE;
-   }
 
    if (screen->get_shader_param(screen, PIPE_SHADER_TESS_CTRL,
                                 PIPE_SHADER_CAP_MAX_INSTRUCTIONS) > 0) {

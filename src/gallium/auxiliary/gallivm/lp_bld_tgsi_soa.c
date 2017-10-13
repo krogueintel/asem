@@ -1272,9 +1272,9 @@ emit_fetch_constant(
 /**
  * Fetch 64-bit values from two separate channels.
  * 64-bit values are stored split across two channels, like xy and zw.
- * This function creates a set of 16 floats,
+ * This function creates a set of vec_length*2 floats,
  * extracts the values from the two channels,
- * puts them in the correct place, then casts to 8 64-bits.
+ * puts them in the correct place, then casts to vec_length 64-bits.
  */
 static LLVMValueRef
 emit_fetch_64bit(
@@ -1289,9 +1289,9 @@ emit_fetch_64bit(
    LLVMValueRef res;
    struct lp_build_context *bld_fetch = stype_to_fetch(bld_base, stype);
    int i;
-   LLVMValueRef shuffles[16];
+   LLVMValueRef shuffles[2 * (LP_MAX_VECTOR_WIDTH/32)];
    int len = bld_base->base.type.length * 2;
-   assert(len <= 16);
+   assert(len <= (2 * (LP_MAX_VECTOR_WIDTH/32)));
 
    for (i = 0; i < bld_base->base.type.length * 2; i+=2) {
       shuffles[i] = lp_build_const_int32(gallivm, i / 2);
@@ -1691,7 +1691,7 @@ emit_fetch_deriv(
 }
 
 /**
- * store an array of 8 64-bit into two arrays of 8 floats
+ * store an array of vec-length 64-bit into two arrays of vec_length floats
  * i.e.
  * value is d0, d1, d2, d3 etc.
  * each 64-bit has high and low pieces x, y
@@ -1710,8 +1710,8 @@ emit_store_64bit_chan(struct lp_build_tgsi_context *bld_base,
    struct lp_build_context *float_bld = &bld_base->base;
    unsigned i;
    LLVMValueRef temp, temp2;
-   LLVMValueRef shuffles[8];
-   LLVMValueRef shuffles2[8];
+   LLVMValueRef shuffles[LP_MAX_VECTOR_WIDTH/32];
+   LLVMValueRef shuffles2[LP_MAX_VECTOR_WIDTH/32];
 
    for (i = 0; i < bld_base->base.type.length; i++) {
       shuffles[i] = lp_build_const_int32(gallivm, i * 2);
@@ -1751,7 +1751,7 @@ emit_store_chan(
    struct lp_build_context *float_bld = &bld_base->base;
    struct lp_build_context *int_bld = &bld_base->int_bld;
    LLVMValueRef indirect_index = NULL;
-   enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(inst->Instruction.Opcode);
+   enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(inst->Instruction.Opcode, index);
 
    /*
     * Apply saturation.
@@ -1913,19 +1913,18 @@ emit_store(
    struct lp_build_tgsi_context * bld_base,
    const struct tgsi_full_instruction * inst,
    const struct tgsi_opcode_info * info,
+   unsigned index,
    LLVMValueRef dst[4])
 
 {
-   unsigned chan_index;
-   enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(inst->Instruction.Opcode);
+   enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(inst->Instruction.Opcode, index);
 
-   if(info->num_dst) {
-      TGSI_FOR_EACH_DST0_ENABLED_CHANNEL( inst, chan_index ) {
-
-         if (tgsi_type_is_64bit(dtype) && (chan_index == 1 || chan_index == 3))
-             continue;
-         emit_store_chan(bld_base, inst, 0, chan_index, dst[chan_index]);
-      }
+   unsigned writemask = inst->Dst[index].Register.WriteMask;
+   while (writemask) {
+      unsigned chan_index = u_bit_scan(&writemask);
+      if (tgsi_type_is_64bit(dtype) && (chan_index == 1 || chan_index == 3))
+          continue;
+      emit_store_chan(bld_base, inst, index, chan_index, dst[chan_index]);
    }
 }
 
@@ -3285,6 +3284,18 @@ sviewinfo_emit(
    emit_size_query(bld, emit_data->inst, emit_data->output, TRUE);
 }
 
+static void
+lod_emit(
+   const struct lp_build_tgsi_action * action,
+   struct lp_build_tgsi_context * bld_base,
+   struct lp_build_emit_data * emit_data)
+{
+   struct lp_build_tgsi_soa_context * bld = lp_soa_context(bld_base);
+
+   emit_sample(bld, emit_data->inst, LP_BLD_TEX_MODIFIER_NONE,
+               FALSE, LP_SAMPLER_OP_LODQ, emit_data->output);
+}
+
 static LLVMValueRef
 mask_vec(struct lp_build_tgsi_context *bld_base)
 {
@@ -3899,6 +3910,8 @@ lp_build_tgsi_soa(struct gallivm_state *gallivm,
    bld.bld_base.op_actions[TGSI_OPCODE_SAMPLE_L].emit = sample_l_emit;
    bld.bld_base.op_actions[TGSI_OPCODE_GATHER4].emit = gather4_emit;
    bld.bld_base.op_actions[TGSI_OPCODE_SVIEWINFO].emit = sviewinfo_emit;
+   bld.bld_base.op_actions[TGSI_OPCODE_LOD].emit = lod_emit;
+
 
    if (gs_iface) {
       /* There's no specific value for this because it should always

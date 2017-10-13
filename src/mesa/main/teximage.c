@@ -1731,28 +1731,15 @@ texture_format_error_check_gles(struct gl_context *ctx, GLenum format,
                                 GLenum type, GLenum internalFormat,
                                 GLuint dimensions, const char *callerName)
 {
-   GLenum err;
-
-   if (_mesa_is_gles3(ctx)) {
-      err = _mesa_es3_error_check_format_and_type(ctx, format, type,
-                                                  internalFormat);
-      if (err != GL_NO_ERROR) {
-         _mesa_error(ctx, err,
-                     "%s(format = %s, type = %s, internalformat = %s)",
-                     callerName, _mesa_enum_to_string(format),
-                     _mesa_enum_to_string(type),
-                     _mesa_enum_to_string(internalFormat));
-         return true;
-      }
-   }
-   else {
-      err = _mesa_es_error_check_format_and_type(ctx, format, type, dimensions);
-      if (err != GL_NO_ERROR) {
-         _mesa_error(ctx, err, "%s(format = %s, type = %s)",
-                     callerName, _mesa_enum_to_string(format),
-                     _mesa_enum_to_string(type));
-         return true;
-      }
+   GLenum err = _mesa_es3_error_check_format_and_type(ctx, format, type,
+                                                      internalFormat);
+   if (err != GL_NO_ERROR) {
+      _mesa_error(ctx, err,
+                  "%s(format = %s, type = %s, internalformat = %s)",
+                  callerName, _mesa_enum_to_string(format),
+                  _mesa_enum_to_string(type),
+                  _mesa_enum_to_string(internalFormat));
+      return true;
    }
 
    return false;
@@ -2769,38 +2756,6 @@ _mesa_choose_texture_format(struct gl_context *ctx,
       }
    }
 
-   /* If the application requested compression to an S3TC format but we don't
-    * have the DXTn library, force a generic compressed format instead.
-    */
-   if (internalFormat != format && format != GL_NONE) {
-      const GLenum before = internalFormat;
-
-      switch (internalFormat) {
-      case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
-         if (!ctx->Mesa_DXTn)
-            internalFormat = GL_COMPRESSED_RGB;
-         break;
-      case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-      case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-      case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-         if (!ctx->Mesa_DXTn)
-            internalFormat = GL_COMPRESSED_RGBA;
-         break;
-      default:
-         break;
-      }
-
-      if (before != internalFormat) {
-         _mesa_warning(ctx,
-                       "DXT compression requested (%s), "
-                       "but libtxc_dxtn library not installed.  Using %s "
-                       "instead.",
-                       _mesa_enum_to_string(before),
-                       _mesa_enum_to_string(internalFormat));
-      }
-   }
-
-   /* choose format from scratch */
    f = ctx->Driver.ChooseTextureFormat(ctx, target, internalFormat,
                                        format, type);
    assert(f != MESA_FORMAT_NONE);
@@ -4917,7 +4872,7 @@ compressed_tex_sub_image(unsigned dim, GLenum target, GLuint texture,
                          const GLvoid *data, bool dsa, bool no_error,
                          const char *caller)
 {
-   struct gl_texture_object *texObj;
+   struct gl_texture_object *texObj = NULL;
    struct gl_texture_image *texImage;
 
    GET_CURRENT_CONTEXT(ctx);

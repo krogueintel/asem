@@ -42,7 +42,7 @@ if HAVE_GALLIUM_R300
 SUBDIRS += drivers/r300
 endif
 
-## radeon - linked into r600 and radeonsi
+## radeon - linked into radeonsi
 if HAVE_GALLIUM_RADEON_COMMON
 SUBDIRS += drivers/radeon
 endif
@@ -92,6 +92,11 @@ endif
 ## vc4/rpi
 if HAVE_GALLIUM_VC4
 SUBDIRS += drivers/vc4 winsys/vc4/drm
+endif
+
+## vc5
+if HAVE_GALLIUM_VC5
+SUBDIRS += drivers/vc5 winsys/vc5/drm
 endif
 
 ## virgl

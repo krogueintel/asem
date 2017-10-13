@@ -407,7 +407,7 @@ struct intel_mipmap_tree *
 intel_miptree_create_for_dri_image(struct brw_context *brw,
                                    __DRIimage *image,
                                    GLenum target,
-                                   enum isl_colorspace colorspace,
+                                   mesa_format format,
                                    bool is_winsys_image);
 
 bool
@@ -640,7 +640,7 @@ void
 intel_miptree_prepare_texture(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
                               enum isl_format view_format,
-                              bool *aux_supported_out);
+                              bool disable_aux);
 void
 intel_miptree_prepare_image(struct brw_context *brw,
                             struct intel_mipmap_tree *mt);

@@ -540,14 +540,14 @@ static void si_dump_framebuffer(struct si_context *sctx, struct u_log_context *l
 
 		rtex = (struct r600_texture*)state->cbufs[i]->texture;
 		u_log_printf(log, COLOR_YELLOW "Color buffer %i:" COLOR_RESET "\n", i);
-		r600_print_texture_info(sctx->b.screen, rtex, log);
+		si_print_texture_info(sctx->b.screen, rtex, log);
 		u_log_printf(log, "\n");
 	}
 
 	if (state->zsbuf) {
 		rtex = (struct r600_texture*)state->zsbuf->texture;
 		u_log_printf(log, COLOR_YELLOW "Depth-stencil buffer:" COLOR_RESET "\n");
-		r600_print_texture_info(sctx->b.screen, rtex, log);
+		si_print_texture_info(sctx->b.screen, rtex, log);
 		u_log_printf(log, "\n");
 	}
 }
@@ -736,7 +736,7 @@ static void si_dump_descriptors(struct si_context *sctx,
 				    u_bit_consecutive(0, SI_NUM_SHADER_BUFFERS);
 		enabled_shaderbuf = util_bitreverse(enabled_shaderbuf) >>
 				    (32 - SI_NUM_SHADER_BUFFERS);
-		enabled_samplers = sctx->samplers[processor].views.enabled_mask;
+		enabled_samplers = sctx->samplers[processor].enabled_mask;
 		enabled_images = sctx->images[processor].enabled_mask;
 	}
 
@@ -1103,7 +1103,7 @@ void si_init_debug_functions(struct si_context *sctx)
 	/* Set the initial dmesg timestamp for this context, so that
 	 * only new messages will be checked for VM faults.
 	 */
-	if (sctx->screen->b.debug_flags & DBG_CHECK_VM)
+	if (sctx->screen->b.debug_flags & DBG(CHECK_VM))
 		ac_vm_fault_occured(sctx->b.chip_class,
 				    &sctx->dmesg_timestamp, NULL);
 }

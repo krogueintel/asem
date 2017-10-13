@@ -252,6 +252,20 @@ void ac_build_type_name_for_intr(LLVMTypeRef type, char *buf, unsigned bufsize)
 	}
 }
 
+/**
+ * Helper function that builds an LLVM IR PHI node and immediately adds
+ * incoming edges.
+ */
+LLVMValueRef
+ac_build_phi(struct ac_llvm_context *ctx, LLVMTypeRef type,
+	     unsigned count_incoming, LLVMValueRef *values,
+	     LLVMBasicBlockRef *blocks)
+{
+	LLVMValueRef phi = LLVMBuildPhi(ctx->builder, type, "");
+	LLVMAddIncoming(phi, values, blocks, count_incoming);
+	return phi;
+}
+
 /* Prevent optimizations (at least of memory accesses) across the current
  * point in the program by emitting empty inline assembly that is marked as
  * having side effects.
@@ -438,12 +452,13 @@ build_cube_intrinsic(struct ac_llvm_context *ctx,
  * selcoords.ma; i.e., a positive out_ma means that coords is pointed towards
  * the selcoords major axis.
  */
-static void build_cube_select(LLVMBuilderRef builder,
+static void build_cube_select(struct ac_llvm_context *ctx,
 			      const struct cube_selection_coords *selcoords,
 			      const LLVMValueRef *coords,
 			      LLVMValueRef *out_st,
 			      LLVMValueRef *out_ma)
 {
+	LLVMBuilderRef builder = ctx->builder;
 	LLVMTypeRef f32 = LLVMTypeOf(coords[0]);
 	LLVMValueRef is_ma_positive;
 	LLVMValueRef sgn_ma;
@@ -465,24 +480,24 @@ static void build_cube_select(LLVMBuilderRef builder,
 	is_ma_x = LLVMBuildAnd(builder, is_not_ma_z, LLVMBuildNot(builder, is_ma_y, ""), "");
 
 	/* Select sc */
-	tmp = LLVMBuildSelect(builder, is_ma_z, coords[2], coords[0], "");
+	tmp = LLVMBuildSelect(builder, is_ma_x, coords[2], coords[0], "");
 	sgn = LLVMBuildSelect(builder, is_ma_y, LLVMConstReal(f32, 1.0),
-		LLVMBuildSelect(builder, is_ma_x, sgn_ma,
+		LLVMBuildSelect(builder, is_ma_z, sgn_ma,
 			LLVMBuildFNeg(builder, sgn_ma, ""), ""), "");
 	out_st[0] = LLVMBuildFMul(builder, tmp, sgn, "");
 
 	/* Select tc */
 	tmp = LLVMBuildSelect(builder, is_ma_y, coords[2], coords[1], "");
-	sgn = LLVMBuildSelect(builder, is_ma_y, LLVMBuildFNeg(builder, sgn_ma, ""),
+	sgn = LLVMBuildSelect(builder, is_ma_y, sgn_ma,
 		LLVMConstReal(f32, -1.0), "");
 	out_st[1] = LLVMBuildFMul(builder, tmp, sgn, "");
 
 	/* Select ma */
 	tmp = LLVMBuildSelect(builder, is_ma_z, coords[2],
 		LLVMBuildSelect(builder, is_ma_y, coords[1], coords[0], ""), "");
-	sgn = LLVMBuildSelect(builder, is_ma_positive,
-		LLVMConstReal(f32, 2.0), LLVMConstReal(f32, -2.0), "");
-	*out_ma = LLVMBuildFMul(builder, tmp, sgn, "");
+	tmp = ac_build_intrinsic(ctx, "llvm.fabs.f32",
+				 ctx->f32, &tmp, 1, AC_FUNC_ATTR_READNONE);
+	*out_ma = LLVMBuildFMul(builder, tmp, LLVMConstReal(f32, 2.0), "");
 }
 
 void
@@ -570,7 +585,7 @@ ac_prepare_cube_coords(struct ac_llvm_context *ctx,
 			 * seems awfully quiet about how textureGrad for cube
 			 * maps should be handled.
 			 */
-			build_cube_select(builder, &selcoords, &derivs_arg[axis * 3],
+			build_cube_select(ctx, &selcoords, &derivs_arg[axis * 3],
 					  deriv_st, &deriv_ma);
 
 			deriv_ma = LLVMBuildFMul(builder, deriv_ma, invma, "");
@@ -745,10 +760,13 @@ ac_build_buffer_store_dword(struct ac_llvm_context *ctx,
 			    bool glc,
 			    bool slc,
 			    bool writeonly_memory,
-			    bool has_add_tid)
+			    bool swizzle_enable_hint)
 {
-	/* TODO: Fix stores with ADD_TID and remove the "has_add_tid" flag. */
-	if (!has_add_tid) {
+	/* SWIZZLE_ENABLE requires that soffset isn't folded into voffset
+	 * (voffset is swizzled, but soffset isn't swizzled).
+	 * llvm.amdgcn.buffer.store doesn't have a separate soffset parameter.
+	 */
+	if (!swizzle_enable_hint) {
 		/* Split 3 channel stores, becase LLVM doesn't support 3-channel
 		 * intrinsics. */
 		if (num_channels == 3) {
@@ -762,11 +780,11 @@ ac_build_buffer_store_dword(struct ac_llvm_context *ctx,
 
 			ac_build_buffer_store_dword(ctx, rsrc, v01, 2, voffset,
 						    soffset, inst_offset, glc, slc,
-						    writeonly_memory, has_add_tid);
+						    writeonly_memory, swizzle_enable_hint);
 			ac_build_buffer_store_dword(ctx, rsrc, v[2], 1, voffset,
 						    soffset, inst_offset + 8,
 						    glc, slc,
-						    writeonly_memory, has_add_tid);
+						    writeonly_memory, swizzle_enable_hint);
 			return;
 		}
 
@@ -1033,7 +1051,7 @@ ac_build_ddxy(struct ac_llvm_context *ctx,
 					  AC_FUNC_ATTR_READNONE |
 					  AC_FUNC_ATTR_CONVERGENT);
 	} else {
-		uint32_t masks[2];
+		uint32_t masks[2] = {};
 
 		switch (mask) {
 		case AC_TID_MASK_TOP_LEFT:
@@ -1052,6 +1070,8 @@ ac_build_ddxy(struct ac_llvm_context *ctx,
 			masks[0] = 0x80a0;
 			masks[1] = 0x80f5;
 			break;
+		default:
+			assert(0);
 		}
 
 		args[0] = val;

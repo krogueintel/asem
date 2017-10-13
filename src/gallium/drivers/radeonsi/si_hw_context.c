@@ -29,7 +29,7 @@
 
 void si_destroy_saved_cs(struct si_saved_cs *scs)
 {
-	radeon_clear_saved_cs(&scs->gfx);
+	si_clear_saved_cs(&scs->gfx);
 	r600_resource_reference(&scs->trace_buf, NULL);
 	free(scs);
 }
@@ -80,10 +80,10 @@ void si_context_gfx_flush(void *context, unsigned flags,
 	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size))
 		return;
 
-	if (r600_check_device_reset(&ctx->b))
+	if (si_check_device_reset(&ctx->b))
 		return;
 
-	if (ctx->screen->b.debug_flags & DBG_CHECK_VM)
+	if (ctx->screen->b.debug_flags & DBG(CHECK_VM))
 		flags &= ~RADEON_FLUSH_ASYNC;
 
 	/* If the state tracker is flushing the GFX IB, r600_flush_from_st is
@@ -98,7 +98,13 @@ void si_context_gfx_flush(void *context, unsigned flags,
 
 	ctx->gfx_flush_in_progress = true;
 
-	r600_preflush_suspend_features(&ctx->b);
+	si_preflush_suspend_features(&ctx->b);
+
+	ctx->streamout.suspended = false;
+	if (ctx->streamout.begin_emitted) {
+		si_emit_streamout_end(ctx);
+		ctx->streamout.suspended = true;
+	}
 
 	ctx->b.flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
 			SI_CONTEXT_PS_PARTIAL_FLUSH;
@@ -115,7 +121,7 @@ void si_context_gfx_flush(void *context, unsigned flags,
 		si_log_hw_flush(ctx);
 
 		/* Save the IB for debug contexts. */
-		radeon_save_cs(ws, cs, &ctx->current_saved_cs->gfx, true);
+		si_save_cs(ws, cs, &ctx->current_saved_cs->gfx, true);
 		ctx->current_saved_cs->flushed = true;
 	}
 
@@ -126,7 +132,7 @@ void si_context_gfx_flush(void *context, unsigned flags,
 	ctx->b.num_gfx_cs_flushes++;
 
 	/* Check VM faults if needed. */
-	if (ctx->screen->b.debug_flags & DBG_CHECK_VM) {
+	if (ctx->screen->b.debug_flags & DBG(CHECK_VM)) {
 		/* Use conservative timeout 800ms, after which we won't wait any
 		 * longer and assume the GPU is hung.
 		 */
@@ -243,16 +249,16 @@ void si_begin_new_cs(struct si_context *ctx)
 		si_mark_atom_dirty(ctx, &ctx->dpbb_state);
 	si_mark_atom_dirty(ctx, &ctx->stencil_ref.atom);
 	si_mark_atom_dirty(ctx, &ctx->spi_map);
-	si_mark_atom_dirty(ctx, &ctx->b.streamout.enable_atom);
+	si_mark_atom_dirty(ctx, &ctx->streamout.enable_atom);
 	si_mark_atom_dirty(ctx, &ctx->b.render_cond_atom);
 	si_all_descriptors_begin_new_cs(ctx);
 	si_all_resident_buffers_begin_new_cs(ctx);
 
-	ctx->b.scissors.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
-	ctx->b.viewports.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
-	ctx->b.viewports.depth_range_dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
-	si_mark_atom_dirty(ctx, &ctx->b.scissors.atom);
-	si_mark_atom_dirty(ctx, &ctx->b.viewports.atom);
+	ctx->scissors.dirty_mask = (1 << SI_MAX_VIEWPORTS) - 1;
+	ctx->viewports.dirty_mask = (1 << SI_MAX_VIEWPORTS) - 1;
+	ctx->viewports.depth_range_dirty_mask = (1 << SI_MAX_VIEWPORTS) - 1;
+	si_mark_atom_dirty(ctx, &ctx->scissors.atom);
+	si_mark_atom_dirty(ctx, &ctx->viewports.atom);
 
 	si_mark_atom_dirty(ctx, &ctx->scratch_state);
 	if (ctx->scratch_buffer) {
@@ -260,7 +266,12 @@ void si_begin_new_cs(struct si_context *ctx)
 					       &ctx->scratch_buffer->b.b);
 	}
 
-	r600_postflush_resume_features(&ctx->b);
+	if (ctx->streamout.suspended) {
+		ctx->streamout.append_bitmask = ctx->streamout.enabled_mask;
+		si_streamout_buffers_dirty(ctx);
+	}
+
+	si_postflush_resume_features(&ctx->b);
 
 	assert(!ctx->b.gfx.cs->prev_dw);
 	ctx->b.initial_gfx_cs_size = ctx->b.gfx.cs->current.cdw;

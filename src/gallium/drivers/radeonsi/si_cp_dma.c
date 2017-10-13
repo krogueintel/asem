@@ -28,6 +28,12 @@
 #include "sid.h"
 #include "radeon/r600_cs.h"
 
+/* Recommended maximum sizes for optimal performance.
+ * Fall back to compute or SDMA if the size is greater.
+ */
+#define CP_DMA_COPY_PERF_THRESHOLD	(64 * 1024) /* copied from Vulkan */
+#define CP_DMA_CLEAR_PERF_THRESHOLD	(32 * 1024) /* guess (clear is much slower) */
+
 /* Set this if you want the ME to wait until CP DMA is done.
  * It should be set on the last CP DMA packet. */
 #define CP_DMA_SYNC		(1 << 0)
@@ -230,7 +236,7 @@ static void si_clear_buffer(struct pipe_context *ctx, struct pipe_resource *dst,
 	    (offset % 4 == 0) &&
 	    /* CP DMA is very slow. Always use SDMA for big clears. This
 	     * alone improves DeusEx:MD performance by 70%. */
-	    (size > 128 * 1024 ||
+	    (size > CP_DMA_CLEAR_PERF_THRESHOLD ||
 	     /* Buffers not used by the GFX IB yet will be cleared by SDMA.
 	      * This happens to move most buffer clears to SDMA, including
 	      * DCC and CMASK clears, because pipe->clear clears them before
@@ -309,7 +315,7 @@ static void si_cp_dma_realign_engine(struct si_context *sctx, unsigned size,
 	    sctx->scratch_buffer->b.b.width0 < scratch_size) {
 		r600_resource_reference(&sctx->scratch_buffer, NULL);
 		sctx->scratch_buffer = (struct r600_resource*)
-			r600_aligned_buffer_create(&sctx->screen->b.b,
+			si_aligned_buffer_create(&sctx->screen->b.b,
 						   R600_RESOURCE_FLAG_UNMAPPABLE,
 						   PIPE_USAGE_DEFAULT,
 						   scratch_size, 256);

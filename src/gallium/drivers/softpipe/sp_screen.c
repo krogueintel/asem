@@ -311,6 +311,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+   case PIPE_CAP_TILE_RASTER_ORDER:
       return 0;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return 4;
@@ -460,10 +462,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
     * All other operations (sampling, transfer, etc).
     */
 
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
-      return util_format_s3tc_enabled;
-   }
-
    /*
     * Everything else should be supported by u_format.
     */
@@ -589,8 +587,6 @@ softpipe_create_screen(struct sw_winsys *winsys)
    screen->base.flush_frontbuffer = softpipe_flush_frontbuffer;
    screen->base.get_compute_param = softpipe_get_compute_param;
    screen->use_llvm = debug_get_option_use_llvm();
-
-   util_format_s3tc_init();
 
    softpipe_init_screen_texture_funcs(&screen->base);
    softpipe_init_screen_fence_funcs(&screen->base);

@@ -39,7 +39,6 @@
 
 #include "sid.h"
 #include "gfx9d.h"
-#include "r600d_common.h"
 #include "ac_binary.h"
 #include "ac_llvm_util.h"
 #include "ac_nir_to_llvm.h"
@@ -64,6 +63,7 @@ static const struct nir_shader_compiler_options nir_options = {
 	.lower_unpack_unorm_4x8 = true,
 	.lower_extract_byte = true,
 	.lower_extract_word = true,
+	.lower_ffma = true,
 	.max_unroll_iterations = 32
 };
 
@@ -174,8 +174,8 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		uint32_t *spirv = (uint32_t *) module->data;
 		assert(module->size % 4 == 0);
 
-		if (device->debug_flags & RADV_DEBUG_DUMP_SPIRV)
-			radv_print_spirv(module, stderr);
+		if (device->instance->debug_flags & RADV_DEBUG_DUMP_SPIRV)
+			radv_print_spirv(spirv, module->size, stderr);
 
 		uint32_t num_spec_entries = 0;
 		struct nir_spirv_specialization *spec_entries = NULL;
@@ -263,7 +263,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 	nir_remove_dead_variables(nir, nir_var_local);
 	radv_optimize_nir(nir);
 
-	if (device->debug_flags & RADV_DEBUG_DUMP_SHADERS)
+	if (device->instance->debug_flags & RADV_DEBUG_DUMP_SHADERS)
 		nir_print_shader(nir, stderr);
 
 	return nir;
@@ -377,6 +377,7 @@ radv_fill_shader_variant(struct radv_device *device,
 
 static struct radv_shader_variant *
 shader_variant_create(struct radv_device *device,
+		      struct radv_shader_module *module,
 		      struct nir_shader *shader,
 		      gl_shader_stage stage,
 		      struct ac_nir_compiler_options *options,
@@ -385,7 +386,7 @@ shader_variant_create(struct radv_device *device,
 		      unsigned *code_size_out)
 {
 	enum radeon_family chip_family = device->physical_device->rad_info.family;
-	bool dump_shaders = device->debug_flags & RADV_DEBUG_DUMP_SHADERS;
+	bool dump_shaders = device->instance->debug_flags & RADV_DEBUG_DUMP_SHADERS;
 	enum ac_target_machine_options tm_options = 0;
 	struct radv_shader_variant *variant;
 	struct ac_shader_binary binary;
@@ -430,6 +431,11 @@ shader_variant_create(struct radv_device *device,
 
 	if (device->trace_bo) {
 		variant->disasm_string = binary.disasm_string;
+		if (!gs_copy_shader && !module->nir) {
+			variant->nir = shader;
+			variant->spirv = (uint32_t *)module->data;
+			variant->spirv_size = module->size;
+		}
 	} else {
 		free(binary.disasm_string);
 	}
@@ -439,6 +445,7 @@ shader_variant_create(struct radv_device *device,
 
 struct radv_shader_variant *
 radv_shader_variant_create(struct radv_device *device,
+			   struct radv_shader_module *module,
 			   struct nir_shader *shader,
 			   struct radv_pipeline_layout *layout,
 			   const struct ac_shader_variant_key *key,
@@ -451,10 +458,10 @@ radv_shader_variant_create(struct radv_device *device,
 	if (key)
 		options.key = *key;
 
-	options.unsafe_math = !!(device->debug_flags & RADV_DEBUG_UNSAFE_MATH);
+	options.unsafe_math = !!(device->instance->debug_flags & RADV_DEBUG_UNSAFE_MATH);
 	options.supports_spill = device->llvm_supports_spill;
 
-	return shader_variant_create(device, shader, shader->stage,
+	return shader_variant_create(device, module, shader, shader->stage,
 				     &options, false, code_out, code_size_out);
 }
 
@@ -469,7 +476,7 @@ radv_create_gs_copy_shader(struct radv_device *device,
 
 	options.key.has_multiview_view_index = multiview;
 
-	return shader_variant_create(device, shader, MESA_SHADER_VERTEX,
+	return shader_variant_create(device, NULL, shader, MESA_SHADER_VERTEX,
 				     &options, true, code_out, code_size_out);
 }
 
@@ -484,6 +491,7 @@ radv_shader_variant_destroy(struct radv_device *device,
 	list_del(&variant->slab_list);
 	mtx_unlock(&device->shader_slab_mutex);
 
+	ralloc_free(variant->nir);
 	free(variant->disasm_string);
 	free(variant);
 }

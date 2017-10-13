@@ -68,6 +68,8 @@ struct si_state_rasterizer {
 	struct si_pm4_state	*pm4_poly_offset;
 	unsigned		pa_sc_line_stipple;
 	unsigned		pa_cl_clip_cntl;
+	float			line_width;
+	float			max_point_size;
 	unsigned		sprite_coord_enable:8;
 	unsigned		clip_plane_enable:8;
 	unsigned		flatshade:1;
@@ -245,6 +247,11 @@ enum {
 #define SI_NUM_DESCS                   (SI_DESCS_FIRST_SHADER + \
                                         SI_NUM_SHADERS * SI_NUM_SHADER_DESCS)
 
+#define SI_VS_SHADER_POINTER_MASK \
+	u_bit_consecutive(SI_DESCS_FIRST_SHADER + \
+			  PIPE_SHADER_VERTEX * SI_NUM_SHADER_DESCS, \
+			  SI_NUM_SHADER_DESCS)
+
 /* This represents descriptors in memory, such as buffer resources,
  * image resources, and sampler states.
  */
@@ -272,14 +279,6 @@ struct si_descriptors {
 	/* The SGPR index where the 64-bit pointer to the descriptor array will
 	 * be stored. */
 	ubyte shader_userdata_offset;
-};
-
-struct si_sampler_views {
-	struct pipe_sampler_view	*views[SI_NUM_SAMPLERS];
-	struct si_sampler_state		*sampler_states[SI_NUM_SAMPLERS];
-
-	/* The i-th bit is set if that element is enabled (non-NULL resource). */
-	unsigned			enabled_mask;
 };
 
 struct si_buffer_resources {
@@ -408,12 +407,32 @@ void si_destroy_shader_cache(struct si_screen *sscreen);
 void si_get_active_slot_masks(const struct tgsi_shader_info *info,
 			      uint32_t *const_and_shader_buffers,
 			      uint64_t *samplers_and_images);
+void *si_get_blit_vs(struct si_context *sctx, enum blitter_attrib_type type,
+		     unsigned num_layers);
 
 /* si_state_draw.c */
 void si_init_ia_multi_vgt_param_table(struct si_context *sctx);
 void si_emit_cache_flush(struct si_context *sctx);
 void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *dinfo);
+void si_draw_rectangle(struct blitter_context *blitter,
+		       void *vertex_elements_cso,
+		       blitter_get_vs_func get_vs,
+		       int x1, int y1, int x2, int y2,
+		       float depth, unsigned num_instances,
+		       enum blitter_attrib_type type,
+		       const union blitter_attrib *attrib);
 void si_trace_emit(struct si_context *sctx);
+
+/* si_state_msaa.c */
+void si_init_msaa_functions(struct si_context *sctx);
+void si_emit_sample_locations(struct radeon_winsys_cs *cs, int nr_samples);
+
+/* si_state_streamout.c */
+void si_streamout_buffers_dirty(struct si_context *sctx);
+void si_emit_streamout_end(struct si_context *sctx);
+void si_update_prims_generated_query_state(struct si_context *sctx,
+					   unsigned type, int diff);
+void si_init_streamout_functions(struct si_context *sctx);
 
 
 static inline unsigned

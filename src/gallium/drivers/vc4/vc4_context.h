@@ -84,6 +84,13 @@ struct vc4_sampler_view {
         uint32_t texture_p0;
         uint32_t texture_p1;
         bool force_first_level;
+        /**
+         * Resource containing the actual texture that will be sampled.
+         *
+         * We may need to rebase the .base.texture resource to work around the
+         * lack of GL_TEXTURE_BASE_LEVEL, or to upload the texture as tiled.
+         */
+        struct pipe_resource *texture;
 };
 
 struct vc4_sampler_state {
@@ -296,6 +303,9 @@ struct vc4_job {
          */
         uint32_t draw_calls_queued;
 
+        /** Any flags to be passed in drm_vc4_submit_cl.flags. */
+        uint32_t flags;
+
         struct vc4_job_key key;
 };
 
@@ -391,6 +401,9 @@ struct vc4_rasterizer_state {
                 uint8_t point_size[V3D21_POINT_SIZE_length];
                 uint8_t line_width[V3D21_LINE_WIDTH_length];
         } packed;
+
+        /** Raster order flags to be passed in struct drm_vc4_submit_cl.flags. */
+        uint32_t tile_raster_order_flags;
 };
 
 struct vc4_depth_stencil_alpha_state {

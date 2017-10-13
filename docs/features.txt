@@ -224,7 +224,7 @@ GL 4.5, GLSL 4.50 -- all DONE: nvc0, radeonsi
 GL 4.6, GLSL 4.60
 
   GL_ARB_gl_spirv                                       in progress (Nicolai Hähnle, Ian Romanick)
-  GL_ARB_indirect_parameters                            DONE (nvc0, radeonsi)
+  GL_ARB_indirect_parameters                            DONE (i965/gen7+, nvc0, radeonsi)
   GL_ARB_pipeline_statistics_query                      DONE (i965, nvc0, radeonsi, llvmpipe, softpipe, swr)
   GL_ARB_polygon_offset_clamp                           DONE (i965, nv50, nvc0, r600, radeonsi, llvmpipe, swr)
   GL_ARB_shader_atomic_counter_ops                      DONE (i965/gen7+, nvc0, radeonsi, softpipe)
@@ -319,7 +319,7 @@ Khronos, ARB, and OES extensions that are not part of any OpenGL or OpenGL ES ve
   GL_OES_depth_texture_cube_map                         DONE (all drivers that support GLSL 1.30+)
   GL_OES_EGL_image                                      DONE (all drivers)
   GL_OES_EGL_image_external_essl3                       not started
-  GL_OES_required_internalformat                        not started - GLES2 extension based on OpenGL ES 3.0 feature
+  GL_OES_required_internalformat                        DONE (all drivers)
   GL_OES_surfaceless_context                            DONE (all drivers)
   GL_OES_texture_compression_astc                       DONE (core only)
   GL_OES_texture_float                                  DONE (i965, r300, r600, radeonsi, nv30, nv50, nvc0, softpipe, llvmpipe)

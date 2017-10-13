@@ -634,7 +634,8 @@ brw_initialize_context_constants(struct brw_context *brw)
    if (devinfo->gen >= 6) {
       ctx->Const.MaxVarying = 32;
       ctx->Const.Program[MESA_SHADER_VERTEX].MaxOutputComponents = 128;
-      ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxInputComponents = 64;
+      ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxInputComponents =
+         compiler->scalar_stage[MESA_SHADER_GEOMETRY] ? 128 : 64;
       ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxOutputComponents = 128;
       ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxInputComponents = 128;
       ctx->Const.Program[MESA_SHADER_TESS_CTRL].MaxInputComponents = 128;
@@ -693,6 +694,9 @@ brw_initialize_context_constants(struct brw_context *brw)
     */
    if (devinfo->gen >= 7)
       ctx->Const.UseSTD430AsDefaultPacking = true;
+
+   if (!(ctx->Const.ContextFlags & GL_CONTEXT_FLAG_DEBUG_BIT))
+      ctx->Const.AllowMappedBuffersDuringExecution = true;
 }
 
 static void
@@ -1595,21 +1599,9 @@ intel_update_image_buffer(struct brw_context *intel,
    if (last_mt && last_mt->bo == buffer->bo)
       return;
 
-   enum isl_colorspace colorspace;
-   switch (_mesa_get_format_color_encoding(intel_rb_format(rb))) {
-   case GL_SRGB:
-      colorspace = ISL_COLORSPACE_SRGB;
-      break;
-   case GL_LINEAR:
-      colorspace = ISL_COLORSPACE_LINEAR;
-      break;
-   default:
-      unreachable("Invalid color encoding");
-   }
-
    struct intel_mipmap_tree *mt =
       intel_miptree_create_for_dri_image(intel, buffer, GL_TEXTURE_2D,
-                                         colorspace, true);
+                                         intel_rb_format(rb), true);
    if (!mt)
       return;
 

@@ -394,6 +394,7 @@ VAStatus vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config, VAS
 
 VAStatus vlVaAcquireBufferHandle(VADriverContextP ctx, VABufferID buf_id, VABufferInfo *out_buf_info);
 VAStatus vlVaReleaseBufferHandle(VADriverContextP ctx, VABufferID buf_id);
+VAStatus vlVaExportSurfaceHandle(VADriverContextP ctx, VASurfaceID surface_id, uint32_t mem_type, uint32_t flags, void *descriptor);
 
 VAStatus vlVaQueryVideoProcFilters(VADriverContextP ctx, VAContextID context, VAProcFilterType *filters,
                                    unsigned int *num_filters);
@@ -404,7 +405,7 @@ VAStatus vlVaQueryVideoProcPipelineCaps(VADriverContextP ctx, VAContextID contex
 
 // internal functions
 VAStatus vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
-VAStatus vlVaHandleSurfaceAllocate(VADriverContextP ctx, vlVaSurface *surface, struct pipe_video_buffer *templat);
+VAStatus vlVaHandleSurfaceAllocate(vlVaDriver *drv, vlVaSurface *surface, struct pipe_video_buffer *templat);
 void vlVaGetReferenceFrame(vlVaDriver *drv, VASurfaceID surface_id, struct pipe_video_buffer **ref_frame);
 void vlVaHandlePictureParameterBufferMPEG12(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleIQMatrixBufferMPEG12(vlVaContext *context, vlVaBuffer *buf);

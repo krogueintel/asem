@@ -1481,9 +1481,6 @@ fs_visitor::calculate_urb_setup()
             }
          }
       } else {
-         bool include_vue_header =
-            nir->info.inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT);
-
          /* We have enough input varyings that the SF/SBE pipeline stage can't
           * arbitrarily rearrange them to suit our whim; we have to put them
           * in an order that matches the output of the previous pipeline stage
@@ -1493,8 +1490,10 @@ fs_visitor::calculate_urb_setup()
          brw_compute_vue_map(devinfo, &prev_stage_vue_map,
                              key->input_slots_valid,
                              nir->info.separate_shader);
+
          int first_slot =
-            include_vue_header ? 0 : 2 * BRW_SF_URB_ENTRY_READ_OFFSET;
+            brw_compute_first_urb_slot_required(nir->info.inputs_read,
+                                                &prev_stage_vue_map);
 
          assert(prev_stage_vue_map.num_slots <= first_slot + 32);
          for (int slot = first_slot; slot < prev_stage_vue_map.num_slots;
@@ -1890,6 +1889,7 @@ set_push_pull_constant_loc(unsigned uniform, int *chunk_start,
                            unsigned *num_pull_constants,
                            const unsigned max_push_components,
                            const unsigned max_chunk_size,
+                           bool allow_pull_constants,
                            struct brw_stage_prog_data *stage_prog_data)
 {
    /* This is the first live uniform in the chunk */
@@ -1919,7 +1919,7 @@ set_push_pull_constant_loc(unsigned uniform, int *chunk_start,
        * Vulkan driver, push constants are explicitly exposed via the API
        * so we push everything.  In GL, we only push small arrays.
        */
-      if (stage_prog_data->pull_param == NULL ||
+      if (!allow_pull_constants ||
           (*num_push_constants + chunk_size <= max_push_components &&
            chunk_size <= max_chunk_size)) {
          assert(*num_push_constants + chunk_size <= max_push_components);
@@ -1933,6 +1933,20 @@ set_push_pull_constant_loc(unsigned uniform, int *chunk_start,
       *max_chunk_bitsize = 0;
       *chunk_start = -1;
    }
+}
+
+static int
+get_thread_local_id_param_index(const brw_stage_prog_data *prog_data)
+{
+   if (prog_data->nr_params == 0)
+      return -1;
+
+   /* The local thread id is always the last parameter in the list */
+   uint32_t last_param = prog_data->param[prog_data->nr_params - 1];
+   if (last_param == BRW_PARAM_BUILTIN_THREAD_LOCAL_ID)
+      return prog_data->nr_params - 1;
+
+   return -1;
 }
 
 /**
@@ -1962,10 +1976,6 @@ fs_visitor::assign_constant_locations()
     */
    bool contiguous[uniforms];
    memset(contiguous, 0, sizeof(contiguous));
-
-   int thread_local_id_index =
-      (stage == MESA_SHADER_COMPUTE) ?
-      brw_cs_prog_data(stage_prog_data)->thread_local_id_index : -1;
 
    /* First, we walk through the instructions and do two things:
     *
@@ -2009,8 +2019,7 @@ fs_visitor::assign_constant_locations()
       }
    }
 
-   if (thread_local_id_index >= 0 && !is_live[thread_local_id_index])
-      thread_local_id_index = -1;
+   int thread_local_id_index = get_thread_local_id_param_index(stage_prog_data);
 
    /* Only allow 16 registers (128 uniform components) as push constants.
     *
@@ -2055,6 +2064,7 @@ fs_visitor::assign_constant_locations()
                                  push_constant_loc, pull_constant_loc,
                                  &num_push_constants, &num_pull_constants,
                                  max_push_components, max_chunk_size,
+                                 compiler->supports_pull_constants,
                                  stage_prog_data);
 
    }
@@ -2075,6 +2085,7 @@ fs_visitor::assign_constant_locations()
                                  push_constant_loc, pull_constant_loc,
                                  &num_push_constants, &num_pull_constants,
                                  max_push_components, max_chunk_size,
+                                 compiler->supports_pull_constants,
                                  stage_prog_data);
    }
 
@@ -2082,15 +2093,17 @@ fs_visitor::assign_constant_locations()
    if (thread_local_id_index >= 0)
       push_constant_loc[thread_local_id_index] = num_push_constants++;
 
-   /* As the uniforms are going to be reordered, take the data from a temporary
-    * copy of the original param[].
+   /* As the uniforms are going to be reordered, stash the old array and
+    * create two new arrays for push/pull params.
     */
-   gl_constant_value **param = ralloc_array(NULL, gl_constant_value*,
-                                            stage_prog_data->nr_params);
-   memcpy(param, stage_prog_data->param,
-          sizeof(gl_constant_value*) * stage_prog_data->nr_params);
+   uint32_t *param = stage_prog_data->param;
    stage_prog_data->nr_params = num_push_constants;
-   stage_prog_data->nr_pull_params = num_pull_constants;
+   stage_prog_data->param = ralloc_array(NULL, uint32_t, num_push_constants);
+   if (num_pull_constants > 0) {
+      stage_prog_data->nr_pull_params = num_pull_constants;
+      stage_prog_data->pull_param = ralloc_array(NULL, uint32_t,
+                                                 num_pull_constants);
+   }
 
    /* Now that we know how many regular uniforms we'll push, reduce the
     * UBO push ranges so we don't exceed the 3DSTATE_CONSTANT limits.
@@ -2114,23 +2127,15 @@ fs_visitor::assign_constant_locations()
     * push_constant_loc[i] <= i and we can do it in one smooth loop without
     * having to make a copy.
     */
-   int new_thread_local_id_index = -1;
    for (unsigned int i = 0; i < uniforms; i++) {
-      const gl_constant_value *value = param[i];
-
+      uint32_t value = param[i];
       if (pull_constant_loc[i] != -1) {
          stage_prog_data->pull_param[pull_constant_loc[i]] = value;
       } else if (push_constant_loc[i] != -1) {
          stage_prog_data->param[push_constant_loc[i]] = value;
-         if (thread_local_id_index == (int)i)
-            new_thread_local_id_index = push_constant_loc[i];
       }
    }
    ralloc_free(param);
-
-   if (stage == MESA_SHADER_COMPUTE)
-      brw_cs_prog_data(stage_prog_data)->thread_local_id_index =
-         new_thread_local_id_index;
 }
 
 bool
@@ -5602,6 +5607,17 @@ fs_visitor::setup_gs_payload()
       payload.num_regs++;
    }
 
+   /* Always enable VUE handles so we can safely use pull model if needed.
+    *
+    * The push model for a GS uses a ton of register space even for trivial
+    * scenarios with just a few inputs, so just make things easier and a bit
+    * safer by always having pull model available.
+    */
+   gs_prog_data->base.include_vue_handles = true;
+
+   /* R3..RN: ICP Handles for each incoming vertex (when using pull model) */
+   payload.num_regs += nir->info.gs.vertices_in;
+
    /* Use a maximum of 24 registers for push-model inputs. */
    const unsigned max_push_components = 24;
 
@@ -5612,12 +5628,7 @@ fs_visitor::setup_gs_payload()
     * have to multiply by VerticesIn to obtain the total storage requirement.
     */
    if (8 * vue_prog_data->urb_read_length * nir->info.gs.vertices_in >
-       max_push_components || gs_prog_data->invocations > 1) {
-      gs_prog_data->base.include_vue_handles = true;
-
-      /* R3..RN: ICP Handles for each incoming vertex (when using pull model) */
-      payload.num_regs += nir->info.gs.vertices_in;
-
+       max_push_components) {
       vue_prog_data->urb_read_length =
          ROUND_DOWN_TO(max_push_components / nir->info.gs.vertices_in, 8) / 8;
    }
@@ -5962,7 +5973,7 @@ fs_visitor::allocate_registers(bool allow_spilling)
 }
 
 bool
-fs_visitor::run_vs(gl_clip_plane *clip_planes)
+fs_visitor::run_vs()
 {
    assert(stage == MESA_SHADER_VERTEX);
 
@@ -5976,7 +5987,7 @@ fs_visitor::run_vs(gl_clip_plane *clip_planes)
    if (failed)
       return false;
 
-   compute_clip_distance(clip_planes);
+   compute_clip_distance();
 
    emit_urb_writes();
 
@@ -6689,24 +6700,20 @@ cs_fill_push_const_info(const struct gen_device_info *devinfo,
                         struct brw_cs_prog_data *cs_prog_data)
 {
    const struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
-   bool fill_thread_id =
-      cs_prog_data->thread_local_id_index >= 0 &&
-      cs_prog_data->thread_local_id_index < (int)prog_data->nr_params;
+   int thread_local_id_index = get_thread_local_id_param_index(prog_data);
    bool cross_thread_supported = devinfo->gen > 7 || devinfo->is_haswell;
 
    /* The thread ID should be stored in the last param dword */
-   assert(prog_data->nr_params > 0 || !fill_thread_id);
-   assert(!fill_thread_id ||
-          cs_prog_data->thread_local_id_index ==
-             (int)prog_data->nr_params - 1);
+   assert(thread_local_id_index == -1 ||
+          thread_local_id_index == (int)prog_data->nr_params - 1);
 
    unsigned cross_thread_dwords, per_thread_dwords;
    if (!cross_thread_supported) {
       cross_thread_dwords = 0u;
       per_thread_dwords = prog_data->nr_params;
-   } else if (fill_thread_id) {
+   } else if (thread_local_id_index >= 0) {
       /* Fill all but the last register with cross-thread payload */
-      cross_thread_dwords = 8 * (cs_prog_data->thread_local_id_index / 8);
+      cross_thread_dwords = 8 * (thread_local_id_index / 8);
       per_thread_dwords = prog_data->nr_params - cross_thread_dwords;
       assert(per_thread_dwords > 0 && per_thread_dwords <= 8);
    } else {
@@ -6752,15 +6759,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
    shader = brw_nir_apply_sampler_key(shader, compiler, &key->tex, true);
 
-   /* Now that we cloned the nir_shader, we can update num_uniforms based on
-    * the thread_local_id_index.
-    */
-   assert(prog_data->thread_local_id_index >= 0);
-   shader->num_uniforms =
-      MAX2(shader->num_uniforms,
-           (unsigned)4 * (prog_data->thread_local_id_index + 1));
-
-   brw_nir_lower_intrinsics(shader, &prog_data->base);
+   brw_nir_lower_cs_intrinsics(shader, prog_data);
    shader = brw_postprocess_nir(shader, compiler, true);
 
    prog_data->local_size[0] = shader->info.cs.local_size[0];

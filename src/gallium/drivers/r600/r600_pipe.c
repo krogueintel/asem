@@ -37,8 +37,8 @@
 #include "util/u_math.h"
 #include "vl/vl_decoder.h"
 #include "vl/vl_video_buffer.h"
-#include "radeon/radeon_video.h"
-#include "radeon/radeon_uvd.h"
+#include "radeon_video.h"
+#include "radeon_uvd.h"
 #include "os/os_time.h"
 
 static const struct debug_named_value r600_debug_options[] = {
@@ -402,6 +402,8 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_QUERY_SO_OVERFLOW:
 	case PIPE_CAP_MEMOBJ:
 	case PIPE_CAP_LOAD_CONSTBUF:
+	case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+	case PIPE_CAP_TILE_RASTER_ORDER:
 		return 0;
 
 	case PIPE_CAP_DOUBLES:
@@ -596,6 +598,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen,
 		return 0;
 	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+	case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
 	case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
 	case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
 	case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:

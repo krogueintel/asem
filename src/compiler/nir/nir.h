@@ -192,6 +192,16 @@ typedef struct nir_variable {
       unsigned invariant:1;
 
       /**
+       * When separate shader programs are enabled, only input/outputs between
+       * the stages of a multi-stage separate program can be safely removed
+       * from the shader interface. Other input/outputs must remains active.
+       *
+       * This is also used to make sure xfb varyings that are unused by the
+       * fragment shader are not removed.
+       */
+      unsigned always_active_io:1;
+
+      /**
        * Interpolation mode for shader inputs / outputs
        *
        * \sa glsl_interp_mode
@@ -2407,6 +2417,9 @@ void nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint);
 void nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
                               int (*type_size)(const struct glsl_type *));
 
+/* Some helpers to do very simple linking */
+bool nir_remove_unused_varyings(nir_shader *producer, nir_shader *consumer);
+
 typedef enum {
    /* If set, this forces all non-flat fragment shader inputs to be
     * interpolated as if with the "sample" qualifier.  This requires
@@ -2434,6 +2447,8 @@ bool nir_lower_constant_initializers(nir_shader *shader,
 
 bool nir_move_vec_src_uses_to_dest(nir_shader *shader);
 bool nir_lower_vec_to_movs(nir_shader *shader);
+void nir_lower_alpha_test(nir_shader *shader, enum compare_func func,
+                          bool alpha_to_one);
 bool nir_lower_alu_to_scalar(nir_shader *shader);
 bool nir_lower_load_const_to_scalar(nir_shader *shader);
 bool nir_lower_read_invocation_to_scalar(nir_shader *shader);

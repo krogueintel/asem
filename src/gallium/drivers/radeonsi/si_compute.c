@@ -175,7 +175,7 @@ static void *si_create_compute_state(
 
 		if ((sctx->b.debug.debug_message && !sctx->b.debug.async) ||
 		    sctx->is_debug ||
-		    r600_can_dump_shader(&sscreen->b, PIPE_SHADER_COMPUTE))
+		    si_can_dump_shader(&sscreen->b, PIPE_SHADER_COMPUTE))
 			si_create_compute_state_async(program, -1);
 		else
 			util_queue_add_job(&sscreen->shader_compiler_queue,
@@ -328,7 +328,7 @@ static bool si_setup_compute_scratch_buffer(struct si_context *sctx,
 		r600_resource_reference(&sctx->compute_scratch_buffer, NULL);
 
 		sctx->compute_scratch_buffer = (struct r600_resource*)
-			r600_aligned_buffer_create(&sctx->screen->b.b,
+			si_aligned_buffer_create(&sctx->screen->b.b,
 						   R600_RESOURCE_FLAG_UNMAPPABLE,
 						   PIPE_USAGE_DEFAULT,
 						   scratch_needed, 256);
@@ -787,7 +787,7 @@ static void si_launch_grid(
 		sctx->b.last_num_draw_calls = sctx->b.num_draw_calls;
 	}
 
-	si_decompress_compute_textures(sctx);
+	si_decompress_textures(sctx, 1 << PIPE_SHADER_COMPUTE);
 
 	/* Add buffer sizes for memory checking in need_cs_space. */
 	r600_context_add_resource_size(ctx, &program->shader.bo->b.b);
@@ -805,9 +805,6 @@ static void si_launch_grid(
 	}
 
 	si_need_cs_space(sctx);
-
-	if (sctx->b.log)
-		si_log_compute_state(sctx, sctx->b.log);
 
 	if (!sctx->cs_shader_state.initialized)
 		si_initialize_compute(sctx);
@@ -851,8 +848,10 @@ static void si_launch_grid(
 
 	si_emit_dispatch_packets(sctx, info);
 
-	if (unlikely(sctx->current_saved_cs))
+	if (unlikely(sctx->current_saved_cs)) {
 		si_trace_emit(sctx);
+		si_log_compute_state(sctx, sctx->b.log);
+	}
 
 	sctx->compute_is_busy = true;
 	sctx->b.num_compute_calls++;

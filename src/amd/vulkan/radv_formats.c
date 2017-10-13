@@ -26,7 +26,6 @@
 
 #include "vk_format.h"
 #include "sid.h"
-#include "r600d_common.h"
 
 #include "vk_util.h"
 
@@ -767,7 +766,7 @@ unsigned radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 #define HAS_SWIZZLE(chan,swz) (desc->swizzle[chan] == VK_SWIZZLE_##swz)
 
 	if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
-		return V_0280A0_SWAP_STD;
+		return V_028C70_SWAP_STD;
 
 	if (desc->layout != VK_FORMAT_LAYOUT_PLAIN)
 		return ~0U;
@@ -775,45 +774,45 @@ unsigned radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 	switch (desc->nr_channels) {
 	case 1:
 		if (HAS_SWIZZLE(0,X))
-			return V_0280A0_SWAP_STD; /* X___ */
+			return V_028C70_SWAP_STD; /* X___ */
 		else if (HAS_SWIZZLE(3,X))
-			return V_0280A0_SWAP_ALT_REV; /* ___X */
+			return V_028C70_SWAP_ALT_REV; /* ___X */
 		break;
 	case 2:
 		if ((HAS_SWIZZLE(0,X) && HAS_SWIZZLE(1,Y)) ||
 		    (HAS_SWIZZLE(0,X) && HAS_SWIZZLE(1,NONE)) ||
 		    (HAS_SWIZZLE(0,NONE) && HAS_SWIZZLE(1,Y)))
-			return V_0280A0_SWAP_STD; /* XY__ */
+			return V_028C70_SWAP_STD; /* XY__ */
 		else if ((HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(1,X)) ||
 			 (HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(1,NONE)) ||
 		         (HAS_SWIZZLE(0,NONE) && HAS_SWIZZLE(1,X)))
 			/* YX__ */
-			return (do_endian_swap ? V_0280A0_SWAP_STD : V_0280A0_SWAP_STD_REV);
+			return (do_endian_swap ? V_028C70_SWAP_STD : V_028C70_SWAP_STD_REV);
 		else if (HAS_SWIZZLE(0,X) && HAS_SWIZZLE(3,Y))
-			return V_0280A0_SWAP_ALT; /* X__Y */
+			return V_028C70_SWAP_ALT; /* X__Y */
 		else if (HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(3,X))
-			return V_0280A0_SWAP_ALT_REV; /* Y__X */
+			return V_028C70_SWAP_ALT_REV; /* Y__X */
 		break;
 	case 3:
 		if (HAS_SWIZZLE(0,X))
-			return (do_endian_swap ? V_0280A0_SWAP_STD_REV : V_0280A0_SWAP_STD);
+			return (do_endian_swap ? V_028C70_SWAP_STD_REV : V_028C70_SWAP_STD);
 		else if (HAS_SWIZZLE(0,Z))
-			return V_0280A0_SWAP_STD_REV; /* ZYX */
+			return V_028C70_SWAP_STD_REV; /* ZYX */
 		break;
 	case 4:
 		/* check the middle channels, the 1st and 4th channel can be NONE */
 		if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,Z)) {
-			return V_0280A0_SWAP_STD; /* XYZW */
+			return V_028C70_SWAP_STD; /* XYZW */
 		} else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,Y)) {
-			return V_0280A0_SWAP_STD_REV; /* WZYX */
+			return V_028C70_SWAP_STD_REV; /* WZYX */
 		} else if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,X)) {
-			return V_0280A0_SWAP_ALT; /* ZYXW */
+			return V_028C70_SWAP_ALT; /* ZYXW */
 		} else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,W)) {
 			/* YZWX */
 			if (desc->is_array)
-				return V_0280A0_SWAP_ALT_REV;
+				return V_028C70_SWAP_ALT_REV;
 			else
-				return (do_endian_swap ? V_0280A0_SWAP_ALT : V_0280A0_SWAP_ALT_REV);
+				return (do_endian_swap ? V_028C70_SWAP_ALT : V_028C70_SWAP_ALT_REV);
 		}
 		break;
 	}
@@ -961,6 +960,12 @@ bool radv_format_pack_clear_color(VkFormat format,
 		clear_vals[0] |= ((uint16_t)util_iround(CLAMP(value->float32[1], 0.0f, 1.0f) * 0xffff)) << 16;
 		clear_vals[1] = ((uint16_t)util_iround(CLAMP(value->float32[2], 0.0f, 1.0f) * 0xffff)) & 0xffff;
 		clear_vals[1] |= ((uint16_t)util_iround(CLAMP(value->float32[3], 0.0f, 1.0f) * 0xffff)) << 16;
+		break;
+	case VK_FORMAT_R16G16B16A16_SNORM:
+		clear_vals[0] = ((uint16_t)util_iround(CLAMP(value->float32[0], -1.0f, 1.0f) * 0x7fff)) & 0xffff;
+		clear_vals[0] |= ((uint16_t)util_iround(CLAMP(value->float32[1], -1.0f, 1.0f) * 0x7fff)) << 16;
+		clear_vals[1] = ((uint16_t)util_iround(CLAMP(value->float32[2], -1.0f, 1.0f) * 0x7fff)) & 0xffff;
+		clear_vals[1] |= ((uint16_t)util_iround(CLAMP(value->float32[3], -1.0f, 1.0f) * 0x7fff)) << 16;
 		break;
 	case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
 		clear_vals[0] = ((uint16_t)util_iround(CLAMP(value->float32[0], 0.0f, 1.0f) * 0x3ff)) & 0x3ff;

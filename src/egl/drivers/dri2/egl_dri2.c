@@ -62,6 +62,7 @@
 #include "loader/loader.h"
 #include "util/u_atomic.h"
 #include "util/u_vector.h"
+#include "mapi/glapi/glapi.h"
 
 /* The kernel header drm_fourcc.h defines the DRM formats below.  We duplicate
  * some of the definitions here so that building Mesa won't bleeding-edge
@@ -627,6 +628,18 @@ dri2_setup_screen(_EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    unsigned int api_mask;
+
+   /*
+    * EGL 1.5 specification defines the default value to 1. Moreover,
+    * eglSwapInterval() is required to clamp requested value to the supported
+    * range. Since the default value is implicitly assumed to be supported,
+    * use it as both minimum and maximum for the platforms that do not allow
+    * changing the interval. Platforms, which allow it (e.g. x11, wayland)
+    * override these values already.
+    */
+   dri2_dpy->min_swap_interval = 1;
+   dri2_dpy->max_swap_interval = 1;
+   dri2_dpy->default_swap_interval = 1;
 
    if (dri2_dpy->image_driver) {
       api_mask = dri2_dpy->image_driver->getAPIMask(dri2_dpy->dri_screen);
@@ -1552,9 +1565,7 @@ dri2_surface_get_dri_drawable(_EGLSurface *surf)
 static _EGLProc
 dri2_get_proc_address(_EGLDriver *drv, const char *procname)
 {
-   struct dri2_egl_driver *dri2_drv = dri2_egl_driver(drv);
-
-   return dri2_drv->get_proc_address(procname);
+   return _glapi_get_proc_address(procname);
 }
 
 static _EGLSurface*
@@ -1836,6 +1847,29 @@ dri2_create_image_from_dri(_EGLDisplay *disp, __DRIimage *dri_image)
    return &dri2_img->base;
 }
 
+/**
+ * Translate a DRI Image extension error code into an EGL error code.
+ */
+static EGLint
+egl_error_from_dri_image_error(int dri_error)
+{
+   switch (dri_error) {
+   case __DRI_IMAGE_ERROR_SUCCESS:
+      return EGL_SUCCESS;
+   case __DRI_IMAGE_ERROR_BAD_ALLOC:
+      return EGL_BAD_ALLOC;
+   case __DRI_IMAGE_ERROR_BAD_MATCH:
+      return EGL_BAD_MATCH;
+   case __DRI_IMAGE_ERROR_BAD_PARAMETER:
+      return EGL_BAD_PARAMETER;
+   case __DRI_IMAGE_ERROR_BAD_ACCESS:
+      return EGL_BAD_ACCESS;
+   default:
+      assert(0);
+      return EGL_BAD_ALLOC;
+   }
+}
+
 static _EGLImage *
 dri2_create_image_khr_renderbuffer(_EGLDisplay *disp, _EGLContext *ctx,
                                    EGLClientBuffer buffer,
@@ -1856,9 +1890,26 @@ dri2_create_image_khr_renderbuffer(_EGLDisplay *disp, _EGLContext *ctx,
       return EGL_NO_IMAGE_KHR;
    }
 
-   dri_image =
-      dri2_dpy->image->createImageFromRenderbuffer(dri2_ctx->dri_context,
-                                                   renderbuffer, NULL);
+   if (dri2_dpy->image->base.version >= 17) {
+      unsigned error = ~0;
+
+      dri_image = dri2_dpy->image->createImageFromRenderbuffer2(
+               dri2_ctx->dri_context, renderbuffer, NULL, &error);
+
+      assert(!!dri_image == (error == __DRI_IMAGE_ERROR_SUCCESS));
+
+      if (!dri_image) {
+         _eglError(egl_error_from_dri_image_error(error), "dri2_create_image_khr");
+         return EGL_NO_IMAGE_KHR;
+      }
+   } else {
+      dri_image = dri2_dpy->image->createImageFromRenderbuffer(
+               dri2_ctx->dri_context, renderbuffer, NULL);
+      if (!dri_image) {
+         _eglError(EGL_BAD_ALLOC, "dri2_create_image_khr");
+         return EGL_NO_IMAGE_KHR;
+      }
+   }
 
    return dri2_create_image_from_dri(disp, dri_image);
 }
@@ -1938,35 +1989,10 @@ dri2_get_sync_values_chromium(_EGLDisplay *dpy, _EGLSurface *surf,
 static void
 dri2_create_image_khr_texture_error(int dri_error)
 {
-   EGLint egl_error;
+   EGLint egl_error = egl_error_from_dri_image_error(dri_error);
 
-   switch (dri_error) {
-   case __DRI_IMAGE_ERROR_SUCCESS:
-      return;
-
-   case __DRI_IMAGE_ERROR_BAD_ALLOC:
-      egl_error = EGL_BAD_ALLOC;
-      break;
-
-   case __DRI_IMAGE_ERROR_BAD_MATCH:
-      egl_error = EGL_BAD_MATCH;
-      break;
-
-   case __DRI_IMAGE_ERROR_BAD_PARAMETER:
-      egl_error = EGL_BAD_PARAMETER;
-      break;
-
-   case __DRI_IMAGE_ERROR_BAD_ACCESS:
-      egl_error = EGL_BAD_ACCESS;
-      break;
-
-   default:
-      assert(0);
-      egl_error = EGL_BAD_MATCH;
-      break;
-   }
-
-   _eglError(egl_error, "dri2_create_image_khr_texture");
+   if (egl_error != EGL_SUCCESS)
+      _eglError(egl_error, "dri2_create_image_khr_texture");
 }
 
 static _EGLImage *
@@ -2718,16 +2744,17 @@ dri2_wl_release_buffer(void *user_data, struct wl_drm_buffer *buffer)
    dri2_dpy->image->destroyImage(buffer->driver_buffer);
 }
 
+static struct wayland_drm_callbacks wl_drm_callbacks = {
+        .authenticate = NULL,
+        .reference_buffer = dri2_wl_reference_buffer,
+        .release_buffer = dri2_wl_release_buffer
+};
+
 static EGLBoolean
 dri2_bind_wayland_display_wl(_EGLDriver *drv, _EGLDisplay *disp,
                              struct wl_display *wl_dpy)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   const struct wayland_drm_callbacks wl_drm_callbacks = {
-      .authenticate = (int(*)(void *, uint32_t)) dri2_dpy->vtbl->authenticate,
-      .reference_buffer = dri2_wl_reference_buffer,
-      .release_buffer = dri2_wl_release_buffer
-   };
    int flags = 0;
    uint64_t cap;
 
@@ -2735,6 +2762,9 @@ dri2_bind_wayland_display_wl(_EGLDriver *drv, _EGLDisplay *disp,
 
    if (dri2_dpy->wl_server_drm)
            return EGL_FALSE;
+
+   wl_drm_callbacks.authenticate =
+      (int(*)(void *, uint32_t)) dri2_dpy->vtbl->authenticate;
 
    if (drmGetCap(dri2_dpy->fd, DRM_CAP_PRIME, &cap) == 0 &&
        cap == (DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT) &&
@@ -3148,62 +3178,21 @@ dri2_interop_export_object(_EGLDisplay *dpy, _EGLContext *ctx,
    return dri2_dpy->interop->export_object(dri2_ctx->dri_context, in, out);
 }
 
-static void
-dri2_unload(_EGLDriver *drv)
-{
-   struct dri2_egl_driver *dri2_drv = dri2_egl_driver(drv);
-
-   dlclose(dri2_drv->handle);
-   free(dri2_drv);
-}
-
 static EGLBoolean
 dri2_load(_EGLDriver *drv)
 {
    struct dri2_egl_driver *dri2_drv = dri2_egl_driver(drv);
-#ifdef HAVE_ANDROID_PLATFORM
-   const char *libname = "libglapi.so";
-#elif defined(__APPLE__)
-   const char *libname = "libglapi.0.dylib";
-#elif defined(__CYGWIN__)
-   const char *libname = "cygglapi-0.dll";
-#else
-   const char *libname = "libglapi.so.0";
-#endif
-   void *handle;
-
-   /* RTLD_GLOBAL to make sure glapi symbols are visible to DRI drivers */
-   handle = dlopen(libname, RTLD_LAZY | RTLD_GLOBAL);
-   if (!handle) {
-      _eglLog(_EGL_WARNING, "DRI2: failed to open glapi provider");
-      goto no_handle;
-   }
-
-   dri2_drv->get_proc_address = (_EGLProc (*)(const char *))
-         dlsym(handle, "_glapi_get_proc_address");
-
-   /* if glapi is not available, loading DRI drivers will fail */
-   if (!dri2_drv->get_proc_address) {
-      _eglLog(_EGL_WARNING, "DRI2: failed to find _glapi_get_proc_address");
-      goto no_symbol;
-   }
 
    dri2_drv->glFlush = (void (*)(void))
-      dri2_drv->get_proc_address("glFlush");
+      _glapi_get_proc_address("glFlush");
 
    /* if glFlush is not available things are horribly broken */
    if (!dri2_drv->glFlush) {
       _eglLog(_EGL_WARNING, "DRI2: failed to find glFlush entry point");
-      goto no_symbol;
+      return EGL_FALSE;
    }
 
-   dri2_drv->handle = handle;
    return EGL_TRUE;
-
-no_symbol:
-   dlclose(handle);
-no_handle:
-   return EGL_FALSE;
 }
 
 /**
@@ -3211,11 +3200,9 @@ no_handle:
  * Create a new _EGLDriver object and init its dispatch table.
  */
 _EGLDriver *
-_eglBuiltInDriverDRI2(const char *args)
+_eglBuiltInDriver(void)
 {
    struct dri2_egl_driver *dri2_drv;
-
-   (void) args;
 
    dri2_drv = calloc(1, sizeof *dri2_drv);
    if (!dri2_drv)
@@ -3277,7 +3264,6 @@ _eglBuiltInDriverDRI2(const char *args)
    dri2_drv->base.API.DupNativeFenceFDANDROID = dri2_dup_native_fence_fd;
 
    dri2_drv->base.Name = "DRI2";
-   dri2_drv->base.Unload = dri2_unload;
 
    return &dri2_drv->base;
 }

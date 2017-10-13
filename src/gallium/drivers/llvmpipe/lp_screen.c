@@ -360,6 +360,8 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+   case PIPE_CAP_TILE_RASTER_ORDER:
       return 0;
    }
    /* should only get here on unhandled cases */
@@ -532,10 +534,6 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
        format != PIPE_FORMAT_ETC1_RGB8)
       return FALSE;
 
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
-      return util_format_s3tc_enabled;
-   }
-
    /*
     * Everything can be supported by u_format
     * (those without fetch_rgba_float might be not but shouldn't hit that)
@@ -685,8 +683,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
       return NULL;
    }
    (void) mtx_init(&screen->rast_mutex, mtx_plain);
-
-   util_format_s3tc_init();
 
    return &screen->base;
 }

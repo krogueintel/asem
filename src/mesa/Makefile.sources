@@ -67,7 +67,6 @@ MAIN_FILES = \
 	main/depth.h \
 	main/dlist.c \
 	main/dlist.h \
-	main/dlopen.h \
 	main/drawpix.c \
 	main/drawpix.h \
 	main/drawtex.c \
@@ -81,6 +80,7 @@ MAIN_FILES = \
 	main/eval.c \
 	main/eval.h \
 	main/execmem.c \
+	main/execmem.h \
 	main/extensions.c \
 	main/extensions.h \
 	main/extensions_table.c \
@@ -222,6 +222,7 @@ MAIN_FILES = \
 	main/texcompress_rgtc.h \
 	main/texcompress_s3tc.c \
 	main/texcompress_s3tc.h \
+	main/texcompress_s3tc_tmp.h \
 	main/texenv.c \
 	main/texenv.h \
 	main/texenvprogram.h \
@@ -642,7 +643,6 @@ COMMON_DRIVER_FILES =			\
 	drivers/common/driverfuncs.h	\
 	drivers/common/meta_blit.c	\
 	drivers/common/meta_generate_mipmap.c	\
-	drivers/common/meta_tex_subimage.c	\
 	drivers/common/meta.c \
 	drivers/common/meta.h
 

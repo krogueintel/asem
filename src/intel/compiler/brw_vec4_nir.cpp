@@ -804,9 +804,17 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       break;
    }
 
-   case nir_intrinsic_atomic_counter_read:
    case nir_intrinsic_atomic_counter_inc:
-   case nir_intrinsic_atomic_counter_dec: {
+   case nir_intrinsic_atomic_counter_dec:
+   case nir_intrinsic_atomic_counter_read:
+   case nir_intrinsic_atomic_counter_add:
+   case nir_intrinsic_atomic_counter_min:
+   case nir_intrinsic_atomic_counter_max:
+   case nir_intrinsic_atomic_counter_and:
+   case nir_intrinsic_atomic_counter_or:
+   case nir_intrinsic_atomic_counter_xor:
+   case nir_intrinsic_atomic_counter_exchange:
+   case nir_intrinsic_atomic_counter_comp_swap: {
       unsigned surf_index = prog_data->base.binding_table.abo_start +
          (unsigned) instr->const_index[0];
       const vec4_builder bld =
@@ -2218,6 +2226,15 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
       default:
          unreachable("unknown texture source");
       }
+   }
+
+   /* TXS and TXL require a LOD but not everything we implement using those
+    * two opcodes provides one.  Provide a default LOD of 0.
+    */
+   if ((instr->op == nir_texop_txs ||
+        instr->op == nir_texop_txl) &&
+       lod.file == BAD_FILE) {
+      lod = brw_imm_ud(0u);
    }
 
    if (instr->op == nir_texop_txf_ms ||

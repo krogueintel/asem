@@ -147,10 +147,6 @@ swr_is_format_supported(struct pipe_screen *_screen,
       return FALSE;
    }
 
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
-      return util_format_s3tc_enabled;
-   }
-
    return TRUE;
 }
 
@@ -346,6 +342,8 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_QUERY_SO_OVERFLOW:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+   case PIPE_CAP_TILE_RASTER_ORDER:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -1060,6 +1058,9 @@ swr_destroy_screen(struct pipe_screen *p_screen)
    swr_fence_reference(p_screen, &screen->flush_fence, NULL);
 
    JitDestroyContext(screen->hJitMgr);
+#if USE_SIMD16_SHADERS
+   JitDestroyContext(screen->hJitMgr16);
+#endif
 
    if (winsys->destroy)
       winsys->destroy(winsys);
@@ -1143,10 +1144,11 @@ swr_create_screen_internal(struct sw_winsys *winsys)
 
    // Pass in "" for architecture for run-time determination
    screen->hJitMgr = JitCreateContext(KNOB_SIMD_WIDTH, "", "swr");
+#if USE_SIMD16_SHADERS
+   screen->hJitMgr16 = JitCreateContext(16, "", "swr");
+#endif
 
    swr_fence_init(&screen->base);
-
-   util_format_s3tc_init();
 
    swr_validate_env_options(screen);
 

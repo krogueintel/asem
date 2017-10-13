@@ -264,6 +264,8 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_QUERY_SO_OVERFLOW:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
+   case PIPE_CAP_TILE_RASTER_ORDER:
       return 0;
 
    /* Stream output. */
@@ -442,6 +444,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
       return 4096;
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return false;
@@ -699,6 +702,8 @@ etna_get_specs(struct etna_screen *screen)
       VIV_FEATURE(screen, chipMinorFeatures1, NON_POWER_OF_TWO);
    screen->specs.has_new_transcendentals =
       VIV_FEATURE(screen, chipMinorFeatures3, HAS_FAST_TRANSCENDENTALS);
+   screen->specs.has_halti2_instructions =
+      VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
 
    if (VIV_FEATURE(screen, chipMinorFeatures3, INSTRUCTION_CACHE)) {
       /* GC3000 - this core is capable of loading shaders from

@@ -172,11 +172,6 @@ DRI_CONF_OPT_BEGIN_B(no_neg_lod_bias, def) \
         DRI_CONF_DESC(en,gettext("Forbid negative texture LOD bias")) \
 DRI_CONF_OPT_END
 
-#define DRI_CONF_FORCE_S3TC_ENABLE(def) \
-DRI_CONF_OPT_BEGIN_B(force_s3tc_enable, def) \
-        DRI_CONF_DESC(en,gettext("Enable S3TC texture compression even if software support is not available")) \
-DRI_CONF_OPT_END
-
 #define DRI_CONF_PRECISE_TRIG(def) \
 DRI_CONF_OPT_BEGIN_B(precise_trig, def) \
         DRI_CONF_DESC(en,gettext("Prefer accuracy over performance in trig functions")) \
@@ -447,4 +442,9 @@ DRI_CONF_OPT_END
 #define DRI_CONF_RADEONSI_COMMUTATIVE_BLEND_ADD(def) \
 DRI_CONF_OPT_BEGIN_B(radeonsi_commutative_blend_add, def) \
         DRI_CONF_DESC(en,gettext("Commutative additive blending optimizations (may cause rendering errors)")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_RADEONSI_CLEAR_DB_META_BEFORE_CLEAR(def) \
+DRI_CONF_OPT_BEGIN_B(radeonsi_clear_db_meta_before_clear, def) \
+        DRI_CONF_DESC(en,"Clear DB metadata cache before fast depth clear") \
 DRI_CONF_OPT_END

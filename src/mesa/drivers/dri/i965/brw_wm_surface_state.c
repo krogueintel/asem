@@ -451,11 +451,12 @@ brw_aux_surface_disabled(const struct brw_context *brw,
    return false;
 }
 
-void
+static void
 brw_update_texture_surface(struct gl_context *ctx,
                            unsigned unit,
                            uint32_t *surf_offset,
                            bool for_gather,
+                           bool for_txf,
                            uint32_t plane)
 {
    struct brw_context *brw = brw_context(ctx);
@@ -501,6 +502,7 @@ brw_update_texture_surface(struct gl_context *ctx,
 
       mesa_format mesa_fmt = plane == 0 ? intel_obj->_Format : mt->format;
       enum isl_format format = translate_tex_format(brw, mesa_fmt,
+                                                    for_txf ? GL_DECODE_EXT :
                                                     sampler->sRGBDecode);
 
       /* Implement gen6 and gen7 gather work-around */
@@ -798,7 +800,9 @@ brw_upload_wm_pull_constants(struct brw_context *brw)
 {
    struct brw_stage_state *stage_state = &brw->wm.base;
    /* BRW_NEW_FRAGMENT_PROGRAM */
-   struct brw_program *fp = (struct brw_program *) brw->fragment_program;
+   struct brw_program *fp =
+      (struct brw_program *) brw->programs[MESA_SHADER_FRAGMENT];
+
    /* BRW_NEW_FS_PROG_DATA */
    struct brw_stage_prog_data *prog_data = brw->wm.base.prog_data;
 
@@ -1150,10 +1154,12 @@ update_stage_texture_surfaces(struct brw_context *brw,
 
       if (prog->SamplersUsed & (1 << s)) {
          const unsigned unit = prog->SamplerUnits[s];
+         const bool used_by_txf = prog->info.textures_used_by_txf & (1 << s);
 
          /* _NEW_TEXTURE */
          if (ctx->Texture.Unit[unit]._Current) {
-            brw_update_texture_surface(ctx, unit, surf_offset + s, for_gather, plane);
+            brw_update_texture_surface(ctx, unit, surf_offset + s, for_gather,
+                                       used_by_txf, plane);
          }
       }
    }
@@ -1169,17 +1175,17 @@ brw_update_texture_surfaces(struct brw_context *brw)
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
    /* BRW_NEW_VERTEX_PROGRAM */
-   struct gl_program *vs = (struct gl_program *) brw->vertex_program;
+   struct gl_program *vs = brw->programs[MESA_SHADER_VERTEX];
 
    /* BRW_NEW_TESS_PROGRAMS */
-   struct gl_program *tcs = (struct gl_program *) brw->tess_ctrl_program;
-   struct gl_program *tes = (struct gl_program *) brw->tess_eval_program;
+   struct gl_program *tcs = brw->programs[MESA_SHADER_TESS_CTRL];
+   struct gl_program *tes = brw->programs[MESA_SHADER_TESS_EVAL];
 
    /* BRW_NEW_GEOMETRY_PROGRAM */
-   struct gl_program *gs = (struct gl_program *) brw->geometry_program;
+   struct gl_program *gs = brw->programs[MESA_SHADER_GEOMETRY];
 
    /* BRW_NEW_FRAGMENT_PROGRAM */
-   struct gl_program *fs = (struct gl_program *) brw->fragment_program;
+   struct gl_program *fs = brw->programs[MESA_SHADER_FRAGMENT];
 
    /* _NEW_TEXTURE */
    update_stage_texture_surfaces(brw, vs, &brw->vs.base, false, 0);
@@ -1237,7 +1243,7 @@ brw_update_cs_texture_surfaces(struct brw_context *brw)
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
    /* BRW_NEW_COMPUTE_PROGRAM */
-   struct gl_program *cs = (struct gl_program *) brw->compute_program;
+   struct gl_program *cs = brw->programs[MESA_SHADER_COMPUTE];
 
    /* _NEW_TEXTURE */
    update_stage_texture_surfaces(brw, cs, &brw->cs.base, false, 0);
@@ -1279,7 +1285,7 @@ brw_upload_ubo_surfaces(struct brw_context *brw, struct gl_program *prog,
       &stage_state->surf_offset[prog_data->binding_table.ubo_start];
 
    for (int i = 0; i < prog->info.num_ubos; i++) {
-      struct gl_uniform_buffer_binding *binding =
+      struct gl_buffer_binding *binding =
          &ctx->UniformBufferBindings[prog->sh.UniformBlocks[i]->Binding];
 
       if (binding->BufferObject == ctx->Shared->NullBufferObj) {
@@ -1304,7 +1310,7 @@ brw_upload_ubo_surfaces(struct brw_context *brw, struct gl_program *prog,
       &stage_state->surf_offset[prog_data->binding_table.ssbo_start];
 
    for (int i = 0; i < prog->info.num_ssbos; i++) {
-      struct gl_shader_storage_buffer_binding *binding =
+      struct gl_buffer_binding *binding =
          &ctx->ShaderStorageBufferBindings[prog->sh.ShaderStorageBlocks[i]->Binding];
 
       if (binding->BufferObject == ctx->Shared->NullBufferObj) {
@@ -1386,7 +1392,7 @@ brw_upload_abo_surfaces(struct brw_context *brw,
 
    if (prog->info.num_abos) {
       for (unsigned i = 0; i < prog->info.num_abos; i++) {
-         struct gl_atomic_buffer_binding *binding =
+         struct gl_buffer_binding *binding =
             &ctx->AtomicBufferBindings[prog->sh.AtomicBuffers[i]->Binding];
          struct intel_buffer_object *intel_bo =
             intel_buffer_object(binding->BufferObject);
@@ -1409,7 +1415,7 @@ static void
 brw_upload_wm_abo_surfaces(struct brw_context *brw)
 {
    /* _NEW_PROGRAM */
-   const struct gl_program *wm = brw->fragment_program;
+   const struct gl_program *wm = brw->programs[MESA_SHADER_FRAGMENT];
 
    if (wm) {
       /* BRW_NEW_FS_PROG_DATA */
@@ -1431,7 +1437,7 @@ static void
 brw_upload_cs_abo_surfaces(struct brw_context *brw)
 {
    /* _NEW_PROGRAM */
-   const struct gl_program *cp = brw->compute_program;
+   const struct gl_program *cp = brw->programs[MESA_SHADER_COMPUTE];
 
    if (cp) {
       /* BRW_NEW_CS_PROG_DATA */
@@ -1453,7 +1459,7 @@ static void
 brw_upload_cs_image_surfaces(struct brw_context *brw)
 {
    /* _NEW_PROGRAM */
-   const struct gl_program *cp = brw->compute_program;
+   const struct gl_program *cp = brw->programs[MESA_SHADER_COMPUTE];
 
    if (cp) {
       /* BRW_NEW_CS_PROG_DATA, BRW_NEW_IMAGE_UNITS, _NEW_TEXTURE */
@@ -1624,7 +1630,7 @@ brw_upload_image_surfaces(struct brw_context *brw,
          update_image_surface(brw, u, prog->sh.ImageAccess[i],
                               surf_idx,
                               &stage_state->surf_offset[surf_idx],
-                              &prog_data->image_param[i]);
+                              &stage_state->image_param[i]);
       }
 
       brw->ctx.NewDriverState |= BRW_NEW_SURFACES;
@@ -1640,7 +1646,7 @@ static void
 brw_upload_wm_image_surfaces(struct brw_context *brw)
 {
    /* BRW_NEW_FRAGMENT_PROGRAM */
-   const struct gl_program *wm = brw->fragment_program;
+   const struct gl_program *wm = brw->programs[MESA_SHADER_FRAGMENT];
 
    if (wm) {
       /* BRW_NEW_FS_PROG_DATA, BRW_NEW_IMAGE_UNITS, _NEW_TEXTURE */

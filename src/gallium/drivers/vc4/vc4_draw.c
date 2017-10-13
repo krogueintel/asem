@@ -116,12 +116,13 @@ vc4_predraw_check_textures(struct pipe_context *pctx,
         struct vc4_context *vc4 = vc4_context(pctx);
 
         for (int i = 0; i < stage_tex->num_textures; i++) {
-                struct pipe_sampler_view *view = stage_tex->textures[i];
+                struct vc4_sampler_view *view =
+                        vc4_sampler_view(stage_tex->textures[i]);
                 if (!view)
                         continue;
-                struct vc4_resource *rsc = vc4_resource(view->texture);
-                if (rsc->shadow_parent)
-                        vc4_update_shadow_baselevel_texture(pctx, view);
+
+                if (view->texture != view->base.texture)
+                        vc4_update_shadow_baselevel_texture(pctx, &view->base);
 
                 vc4_flush_jobs_writing_resource(vc4, view->texture);
         }
@@ -306,6 +307,14 @@ vc4_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
         vc4_hw_2116_workaround(pctx, info->count);
 
         struct vc4_job *job = vc4_get_job_for_fbo(vc4);
+
+        /* Make sure that the raster order flags haven't changed, which can
+         * only be set at job granularity.
+         */
+        if (job->flags != vc4->rasterizer->tile_raster_order_flags) {
+                vc4_job_submit(vc4, job);
+                job = vc4_get_job_for_fbo(vc4);
+        }
 
         vc4_get_draw_cl_space(job, info->count);
 

@@ -134,6 +134,7 @@ struct si_shader_context {
 	 *             max = 32*4
 	 */
 	int param_vs_state_bits;
+	int param_vs_blit_inputs;
 	/* HW VS */
 	int param_streamout_config;
 	int param_streamout_write_index;
@@ -289,6 +290,7 @@ LLVMValueRef si_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 void si_llvm_emit_store(struct lp_build_tgsi_context *bld_base,
 			const struct tgsi_full_instruction *inst,
 			const struct tgsi_opcode_info *info,
+			unsigned index,
 			LLVMValueRef dst[4]);
 
 /* Combine these with & instead of |. */
@@ -300,7 +302,7 @@ void si_emit_waitcnt(struct si_shader_context *ctx, unsigned simm16);
 
 LLVMValueRef si_get_indirect_index(struct si_shader_context *ctx,
 				   const struct tgsi_ind_register *ind,
-				   int rel_index);
+				   unsigned addr_mul, int rel_index);
 LLVMValueRef si_get_bounded_indirect_index(struct si_shader_context *ctx,
 					   const struct tgsi_ind_register *ind,
 					   int rel_index, unsigned num);

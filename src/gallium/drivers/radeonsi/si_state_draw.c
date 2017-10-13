@@ -368,7 +368,7 @@ si_get_init_multi_vgt_param(struct si_screen *sscreen,
 
 	/* This is a hardware requirement. */
 	if (key->u.line_stipple_enabled ||
-	    (sscreen->b.debug_flags & DBG_SWITCH_ON_EOP)) {
+	    (sscreen->b.debug_flags & DBG(SWITCH_ON_EOP))) {
 		ia_switch_on_eop = true;
 		wd_switch_on_eop = true;
 	}
@@ -563,6 +563,12 @@ static void si_emit_vs_state(struct si_context *sctx,
 	sctx->current_vs_state &= C_VS_STATE_INDEXED;
 	sctx->current_vs_state |= S_VS_STATE_INDEXED(!!info->index_size);
 
+	if (sctx->num_vs_blit_sgprs) {
+		/* Re-emit the state after we leave u_blitter. */
+		sctx->last_vs_state = ~0;
+		return;
+	}
+
 	if (sctx->current_vs_state != sctx->last_vs_state) {
 		struct radeon_winsys_cs *cs = sctx->b.gfx.cs;
 
@@ -646,8 +652,8 @@ static void si_emit_draw_packets(struct si_context *sctx,
 	uint64_t index_va = 0;
 
 	if (info->count_from_stream_output) {
-		struct r600_so_target *t =
-			(struct r600_so_target*)info->count_from_stream_output;
+		struct si_streamout_target *t =
+			(struct si_streamout_target*)info->count_from_stream_output;
 		uint64_t va = t->buf_filled_size->gpu_address +
 			      t->buf_filled_size_offset;
 
@@ -795,11 +801,20 @@ static void si_emit_draw_packets(struct si_context *sctx,
 		/* Base vertex and start instance. */
 		base_vertex = index_size ? info->index_bias : info->start;
 
-		if (base_vertex != sctx->last_base_vertex ||
-		    sctx->last_base_vertex == SI_BASE_VERTEX_UNKNOWN ||
-		    info->start_instance != sctx->last_start_instance ||
-		    info->drawid != sctx->last_drawid ||
-		    sh_base_reg != sctx->last_sh_base_reg) {
+		if (sctx->num_vs_blit_sgprs) {
+			/* Re-emit draw constants after we leave u_blitter. */
+			si_invalidate_draw_sh_constants(sctx);
+
+			/* Blit VS doesn't use BASE_VERTEX, START_INSTANCE, and DRAWID. */
+			radeon_set_sh_reg_seq(cs, sh_base_reg + SI_SGPR_VS_BLIT_DATA * 4,
+					      sctx->num_vs_blit_sgprs);
+			radeon_emit_array(cs, sctx->vs_blit_sh_data,
+					  sctx->num_vs_blit_sgprs);
+		} else if (base_vertex != sctx->last_base_vertex ||
+			   sctx->last_base_vertex == SI_BASE_VERTEX_UNKNOWN ||
+			   info->start_instance != sctx->last_start_instance ||
+			   info->drawid != sctx->last_drawid ||
+			   sh_base_reg != sctx->last_sh_base_reg) {
 			radeon_set_sh_reg_seq(cs, sh_base_reg + SI_SGPR_BASE_VERTEX * 4, 3);
 			radeon_emit(cs, base_vertex);
 			radeon_emit(cs, info->start_instance);
@@ -893,7 +908,7 @@ void si_emit_cache_flush(struct si_context *sctx)
 
 			/* Necessary for DCC */
 			if (rctx->chip_class == VI)
-				r600_gfx_write_event_eop(rctx, V_028A90_FLUSH_AND_INV_CB_DATA_TS,
+				si_gfx_write_event_eop(rctx, V_028A90_FLUSH_AND_INV_CB_DATA_TS,
 							 0, EOP_DATA_SEL_DISCARD, NULL,
 							 0, 0, R600_NOT_QUERY);
 		}
@@ -1008,11 +1023,11 @@ void si_emit_cache_flush(struct si_context *sctx)
 		va = sctx->wait_mem_scratch->gpu_address;
 		sctx->wait_mem_number++;
 
-		r600_gfx_write_event_eop(rctx, cb_db_event, tc_flags,
+		si_gfx_write_event_eop(rctx, cb_db_event, tc_flags,
 					 EOP_DATA_SEL_VALUE_32BIT,
 					 sctx->wait_mem_scratch, va,
 					 sctx->wait_mem_number, R600_NOT_QUERY);
-		r600_gfx_wait_fence(rctx, va, sctx->wait_mem_number, 0xffffffff);
+		si_gfx_wait_fence(rctx, va, sctx->wait_mem_number, 0xffffffff);
 	}
 
 	/* Make sure ME is idle (it executes most packets) before continuing.
@@ -1240,7 +1255,7 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 		si_update_all_texture_descriptors(sctx);
 	}
 
-	si_decompress_graphics_textures(sctx);
+	si_decompress_textures(sctx, u_bit_consecutive(0, SI_NUM_GRAPHICS_SHADERS));
 
 	/* Set the rasterization primitive type.
 	 *
@@ -1249,12 +1264,22 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 	 * current_rast_prim for this draw_vbo call. */
 	if (sctx->gs_shader.cso)
 		rast_prim = sctx->gs_shader.cso->gs_output_prim;
-	else if (sctx->tes_shader.cso)
-		rast_prim = sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_PRIM_MODE];
-	else
+	else if (sctx->tes_shader.cso) {
+		if (sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_POINT_MODE])
+			rast_prim = PIPE_PRIM_POINTS;
+		else
+			rast_prim = sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_PRIM_MODE];
+	} else
 		rast_prim = info->mode;
 
 	if (rast_prim != sctx->current_rast_prim) {
+		bool old_is_poly = sctx->current_rast_prim >= PIPE_PRIM_TRIANGLES;
+		bool new_is_poly = rast_prim >= PIPE_PRIM_TRIANGLES;
+		if (old_is_poly != new_is_poly) {
+			sctx->scissors.dirty_mask = (1 << SI_MAX_VIEWPORTS) - 1;
+			si_mark_atom_dirty(sctx, &sctx->scissors.atom);
+		}
+
 		sctx->current_rast_prim = rast_prim;
 		sctx->do_update_shaders = true;
 	}
@@ -1376,9 +1401,6 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 
 	si_need_cs_space(sctx);
 
-	if (unlikely(sctx->b.log))
-		si_log_draw_state(sctx, sctx->b.log);
-
 	/* Since we've called r600_context_add_resource_size for vertex buffers,
 	 * this must be called after si_need_cs_space, because we must let
 	 * need_cs_space flush before we add buffers to the buffer list.
@@ -1391,7 +1413,7 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 	 * involved alternative workaround.
 	 */
 	if (sctx->b.chip_class == GFX9 &&
-	    si_is_atom_dirty(sctx, &sctx->b.scissors.atom)) {
+	    si_is_atom_dirty(sctx, &sctx->scissors.atom)) {
 		sctx->b.flags |= SI_CONTEXT_PS_PARTIAL_FLUSH;
 		si_emit_cache_flush(sctx);
 	}
@@ -1454,15 +1476,17 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 		si_emit_draw_packets(sctx, info, indexbuf, index_size, index_offset);
 	}
 
-	if (unlikely(sctx->current_saved_cs))
+	if (unlikely(sctx->current_saved_cs)) {
 		si_trace_emit(sctx);
+		si_log_draw_state(sctx, sctx->b.log);
+	}
 
 	/* Workaround for a VGT hang when streamout is enabled.
 	 * It must be done after drawing. */
 	if ((sctx->b.family == CHIP_HAWAII ||
 	     sctx->b.family == CHIP_TONGA ||
 	     sctx->b.family == CHIP_FIJI) &&
-	    r600_get_strmout_en(&sctx->b)) {
+	    si_get_strmout_en(sctx)) {
 		sctx->b.flags |= SI_CONTEXT_VGT_STREAMOUT_SYNC;
 	}
 
@@ -1479,6 +1503,51 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 	}
 	if (index_size && indexbuf != info->index.resource)
 		pipe_resource_reference(&indexbuf, NULL);
+}
+
+void si_draw_rectangle(struct blitter_context *blitter,
+		       void *vertex_elements_cso,
+		       blitter_get_vs_func get_vs,
+		       int x1, int y1, int x2, int y2,
+		       float depth, unsigned num_instances,
+		       enum blitter_attrib_type type,
+		       const union blitter_attrib *attrib)
+{
+	struct pipe_context *pipe = util_blitter_get_pipe(blitter);
+	struct si_context *sctx = (struct si_context*)pipe;
+
+	/* Pack position coordinates as signed int16. */
+	sctx->vs_blit_sh_data[0] = (uint32_t)(x1 & 0xffff) |
+				   ((uint32_t)(y1 & 0xffff) << 16);
+	sctx->vs_blit_sh_data[1] = (uint32_t)(x2 & 0xffff) |
+				   ((uint32_t)(y2 & 0xffff) << 16);
+	sctx->vs_blit_sh_data[2] = fui(depth);
+
+	switch (type) {
+	case UTIL_BLITTER_ATTRIB_COLOR:
+		memcpy(&sctx->vs_blit_sh_data[3], attrib->color,
+		       sizeof(float)*4);
+		break;
+	case UTIL_BLITTER_ATTRIB_TEXCOORD_XY:
+	case UTIL_BLITTER_ATTRIB_TEXCOORD_XYZW:
+		memcpy(&sctx->vs_blit_sh_data[3], &attrib->texcoord,
+		       sizeof(attrib->texcoord));
+		break;
+	case UTIL_BLITTER_ATTRIB_NONE:;
+	}
+
+	pipe->bind_vs_state(pipe, si_get_blit_vs(sctx, type, num_instances));
+
+	struct pipe_draw_info info = {};
+	info.mode = R600_PRIM_RECTANGLE_LIST;
+	info.count = 3;
+	info.instance_count = num_instances;
+
+	/* Don't set per-stage shader pointers for VS. */
+	sctx->shader_pointers_dirty &= ~SI_VS_SHADER_POINTER_MASK;
+	sctx->vertex_buffer_pointer_dirty = false;
+
+	si_draw_vbo(pipe, &info);
 }
 
 void si_trace_emit(struct si_context *sctx)
