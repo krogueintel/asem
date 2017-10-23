@@ -820,14 +820,15 @@ brw_process_driconf_options(struct brw_context *brw)
 
 GLboolean
 brwCreateContext(gl_api api,
-	         const struct gl_config *mesaVis,
-		 __DRIcontext *driContextPriv,
+                 const struct gl_config *mesaVis,
+                 __DRIcontext *driContextPriv,
                  unsigned major_version,
                  unsigned minor_version,
                  uint32_t flags,
                  bool notify_reset,
+                 unsigned priority,
                  unsigned *dri_ctx_error,
-	         void *sharedContextPrivate)
+                 void *sharedContextPrivate)
 {
    struct gl_context *shareCtx = (struct gl_context *) sharedContextPrivate;
    struct intel_screen *screen = driContextPriv->driScreenPriv->driverPrivate;
@@ -952,6 +953,24 @@ brwCreateContext(gl_api api,
 
       if (!brw->hw_ctx) {
          fprintf(stderr, "Failed to create hardware context.\n");
+         intelDestroyContext(driContextPriv);
+         return false;
+      }
+
+      int hw_priority = BRW_CONTEXT_MEDIUM_PRIORITY;
+      switch (priority) {
+      case __DRI_CTX_PRIORITY_LOW:
+         hw_priority = BRW_CONTEXT_LOW_PRIORITY;
+         break;
+      case __DRI_CTX_PRIORITY_HIGH:
+         hw_priority = BRW_CONTEXT_HIGH_PRIORITY;
+         break;
+      }
+      if (hw_priority != I915_CONTEXT_DEFAULT_PRIORITY &&
+          brw_hw_context_set_priority(brw->bufmgr, brw->hw_ctx, hw_priority)) {
+         fprintf(stderr,
+		 "Failed to set priority [%d:%d] for hardware context.\n",
+                 priority, hw_priority);
          intelDestroyContext(driContextPriv);
          return false;
       }

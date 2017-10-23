@@ -1567,16 +1567,11 @@ intel_miptree_copy_slice(struct brw_context *brw,
 /**
  * Copies the image's current data to the given miptree, and associates that
  * miptree with the image.
- *
- * If \c invalidate is true, then the actual image data does not need to be
- * copied, but the image still needs to be associated to the new miptree (this
- * is set to true if we're about to clear the image).
  */
 void
 intel_miptree_copy_teximage(struct brw_context *brw,
 			    struct intel_texture_image *intelImage,
-			    struct intel_mipmap_tree *dst_mt,
-                            bool invalidate)
+			    struct intel_mipmap_tree *dst_mt)
 {
    struct intel_mipmap_tree *src_mt = intelImage->mt;
    struct intel_texture_object *intel_obj =
@@ -1599,12 +1594,10 @@ intel_miptree_copy_teximage(struct brw_context *brw,
       end_layer = intelImage->base.Base.Depth - 1;
    }
 
-   if (!invalidate) {
-      for (unsigned i = start_layer; i <= end_layer; i++) {
-         intel_miptree_copy_slice(brw,
-                                  src_mt, level, i,
-                                  dst_mt, level, i);
-      }
+   for (unsigned i = start_layer; i <= end_layer; i++) {
+      intel_miptree_copy_slice(brw,
+                               src_mt, level, i,
+                               dst_mt, level, i);
    }
 
    intel_miptree_reference(&intelImage->mt, dst_mt);
@@ -2624,13 +2617,13 @@ isl_formats_are_fast_clear_compatible(enum isl_format a, enum isl_format b)
    return isl_format_srgb_to_linear(a) == isl_format_srgb_to_linear(b);
 }
 
-static void
-intel_miptree_prepare_texture_slices(struct brw_context *brw,
-                                     struct intel_mipmap_tree *mt,
-                                     enum isl_format view_format,
-                                     uint32_t start_level, uint32_t num_levels,
-                                     uint32_t start_layer, uint32_t num_layers,
-                                     bool disable_aux)
+void
+intel_miptree_prepare_texture(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt,
+                              enum isl_format view_format,
+                              uint32_t start_level, uint32_t num_levels,
+                              uint32_t start_layer, uint32_t num_layers,
+                              bool disable_aux)
 {
    enum isl_aux_usage aux_usage = disable_aux ? ISL_AUX_USAGE_NONE :
       intel_miptree_texture_aux_usage(brw, mt, view_format);
@@ -2649,18 +2642,6 @@ intel_miptree_prepare_texture_slices(struct brw_context *brw,
 }
 
 void
-intel_miptree_prepare_texture(struct brw_context *brw,
-                              struct intel_mipmap_tree *mt,
-                              enum isl_format view_format,
-                              bool disable_aux)
-{
-   intel_miptree_prepare_texture_slices(brw, mt, view_format,
-                                        0, INTEL_REMAINING_LEVELS,
-                                        0, INTEL_REMAINING_LAYERS,
-                                        disable_aux);
-}
-
-void
 intel_miptree_prepare_image(struct brw_context *brw,
                             struct intel_mipmap_tree *mt)
 {
@@ -2668,20 +2649,6 @@ intel_miptree_prepare_image(struct brw_context *brw,
    intel_miptree_prepare_access(brw, mt, 0, INTEL_REMAINING_LEVELS,
                                 0, INTEL_REMAINING_LAYERS,
                                 ISL_AUX_USAGE_NONE, false);
-}
-
-void
-intel_miptree_prepare_fb_fetch(struct brw_context *brw,
-                               struct intel_mipmap_tree *mt, uint32_t level,
-                               uint32_t start_layer, uint32_t num_layers)
-{
-   /* This is only used for non-coherent framebuffer fetch, so we don't
-    * need to worry about CCS_E and can simply pass 'false' below.
-    */
-   assert(brw->screen->devinfo.gen < 9);
-
-   intel_miptree_prepare_texture_slices(brw, mt, mt->surf.format, level, 1,
-                                        start_layer, num_layers, false);
 }
 
 enum isl_aux_usage

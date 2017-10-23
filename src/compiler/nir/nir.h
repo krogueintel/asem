@@ -1379,6 +1379,10 @@ nir_tex_instr_src_index(const nir_tex_instr *instr, nir_tex_src_type type)
    return -1;
 }
 
+void nir_tex_instr_add_src(nir_tex_instr *tex,
+                           nir_tex_src_type src_type,
+                           nir_src src);
+
 void nir_tex_instr_remove_src(nir_tex_instr *tex, unsigned src_idx);
 
 typedef struct {
@@ -1900,9 +1904,6 @@ typedef struct nir_shader {
     * access plus one
     */
    unsigned num_inputs, num_uniforms, num_outputs, num_shared;
-
-   /** The shader stage, such as MESA_SHADER_VERTEX. */
-   gl_shader_stage stage;
 } nir_shader;
 
 static inline nir_function_impl *
@@ -2454,6 +2455,7 @@ bool nir_lower_load_const_to_scalar(nir_shader *shader);
 bool nir_lower_read_invocation_to_scalar(nir_shader *shader);
 bool nir_lower_phis_to_scalar(nir_shader *shader);
 void nir_lower_io_to_scalar(nir_shader *shader, nir_variable_mode mask);
+void nir_lower_io_to_scalar_early(nir_shader *shader, nir_variable_mode mask);
 
 bool nir_lower_samplers(nir_shader *shader,
                         const struct gl_shader_program *shader_program);

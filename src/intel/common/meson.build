@@ -32,6 +32,7 @@ files_libintel_common = files(
   'gen_l3_config.h',
   'gen_urb_config.c',
   'gen_sample_positions.h',
+  'intel_log.c',
 )
 
 libintel_common = static_library(
@@ -39,6 +40,6 @@ libintel_common = static_library(
   files_libintel_common,
   include_directories : [inc_common, inc_intel],
   c_args : [c_vis_args, no_override_init_args],
-  dependencies : dep_libdrm,
+  dependencies : [dep_expat, dep_libdrm],
   build_by_default : false,
 )
