@@ -18,8 +18,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-project('mesa', ['c', 'cpp'], version : '17.3.0-devel', license : 'MIT',
-        default_options : ['c_std=c99', 'cpp_std=c++11'])
+project(
+  'mesa',
+  ['c', 'cpp'],
+  version : '17.3.0-devel',
+  license : 'MIT',
+  meson_version : '>= 0.42',
+  default_options : ['c_std=c99', 'cpp_std=c++11']
+)
 
 # Arguments for the preprocessor, put these in a separate array from the C and
 # C++ (cpp in meson terminology) arguments since they need to be added to the
@@ -37,8 +43,10 @@ pre_args = [
 with_vulkan_icd_dir = get_option('vulkan-icd-dir')
 with_tests = get_option('build-tests')
 with_valgrind = get_option('valgrind')
+with_libunwind = get_option('libunwind')
 with_asm = get_option('asm')
 with_llvm = get_option('llvm')
+with_osmesa = get_option('osmesa')
 if get_option('texture-float')
   pre_args += '-DTEXTURE_FLOAT_ENABLED'
   message('WARNING: Floating-point texture enabled. Please consult docs/patents.txt and your lawyer before building mesa.')
@@ -60,9 +68,6 @@ with_any_opengl = with_opengl or with_gles1 or with_gles2
 # Only build shared_glapi if at least one OpenGL API is enabled
 with_shared_glapi = get_option('shared-glapi') and with_any_opengl
 
-# TODO: these will need options, but at the moment they just control header
-# installs
-with_osmesa = false
 
 # shared-glapi is required if at least two OpenGL APIs are being built
 if not with_shared_glapi
@@ -80,12 +85,18 @@ endif
 with_dri = false
 with_dri_i915 = false
 with_dri_i965 = false
+with_dri_r100 = false
+with_dri_r200 = false
+with_dri_nouveau = false
 with_dri_swrast = false
 _drivers = get_option('dri-drivers')
 if _drivers != ''
   _split = _drivers.split(',')
   with_dri_i915 = _split.contains('i915')
   with_dri_i965 = _split.contains('i965')
+  with_dri_r100 = _split.contains('r100')
+  with_dri_r200 = _split.contains('r200')
+  with_dri_nouveau = _split.contains('nouveau')
   with_dri_swrast = _split.contains('swrast')
   with_dri = true
 endif
@@ -94,18 +105,24 @@ with_gallium = false
 with_gallium_pl111 = false
 with_gallium_radeonsi = false
 with_gallium_nouveau = false
+with_gallium_freedreno = false
 with_gallium_softpipe = false
 with_gallium_vc4 = false
 with_gallium_vc5 = false
+with_gallium_etnaviv = false
+with_gallium_imx = false
 _drivers = get_option('gallium-drivers')
 if _drivers != ''
   _split = _drivers.split(',')
   with_gallium_pl111 = _split.contains('pl111')
   with_gallium_radeonsi = _split.contains('radeonsi')
   with_gallium_nouveau = _split.contains('nouveau')
+  with_gallium_freedreno = _split.contains('freedreno')
   with_gallium_softpipe = _split.contains('swrast')
   with_gallium_vc4 = _split.contains('vc4')
   with_gallium_vc5 = _split.contains('vc5')
+  with_gallium_etnaviv = _split.contains('etnaviv')
+  with_gallium_imx = _split.contains('imx')
   with_gallium = true
   with_dri = true
 endif
@@ -120,6 +137,9 @@ endif
 
 if with_dri_swrast and with_gallium_softpipe
   error('Only one swrast provider can be built')
+endif
+if with_gallium_imx and not with_gallium_etnaviv
+  error('IMX driver requires etnaviv driver')
 endif
 
 dep_libdrm_intel = []
@@ -606,14 +626,22 @@ dep_m = cc.find_library('m', required : false)
 dep_libdrm_amdgpu = []
 dep_libdrm_radeon = []
 dep_libdrm_nouveau = []
+dep_libdrm_etnaviv = []
+dep_libdrm_freedreno = []
 if with_amd_vk or with_gallium_radeonsi
   dep_libdrm_amdgpu = dependency('libdrm_amdgpu', version : '>= 2.4.85')
 endif
-if with_gallium_radeonsi # older radeon too
+if with_gallium_radeonsi or with_dri_r100 or with_dri_r200
   dep_libdrm_radeon = dependency('libdrm_radeon', version : '>= 2.4.71')
 endif
-if with_gallium_nouveau
+if with_gallium_nouveau or with_dri_nouveau
   dep_libdrm_nouveau = dependency('libdrm_nouveau', version : '>= 2.4.66')
+endif
+if with_gallium_etnaviv
+  dep_libdrm_etnaviv = dependency('libdrm_etnaviv', version : '>= 2.4.82')
+endif
+if with_gallium_freedreno
+  dep_libdrm_freedreno = dependency('libdrm_freedreno', version : '>= 2.4.74')
 endif
 
 llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit']
@@ -664,13 +692,16 @@ endif
 prog_bison = find_program('bison', required : with_any_opengl)
 prog_flex = find_program('flex', required : with_any_opengl)
 
-# TODO: selinux
 dep_selinux = []
+if get_option('selinux')
+  dep_selinux = dependency('libselinux')
+  pre_args += '-DMESA_SELINUX'
+endif
 
 # TODO: llvm-prefix and llvm-shared-libs
 
 dep_unwind = dependency('libunwind', required : false)
-if dep_unwind.found()
+if dep_unwind.found() and with_libunwind
   pre_args += '-DHAVE_LIBUNWIND'
 endif
 
@@ -680,7 +711,25 @@ endif
 
 # TODO: glx provider
 
-# TODO: osmesa provider
+if with_osmesa != 'none'
+  if with_osmesa == 'classic' and not with_dri_swrast
+    error('OSMesa classic requires dri (classic) swrast.')
+  endif
+  if with_osmesa == 'gallium' and not with_gallium_softpipe
+    error('OSMesa gallium requires gallium softpipe or llvmpipe.')
+  endif
+  osmesa_lib_name = 'OSMesa'
+  osmesa_bits = get_option('osmesa-bits')
+  if osmesa_bits != '8'
+    if with_dri or with_glx != 'disabled'
+      error('OSMesa bits must be 8 if building glx or dir based drivers')
+    endif
+    osmesa_lib_name = osmesa_lib_name + osmesa_bits
+    pre_args += [
+      '-DCHAN_BITS=@0@'.format(osmesa_bits), '-DDEFAULT_SOFTWARE_DEPTH_BITS=31'
+    ]
+  endif
+endif
 
 # TODO: symbol mangling
 
@@ -707,12 +756,13 @@ dep_xext = []
 dep_xdamage = []
 dep_xfixes = []
 dep_x11_xcb = []
+dep_xcb = []
 dep_xcb_glx = []
 dep_xcb_dri2 = []
 dep_xcb_dri3 = []
 dep_dri2proto = []
 dep_glproto = []
-dep_xf86vm = []
+dep_xxf86vm = []
 dep_xcb_dri3 = []
 dep_xcb_present = []
 dep_xcb_sync = []
@@ -725,7 +775,7 @@ if with_platform_x11
     dep_xdamage = dependency('xdamage', version : '>= 1.1')
     dep_xfixes = dependency('xfixes')
     dep_xcb_glx = dependency('xcb-glx', version : '>= 1.8.1')
-    dep_xf86vm = dependency('xxf86vm', required : false)
+    dep_xxf86vm = dependency('xxf86vm', required : false)
   endif
   if with_any_vk or (with_glx == 'dri' and with_dri_platform == 'drm')
     dep_xcb = dependency('xcb')
@@ -789,8 +839,8 @@ gl_priv_reqs = [
   'x11', 'xext', 'xdamage >= 1.1', 'xfixes', 'x11-xcb', 'xcb',
   'xcb-glx >= 1.8.1', 'libdrm >= 2.4.75',
 ]
-if dep_xf86vm != [] and dep_xf86vm.found()
-  gl_priv_reqs += 'xf86vm'
+if dep_xxf86vm != [] and dep_xxf86vm.found()
+  gl_priv_reqs += 'xxf86vm'
 endif
 if with_dri_platform == 'drm'
   gl_priv_reqs += 'xcb-dri2 >= 1.8'
@@ -810,4 +860,5 @@ endif
 pkg = import('pkgconfig')
 
 subdir('include')
+subdir('bin')
 subdir('src')
