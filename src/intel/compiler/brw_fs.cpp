@@ -2092,10 +2092,17 @@ fs_visitor::assign_constant_locations()
     */
    uint32_t *param = stage_prog_data->param;
    stage_prog_data->nr_params = num_push_constants;
-   stage_prog_data->param = ralloc_array(mem_ctx, uint32_t, num_push_constants);
+   if (num_push_constants) {
+      stage_prog_data->param = ralloc_array(mem_ctx, uint32_t,
+                                            num_push_constants);
+   } else {
+      stage_prog_data->param = NULL;
+   }
+   assert(stage_prog_data->nr_pull_params == 0);
+   assert(stage_prog_data->pull_param == NULL);
    if (num_pull_constants > 0) {
       stage_prog_data->nr_pull_params = num_pull_constants;
-      stage_prog_data->pull_param = ralloc_array(NULL, uint32_t,
+      stage_prog_data->pull_param = ralloc_array(mem_ctx, uint32_t,
                                                  num_pull_constants);
    }
 
@@ -6542,7 +6549,6 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                int shader_time_index8, int shader_time_index16,
                bool allow_spilling,
                bool use_rep_send, struct brw_vue_map *vue_map,
-               unsigned *final_assembly_size,
                char **error_str)
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
@@ -6691,7 +6697,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
       prog_data->reg_blocks_0 = brw_register_blocks(simd16_grf_used);
    }
 
-   return g.get_assembly(final_assembly_size);
+   return g.get_assembly(&prog_data->base.program_size);
 }
 
 fs_reg *
@@ -6778,7 +6784,6 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                struct brw_cs_prog_data *prog_data,
                const nir_shader *src_shader,
                int shader_time_index,
-               unsigned *final_assembly_size,
                char **error_str)
 {
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
@@ -6890,7 +6895,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
 
    g.generate_code(cfg, prog_data->simd_size);
 
-   return g.get_assembly(final_assembly_size);
+   return g.get_assembly(&prog_data->base.program_size);
 }
 
 /**
