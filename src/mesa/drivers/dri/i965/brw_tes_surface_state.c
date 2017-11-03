@@ -51,17 +51,19 @@ brw_upload_tes_pull_constants(struct brw_context *brw)
    const struct brw_stage_prog_data *prog_data = brw->tes.base.prog_data;
 
    _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_TESS_EVAL);
-   /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_TES_CONSTBUF, &dp->program,
-                             stage_state, prog_data);
+   /* BRW_NEW_CONSTANTS_TES */
+   if (brw_upload_pull_constants(brw, &dp->program, stage_state, prog_data)) {
+      brw->AdditionalBRWState |= BRW_NEW_ADDITIONAL_STATE_TES_CONSTBUF;
+   }
 }
 
 const struct brw_tracked_state brw_tes_pull_constants = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_TES_PROG_DATA |
-             BRW_NEW_TESS_PROGRAMS,
+             BRW_NEW_TESS_PROGRAMS |
+             BRW_NEW_CONSTANTS_TES,
    },
    .emit = brw_upload_tes_pull_constants,
 };

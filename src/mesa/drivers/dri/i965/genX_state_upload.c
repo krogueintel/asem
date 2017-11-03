@@ -3157,12 +3157,12 @@ genX(upload_vs_push_constants)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(vs_push_constants) = {
    .dirty = {
-      .mesa  = _NEW_PROGRAM_CONSTANTS |
-               _NEW_TRANSFORM,
+      .mesa  = _NEW_TRANSFORM,
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
                BRW_NEW_VERTEX_PROGRAM |
-               BRW_NEW_VS_PROG_DATA,
+               BRW_NEW_VS_PROG_DATA |
+               BRW_NEW_CONSTANTS_VS,
    },
    .emit = genX(upload_vs_push_constants),
 };
@@ -3183,12 +3183,12 @@ genX(upload_gs_push_constants)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(gs_push_constants) = {
    .dirty = {
-      .mesa  = _NEW_PROGRAM_CONSTANTS |
-               _NEW_TRANSFORM,
+      .mesa  = _NEW_TRANSFORM,
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
                BRW_NEW_GEOMETRY_PROGRAM |
-               BRW_NEW_GS_PROG_DATA,
+               BRW_NEW_GS_PROG_DATA |
+               BRW_NEW_CONSTANTS_GS,
    },
    .emit = genX(upload_gs_push_constants),
 };
@@ -3207,11 +3207,12 @@ genX(upload_wm_push_constants)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(wm_push_constants) = {
    .dirty = {
-      .mesa  = _NEW_PROGRAM_CONSTANTS,
+      .mesa  = 0,
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
                BRW_NEW_FRAGMENT_PROGRAM |
-               BRW_NEW_FS_PROG_DATA,
+               BRW_NEW_FS_PROG_DATA |
+               BRW_NEW_CONSTANTS_PS,
    },
    .emit = genX(upload_wm_push_constants),
 };
@@ -4042,11 +4043,12 @@ genX(upload_tes_push_constants)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(tes_push_constants) = {
    .dirty = {
-      .mesa  = _NEW_PROGRAM_CONSTANTS,
+      .mesa  = 0,
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
                BRW_NEW_TESS_PROGRAMS |
-               BRW_NEW_TES_PROG_DATA,
+               BRW_NEW_TES_PROG_DATA |
+               BRW_NEW_CONSTANTS_TES,
    },
    .emit = genX(upload_tes_push_constants),
 };
@@ -4066,12 +4068,13 @@ genX(upload_tcs_push_constants)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(tcs_push_constants) = {
    .dirty = {
-      .mesa  = _NEW_PROGRAM_CONSTANTS,
+      .mesa  = 0,
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
                BRW_NEW_DEFAULT_TESS_LEVELS |
                BRW_NEW_TESS_PROGRAMS |
-               BRW_NEW_TCS_PROG_DATA,
+               BRW_NEW_TCS_PROG_DATA |
+               BRW_NEW_CONSTANTS_TCS,
    },
    .emit = genX(upload_tcs_push_constants),
 };
@@ -4101,11 +4104,12 @@ genX(upload_cs_push_constants)(struct brw_context *brw)
 
 const struct brw_tracked_state genX(cs_push_constants) = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
              BRW_NEW_COMPUTE_PROGRAM |
-             BRW_NEW_CS_PROG_DATA,
+             BRW_NEW_CS_PROG_DATA |
+             BRW_NEW_CONSTANTS_CS,
    },
    .emit = genX(upload_cs_push_constants),
 };
@@ -4127,18 +4131,21 @@ genX(upload_cs_pull_constants)(struct brw_context *brw)
    const struct brw_stage_prog_data *prog_data = brw->cs.base.prog_data;
 
    _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_COMPUTE);
-   /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_SURFACES, &cp->program,
-                             stage_state, prog_data);
+   /* BRW_NEW_CONSTANTS_CS */
+   if (brw_upload_pull_constants(brw, &cp->program,
+                                 stage_state, prog_data)) {
+      brw->NewGLState |= BRW_NEW_SURFACES;
+   }
 }
 
 const struct brw_tracked_state genX(cs_pull_constants) = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
              BRW_NEW_COMPUTE_PROGRAM |
-             BRW_NEW_CS_PROG_DATA,
+             BRW_NEW_CS_PROG_DATA |
+             BRW_NEW_CONSTANTS_CS,
    },
    .emit = genX(upload_cs_pull_constants),
 };
@@ -4271,12 +4278,13 @@ genX(upload_cs_state)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(cs_state) = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
              BRW_NEW_CS_PROG_DATA |
              BRW_NEW_SAMPLER_STATE_TABLE |
-             BRW_NEW_SURFACES,
+             BRW_NEW_SURFACES |
+             BRW_NEW_CONSTANTS_CS,
    },
    .emit = genX(upload_cs_state)
 };

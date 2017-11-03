@@ -57,17 +57,19 @@ brw_upload_vs_pull_constants(struct brw_context *brw)
    const struct brw_stage_prog_data *prog_data = brw->vs.base.prog_data;
 
    _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_VERTEX);
-   /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_VS_CONSTBUF, &vp->program,
-                             stage_state, prog_data);
+   /* BRW_NEW_CONSTANTS_VS */
+   if (brw_upload_pull_constants(brw, &vp->program, stage_state, prog_data)) {
+      brw->AdditionalBRWState |= BRW_NEW_ADDITIONAL_STATE_VS_CONSTBUF;
+   }
 }
 
 const struct brw_tracked_state brw_vs_pull_constants = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_VERTEX_PROGRAM |
-             BRW_NEW_VS_PROG_DATA,
+             BRW_NEW_VS_PROG_DATA |
+             BRW_NEW_CONSTANTS_VS,
    },
    .emit = brw_upload_vs_pull_constants,
 };

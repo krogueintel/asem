@@ -186,6 +186,7 @@ void brw_init_state( struct brw_context *brw )
    brw_upload_initial_gpu_state(brw);
 
    brw->NewGLState = ~0;
+   brw->AdditionalBRWState = ~0ull;
    brw->ctx.NewDriverState = ~0ull;
 
    /* ~0 is a nonsensical value which won't match anything we program, so
@@ -208,6 +209,12 @@ void brw_init_state( struct brw_context *brw )
    ctx->DriverFlags.NewImageUnits = BRW_NEW_IMAGE_UNITS;
    ctx->DriverFlags.NewDefaultTessLevels = BRW_NEW_DEFAULT_TESS_LEVELS;
    ctx->DriverFlags.NewIntelConservativeRasterization = BRW_NEW_CONSERVATIVE_RASTERIZATION;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_VERTEX] = BRW_NEW_CONSTANTS_VS;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_TESS_CTRL] = BRW_NEW_CONSTANTS_TCS;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_TESS_EVAL] = BRW_NEW_CONSTANTS_TES;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_GEOMETRY] = BRW_NEW_CONSTANTS_GS;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_FRAGMENT] = BRW_NEW_CONSTANTS_PS;
+   ctx->DriverFlags.NewShaderConstants[MESA_SHADER_COMPUTE] = BRW_NEW_CONSTANTS_CS;
 }
 
 
@@ -312,10 +319,6 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_DEFAULT_TESS_LEVELS),
    DEFINE_BIT(BRW_NEW_BATCH),
    DEFINE_BIT(BRW_NEW_INDEX_BUFFER),
-   DEFINE_BIT(BRW_NEW_VS_CONSTBUF),
-   DEFINE_BIT(BRW_NEW_TCS_CONSTBUF),
-   DEFINE_BIT(BRW_NEW_TES_CONSTBUF),
-   DEFINE_BIT(BRW_NEW_GS_CONSTBUF),
    DEFINE_BIT(BRW_NEW_PROGRAM_CACHE),
    DEFINE_BIT(BRW_NEW_STATE_BASE_ADDRESS),
    DEFINE_BIT(BRW_NEW_VUE_MAP_GEOM_OUT),
@@ -343,6 +346,12 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_CONSERVATIVE_RASTERIZATION),
    DEFINE_BIT(BRW_NEW_DRAW_CALL),
    DEFINE_BIT(BRW_NEW_AUX_STATE),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_VS),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_TCS),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_TES),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_GS),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_PS),
+   DEFINE_BIT(BRW_NEW_CONSTANTS_CS),
    {0, 0, 0}
 };
 
@@ -475,6 +484,7 @@ brw_upload_pipeline_state(struct brw_context *brw,
    if (unlikely(INTEL_DEBUG & DEBUG_REEMIT)) {
       /* Always re-emit all state. */
       brw->NewGLState = ~0;
+      brw->AdditionalBRWState = ~0ull;
       ctx->NewDriverState = ~0ull;
    }
 
@@ -612,6 +622,7 @@ brw_pipeline_state_finished(struct brw_context *brw,
    }
 
    brw->NewGLState = 0;
+   brw->AdditionalBRWState = 0ull;
    brw->ctx.NewDriverState = 0ull;
 }
 

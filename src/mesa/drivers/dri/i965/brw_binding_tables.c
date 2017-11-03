@@ -95,10 +95,19 @@ brw_upload_binding_table(struct brw_context *brw,
    }
 }
 
-/**
- * State atoms which upload the binding table for a particular shader stage.
- *  @{
- */
+inline
+bool
+should_upload_binding_table(struct brw_context *brw,
+                            uint64_t brw_flag,
+                            const struct brw_tracked_state *state,
+                            uint64_t additional_flag)
+{
+   /* skip uploading binding table if only reason is BRW_NEW_CONSTANTS_XS
+    * but the pull constants were not updated for that stage.
+    */
+   return (brw->NewGLState & state->dirty.brw & ~brw_flag) != 0
+      || (brw->AdditionalBRWState & additional_flag) != 0;
+}
 
 /** Upload the VS binding table. */
 static void
@@ -106,24 +115,32 @@ brw_vs_upload_binding_table(struct brw_context *brw)
 {
    /* BRW_NEW_VS_PROG_DATA */
    const struct brw_stage_prog_data *prog_data = brw->vs.base.prog_data;
-   brw_upload_binding_table(brw,
-                            _3DSTATE_BINDING_TABLE_POINTERS_VS,
-                            prog_data,
-                            &brw->vs.base);
+
+   if (should_upload_binding_table(brw, BRW_NEW_CONSTANTS_VS,
+                                   &brw_vs_binding_table,
+                                   BRW_NEW_ADDITIONAL_STATE_VS_CONSTBUF)) {
+      brw_upload_binding_table(brw,
+                               _3DSTATE_BINDING_TABLE_POINTERS_VS,
+                               prog_data,
+                               &brw->vs.base);
+   }
 }
 
+/**
+ * State atoms which upload the binding table for a particular shader stage.
+ *  @{
+ */
 const struct brw_tracked_state brw_vs_binding_table = {
    .dirty = {
       .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
-             BRW_NEW_VS_CONSTBUF |
+             BRW_NEW_CONSTANTS_VS |
              BRW_NEW_VS_PROG_DATA |
              BRW_NEW_SURFACES,
    },
    .emit = brw_vs_upload_binding_table,
 };
-
 
 /** Upload the PS binding table. */
 static void
@@ -158,10 +175,14 @@ brw_tcs_upload_binding_table(struct brw_context *brw)
 
    /* BRW_NEW_TCS_PROG_DATA */
    const struct brw_stage_prog_data *prog_data = brw->tcs.base.prog_data;
-   brw_upload_binding_table(brw,
-                            _3DSTATE_BINDING_TABLE_POINTERS_HS,
-                            prog_data,
-                            &brw->tcs.base);
+   if (should_upload_binding_table(brw, BRW_NEW_CONSTANTS_TCS,
+                                   &brw_tcs_binding_table,
+                                   BRW_NEW_ADDITIONAL_STATE_TCS_CONSTBUF)) {
+      brw_upload_binding_table(brw,
+                               _3DSTATE_BINDING_TABLE_POINTERS_HS,
+                               prog_data,
+                               &brw->tcs.base);
+   }
 }
 
 const struct brw_tracked_state brw_tcs_binding_table = {
@@ -171,7 +192,7 @@ const struct brw_tracked_state brw_tcs_binding_table = {
              BRW_NEW_BLORP |
              BRW_NEW_DEFAULT_TESS_LEVELS |
              BRW_NEW_SURFACES |
-             BRW_NEW_TCS_CONSTBUF |
+             BRW_NEW_CONSTANTS_TCS |
              BRW_NEW_TCS_PROG_DATA,
    },
    .emit = brw_tcs_upload_binding_table,
@@ -187,10 +208,14 @@ brw_tes_upload_binding_table(struct brw_context *brw)
 
    /* BRW_NEW_TES_PROG_DATA */
    const struct brw_stage_prog_data *prog_data = brw->tes.base.prog_data;
-   brw_upload_binding_table(brw,
-                            _3DSTATE_BINDING_TABLE_POINTERS_DS,
-                            prog_data,
-                            &brw->tes.base);
+   if (should_upload_binding_table(brw, BRW_NEW_CONSTANTS_TES,
+                                   &brw_tcs_binding_table,
+                                   BRW_NEW_ADDITIONAL_STATE_TES_CONSTBUF)) {
+      brw_upload_binding_table(brw,
+                               _3DSTATE_BINDING_TABLE_POINTERS_DS,
+                               prog_data,
+                               &brw->tes.base);
+   }
 }
 
 const struct brw_tracked_state brw_tes_binding_table = {
@@ -199,7 +224,7 @@ const struct brw_tracked_state brw_tes_binding_table = {
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
              BRW_NEW_SURFACES |
-             BRW_NEW_TES_CONSTBUF |
+             BRW_NEW_CONSTANTS_TES |
              BRW_NEW_TES_PROG_DATA,
    },
    .emit = brw_tes_upload_binding_table,
@@ -215,10 +240,14 @@ brw_gs_upload_binding_table(struct brw_context *brw)
 
    /* BRW_NEW_GS_PROG_DATA */
    const struct brw_stage_prog_data *prog_data = brw->gs.base.prog_data;
-   brw_upload_binding_table(brw,
-                            _3DSTATE_BINDING_TABLE_POINTERS_GS,
-                            prog_data,
-                            &brw->gs.base);
+   if (should_upload_binding_table(brw, BRW_NEW_CONSTANTS_GS,
+                                   &brw_gs_binding_table,
+                                   BRW_NEW_ADDITIONAL_STATE_GS_CONSTBUF)) {
+      brw_upload_binding_table(brw,
+                               _3DSTATE_BINDING_TABLE_POINTERS_GS,
+                               prog_data,
+                               &brw->gs.base);
+   }
 }
 
 const struct brw_tracked_state brw_gs_binding_table = {
@@ -226,7 +255,7 @@ const struct brw_tracked_state brw_gs_binding_table = {
       .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
-             BRW_NEW_GS_CONSTBUF |
+             BRW_NEW_CONSTANTS_GS |
              BRW_NEW_GS_PROG_DATA |
              BRW_NEW_SURFACES,
    },

@@ -51,17 +51,19 @@ brw_upload_gs_pull_constants(struct brw_context *brw)
    const struct brw_stage_prog_data *prog_data = brw->gs.base.prog_data;
 
    _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_GEOMETRY);
-   /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_GS_CONSTBUF, &gp->program,
-                             stage_state, prog_data);
+   /* BRW_NEW_CONSTANTS_GS */
+   if (brw_upload_pull_constants(brw, &gp->program, stage_state, prog_data)) {
+      brw->AdditionalBRWState |= BRW_NEW_ADDITIONAL_STATE_GS_CONSTBUF;
+   }
 }
 
 const struct brw_tracked_state brw_gs_pull_constants = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_GEOMETRY_PROGRAM |
-             BRW_NEW_GS_PROG_DATA,
+             BRW_NEW_GS_PROG_DATA |
+             BRW_NEW_CONSTANTS_GS,
    },
    .emit = brw_upload_gs_pull_constants,
 };

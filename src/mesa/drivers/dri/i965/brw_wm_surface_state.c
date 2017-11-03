@@ -775,17 +775,19 @@ brw_upload_wm_pull_constants(struct brw_context *brw)
    struct brw_stage_prog_data *prog_data = brw->wm.base.prog_data;
 
    _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_FRAGMENT);
-   /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_SURFACES, &fp->program,
-                             stage_state, prog_data);
+   /* BRW_NEW_CONSTANTS_PS */
+   if (brw_upload_pull_constants(brw, &fp->program, stage_state, prog_data)) {
+      brw->NewGLState |= BRW_NEW_SURFACES;
+   }
 }
 
 const struct brw_tracked_state brw_wm_pull_constants = {
    .dirty = {
-      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .mesa = 0,
       .brw = BRW_NEW_BATCH |
              BRW_NEW_FRAGMENT_PROGRAM |
-             BRW_NEW_FS_PROG_DATA,
+             BRW_NEW_FS_PROG_DATA |
+             BRW_NEW_CONSTANTS_PS,
    },
    .emit = brw_upload_wm_pull_constants,
 };
@@ -1532,7 +1534,12 @@ brw_upload_image_surfaces(struct brw_context *brw,
        * image unit state and passed to the program as uniforms, make sure
        * that push and pull constants are reuploaded.
        */
-      brw->NewGLState |= _NEW_PROGRAM_CONSTANTS;
+      brw->NewGLState |= BRW_NEW_CONSTANTS_VS |
+         BRW_NEW_CONSTANTS_TCS |
+         BRW_NEW_CONSTANTS_TES |
+         BRW_NEW_CONSTANTS_GS |
+         BRW_NEW_CONSTANTS_PS |
+         BRW_NEW_CONSTANTS_CS;
    }
 }
 

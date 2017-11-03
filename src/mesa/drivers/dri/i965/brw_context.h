@@ -184,10 +184,6 @@ enum brw_state_id {
    BRW_STATE_DEFAULT_TESS_LEVELS,
    BRW_STATE_BATCH,
    BRW_STATE_INDEX_BUFFER,
-   BRW_STATE_VS_CONSTBUF,
-   BRW_STATE_TCS_CONSTBUF,
-   BRW_STATE_TES_CONSTBUF,
-   BRW_STATE_GS_CONSTBUF,
    BRW_STATE_PROGRAM_CACHE,
    BRW_STATE_STATE_BASE_ADDRESS,
    BRW_STATE_VUE_MAP_GEOM_OUT,
@@ -215,7 +211,20 @@ enum brw_state_id {
    BRW_STATE_CONSERVATIVE_RASTERIZATION,
    BRW_STATE_DRAW_CALL,
    BRW_STATE_AUX,
+   BRW_STATE_CONSTANTS_VS,
+   BRW_STATE_CONSTANTS_TCS,
+   BRW_STATE_CONSTANTS_TES,
+   BRW_STATE_CONSTANTS_GS,
+   BRW_STATE_CONSTANTS_PS,
+   BRW_STATE_CONSTANTS_CS,
    BRW_NUM_STATE_BITS
+};
+
+enum brw_additional_state_id {
+   BRW_ADDITIONAL_STATE_VS_CONSTBUF,
+   BRW_ADDITIONAL_STATE_TCS_CONSTBUF,
+   BRW_ADDITIONAL_STATE_TES_CONSTBUF,
+   BRW_ADDITIONAL_STATE_GS_CONSTBUF
 };
 
 /**
@@ -275,10 +284,6 @@ enum brw_state_id {
 #define BRW_NEW_BATCH                   (1ull << BRW_STATE_BATCH)
 /** \see brw.state.depth_region */
 #define BRW_NEW_INDEX_BUFFER            (1ull << BRW_STATE_INDEX_BUFFER)
-#define BRW_NEW_VS_CONSTBUF             (1ull << BRW_STATE_VS_CONSTBUF)
-#define BRW_NEW_TCS_CONSTBUF            (1ull << BRW_STATE_TCS_CONSTBUF)
-#define BRW_NEW_TES_CONSTBUF            (1ull << BRW_STATE_TES_CONSTBUF)
-#define BRW_NEW_GS_CONSTBUF             (1ull << BRW_STATE_GS_CONSTBUF)
 #define BRW_NEW_PROGRAM_CACHE           (1ull << BRW_STATE_PROGRAM_CACHE)
 #define BRW_NEW_STATE_BASE_ADDRESS      (1ull << BRW_STATE_STATE_BASE_ADDRESS)
 #define BRW_NEW_VUE_MAP_GEOM_OUT        (1ull << BRW_STATE_VUE_MAP_GEOM_OUT)
@@ -306,6 +311,18 @@ enum brw_state_id {
 #define BRW_NEW_CONSERVATIVE_RASTERIZATION (1ull << BRW_STATE_CONSERVATIVE_RASTERIZATION)
 #define BRW_NEW_DRAW_CALL               (1ull << BRW_STATE_DRAW_CALL)
 #define BRW_NEW_AUX_STATE               (1ull << BRW_STATE_AUX)
+#define BRW_NEW_CONSTANTS_VS            (1ull << BRW_STATE_CONSTANTS_VS)
+#define BRW_NEW_CONSTANTS_TES           (1ull << BRW_STATE_CONSTANTS_TES)
+#define BRW_NEW_CONSTANTS_TCS           (1ull << BRW_STATE_CONSTANTS_TCS)
+#define BRW_NEW_CONSTANTS_GS            (1ull << BRW_STATE_CONSTANTS_GS)
+#define BRW_NEW_CONSTANTS_PS            (1ull << BRW_STATE_CONSTANTS_PS)
+#define BRW_NEW_CONSTANTS_CS            (1ull << BRW_STATE_CONSTANTS_CS)
+
+/* bit-flags derived from brw_additional_state_id */
+#define BRW_NEW_ADDITIONAL_STATE_VS_CONSTBUF  (1ull << BRW_ADDITIONAL_STATE_VS_CONSTBUF)
+#define BRW_NEW_ADDITIONAL_STATE_TCS_CONSTBUF (1ull << BRW_ADDITIONAL_STATE_TCS_CONSTBUF)
+#define BRW_NEW_ADDITIONAL_STATE_TES_CONSTBUF (1ull << BRW_ADDITIONAL_STATE_TES_CONSTBUF)
+#define BRW_NEW_ADDITIONAL_STATE_GS_CONSTBUF  (1ull << BRW_ADDITIONAL_STATE_GS_CONSTBUF)
 
 struct brw_state_flags {
    /** State update flags signalled by mesa internals */
@@ -795,6 +812,14 @@ struct brw_context
    struct {
       struct brw_state_flags pipelines[BRW_NUM_PIPELINES];
    } state;
+
+   /**
+    * additional dirty flags that are only set dirty directly
+    * by i965 code; these flags do not tirgger atoms, instead
+    * they are used internally by atoms to decide if they should
+    * do something.
+    */
+   uint64_t AdditionalBRWState;
 
    enum brw_pipeline last_pipeline;
 

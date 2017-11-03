@@ -222,9 +222,8 @@ gen6_upload_push_constants(struct brw_context *brw,
  * Compare this path to brw_curbe.c for gen4/5 push constants, and
  * gen6_vs_state.c for gen6+ push constants.
  */
-void
+bool
 brw_upload_pull_constants(struct brw_context *brw,
-                          GLbitfield64 brw_new_constbuf,
                           const struct gl_program *prog,
                           struct brw_stage_state *stage_state,
                           const struct brw_stage_prog_data *prog_data)
@@ -235,9 +234,9 @@ brw_upload_pull_constants(struct brw_context *brw,
    if (!prog_data->nr_pull_params) {
       if (stage_state->surf_offset[surf_index]) {
 	 stage_state->surf_offset[surf_index] = 0;
-	 brw->ctx.NewDriverState |= brw_new_constbuf;
+         return true;
       }
-      return;
+      return false;
    }
 
    /* Updates the ParamaterValues[i] pointers for all parameters of the
@@ -273,7 +272,7 @@ brw_upload_pull_constants(struct brw_context *brw,
 
    brw_bo_unreference(const_bo);
 
-   brw->ctx.NewDriverState |= brw_new_constbuf;
+   return true;
 }
 
 /**
