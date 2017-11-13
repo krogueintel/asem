@@ -1384,6 +1384,9 @@ brw_query_renderer_integer(__DRIscreen *dri_screen,
 				      0, BRW_CONTEXT_MEDIUM_PRIORITY) == 0)
          value[0] |= __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_MEDIUM;
       return 0;
+   case __DRI2_RENDERER_HAS_FRAMEBUFFER_SRGB:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(dri_screen, param, value);
    }
@@ -1431,6 +1434,7 @@ static const __DRIextension *screenExtensions[] = {
     &intelRendererQueryExtension.base,
     &dri2ConfigQueryExtension.base,
     &dri2NoErrorExtension.base,
+    &dri2FlushControlExtension.base,
     NULL
 };
 
@@ -1441,6 +1445,7 @@ static const __DRIextension *intelRobustScreenExtensions[] = {
     &intelImageExtension.base,
     &intelRendererQueryExtension.base,
     &dri2ConfigQueryExtension.base,
+    &dri2FlushControlExtension.base,
     &dri2Robustness.base,
     &dri2NoErrorExtension.base,
     NULL
@@ -1544,13 +1549,18 @@ intelCreateBuffer(__DRIscreen *dri_screen,
       fb->Visual.sRGBCapable = true;
    }
 
+   /* mesaVis->sRGBCapable was set, user is asking for sRGB */
+   bool srgb_cap_set = mesaVis->redBits >= 8 && mesaVis->sRGBCapable;
+
    /* setup the hardware-based renderbuffers */
    rb = intel_create_winsys_renderbuffer(screen, rgbFormat, num_samples);
    _mesa_attach_and_own_rb(fb, BUFFER_FRONT_LEFT, &rb->Base.Base);
+   rb->need_srgb = srgb_cap_set;
 
    if (mesaVis->doubleBufferMode) {
       rb = intel_create_winsys_renderbuffer(screen, rgbFormat, num_samples);
       _mesa_attach_and_own_rb(fb, BUFFER_BACK_LEFT, &rb->Base.Base);
+      rb->need_srgb = srgb_cap_set;
    }
 
    /*
@@ -1911,6 +1921,8 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
       MESA_FORMAT_B8G8R8A8_UNORM,
       MESA_FORMAT_B8G8R8X8_UNORM,
 
+      MESA_FORMAT_B8G8R8A8_SRGB,
+
       /* The 32-bit RGBA format must not precede the 32-bit BGRA format.
        * Likewise for RGBX and BGRX.  Otherwise, the GLX client and the GLX
        * server may disagree on which format the GLXFBConfig represents,
@@ -1950,7 +1962,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
    if (intel_loader_get_cap(dri_screen, DRI_LOADER_CAP_RGBA_ORDERING))
       num_formats = ARRAY_SIZE(formats);
    else
-      num_formats = 3;
+      num_formats = ARRAY_SIZE(formats) - 2; /* all - RGBA_ORDERING formats */
 
    /* Generate singlesample configs without accumulation buffer. */
    for (unsigned i = 0; i < num_formats; i++) {
@@ -2129,14 +2141,9 @@ set_max_gl_versions(struct intel_screen *screen)
 /**
  * Return the revision (generally the revid field of the PCI header) of the
  * graphics device.
- *
- * XXX: This function is useful to keep around even if it is not currently in
- * use. It is necessary for new platforms and revision specific workarounds or
- * features. Please don't remove it so that we know it at least continues to
- * build.
  */
-static __attribute__((__unused__)) int
-brw_get_revision(int fd)
+int
+intel_device_get_revision(int fd)
 {
    struct drm_i915_getparam gp;
    int revision;

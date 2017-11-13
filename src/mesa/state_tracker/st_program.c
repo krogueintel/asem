@@ -360,8 +360,20 @@ st_release_cp_variants(struct st_context *st, struct st_compute_program *stcp)
    *variants = NULL;
 
    if (stcp->tgsi.prog) {
-      ureg_free_tokens(stcp->tgsi.prog);
-      stcp->tgsi.prog = NULL;
+      switch (stcp->tgsi.ir_type) {
+      case PIPE_SHADER_IR_TGSI:
+         ureg_free_tokens(stcp->tgsi.prog);
+         stcp->tgsi.prog = NULL;
+         break;
+      case PIPE_SHADER_IR_NIR:
+         /* pipe driver took ownership of prog */
+         break;
+      case PIPE_SHADER_IR_LLVM:
+      case PIPE_SHADER_IR_NATIVE:
+         /* ??? */
+         stcp->tgsi.prog = NULL;
+         break;
+      }
    }
 }
 
@@ -447,12 +459,6 @@ st_translate_vertex_program(struct st_context *st,
    }
 
    if (stvp->shader_program) {
-      nir_shader *nir = st_glsl_to_nir(st, &stvp->Base, stvp->shader_program,
-                                       MESA_SHADER_VERTEX);
-
-      stvp->tgsi.type = PIPE_SHADER_IR_NIR;
-      stvp->tgsi.ir.nir = nir;
-
       struct gl_program *prog = stvp->shader_program->last_vert_prog;
       if (prog) {
          st_translate_stream_output_info2(prog->sh.LinkedTransformFeedback,
@@ -895,15 +901,9 @@ st_translate_fragment_program(struct st_context *st,
       }
    }
 
-   if (stfp->shader_program) {
-      nir_shader *nir = st_glsl_to_nir(st, &stfp->Base, stfp->shader_program,
-                                       MESA_SHADER_FRAGMENT);
-
-      stfp->tgsi.type = PIPE_SHADER_IR_NIR;
-      stfp->tgsi.ir.nir = nir;
-
+   /* We have already compiler to NIR so just return */
+   if (stfp->shader_program)
       return true;
-   }
 
    ureg = ureg_create_with_screen(PIPE_SHADER_FRAGMENT, st->pipe->screen);
    if (ureg == NULL)
@@ -1681,15 +1681,9 @@ st_translate_tessctrl_program(struct st_context *st,
 {
    struct ureg_program *ureg;
 
-   if (sttcp->shader_program) {
-      nir_shader *nir = st_glsl_to_nir(st, &sttcp->Base, sttcp->shader_program,
-                                       MESA_SHADER_TESS_EVAL);
-
-      sttcp->tgsi.type = PIPE_SHADER_IR_NIR;
-      sttcp->tgsi.ir.nir = nir;
-
+   /* We have already compiler to NIR so just return */
+   if (sttcp->shader_program)
       return true;
-   }
 
    ureg = ureg_create_with_screen(PIPE_SHADER_TESS_CTRL, st->pipe->screen);
    if (ureg == NULL)
@@ -1716,15 +1710,9 @@ st_translate_tesseval_program(struct st_context *st,
 {
    struct ureg_program *ureg;
 
-   if (sttep->shader_program) {
-      nir_shader *nir = st_glsl_to_nir(st, &sttep->Base, sttep->shader_program,
-                                       MESA_SHADER_TESS_EVAL);
-
-      sttep->tgsi.type = PIPE_SHADER_IR_NIR;
-      sttep->tgsi.ir.nir = nir;
-
+   /* We have already compiler to NIR so just return */
+   if (sttep->shader_program)
       return true;
-   }
 
    ureg = ureg_create_with_screen(PIPE_SHADER_TESS_EVAL, st->pipe->screen);
    if (ureg == NULL)
@@ -1770,14 +1758,9 @@ st_translate_compute_program(struct st_context *st,
    struct pipe_shader_state prog;
 
    if (stcp->shader_program) {
-      nir_shader *nir = st_glsl_to_nir(st, &stcp->Base, stcp->shader_program,
-                                       MESA_SHADER_COMPUTE);
-
       /* no compute variants: */
-      st_finalize_nir(st, &stcp->Base, stcp->shader_program, nir);
-
-      stcp->tgsi.ir_type = PIPE_SHADER_IR_NIR;
-      stcp->tgsi.prog = nir;
+      st_finalize_nir(st, &stcp->Base, stcp->shader_program,
+                      (struct nir_shader *) stcp->tgsi.prog);
 
       return true;
    }

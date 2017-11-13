@@ -421,7 +421,7 @@ uint32_t radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer,
 	} else if (size) {
 		uint64_t va = radv_buffer_get_va(bo);
 		va += offset;
-		cmd_buffer->device->ws->cs_add_buffer(cmd_buffer->cs, bo, 8);
+		radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, bo, 8);
 		si_cp_dma_clear_buffer(cmd_buffer, va, size, value);
 	}
 
@@ -444,8 +444,8 @@ void radv_copy_buffer(struct radv_cmd_buffer *cmd_buffer,
 		src_va += src_offset;
 		dst_va += dst_offset;
 
-		cmd_buffer->device->ws->cs_add_buffer(cmd_buffer->cs, src_bo, 8);
-		cmd_buffer->device->ws->cs_add_buffer(cmd_buffer->cs, dst_bo, 8);
+		radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, src_bo, 8);
+		radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_bo, 8);
 
 		si_cp_dma_buffer_copy(cmd_buffer, src_va, dst_va, size);
 	}
@@ -512,7 +512,7 @@ void radv_CmdUpdateBuffer(
 	if (dataSize < RADV_BUFFER_OPS_CS_THRESHOLD) {
 		si_emit_cache_flush(cmd_buffer);
 
-		cmd_buffer->device->ws->cs_add_buffer(cmd_buffer->cs, dst_buffer->bo, 8);
+		radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo, 8);
 
 		radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, words + 4);
 
@@ -525,7 +525,8 @@ void radv_CmdUpdateBuffer(
 		radeon_emit(cmd_buffer->cs, va >> 32);
 		radeon_emit_array(cmd_buffer->cs, pData, words);
 
-		radv_cmd_buffer_trace_emit(cmd_buffer);
+		if (unlikely(cmd_buffer->device->trace_bo))
+			radv_cmd_buffer_trace_emit(cmd_buffer);
 	} else {
 		uint32_t buf_offset;
 		radv_cmd_buffer_upload_data(cmd_buffer, dataSize, 32, pData, &buf_offset);

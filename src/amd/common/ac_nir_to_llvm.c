@@ -2467,7 +2467,7 @@ static LLVMValueRef visit_load_ubo_buffer(struct ac_nir_context *ctx,
 	}
 
 
-	ret = ac_build_gather_values(&ctx->ac, results, instr->num_components);
+	ret = ac_build_gather_values(&ctx->ac, results, num_components);
 	return LLVMBuildBitCast(ctx->ac.builder, ret,
 	                        get_def_type(ctx, &instr->dest.ssa), "");
 }
@@ -3654,6 +3654,31 @@ static void emit_waitcnt(struct nir_to_llvm_context *ctx,
 			   ctx->ac.voidt, args, 1, 0);
 }
 
+static void emit_membar(struct nir_to_llvm_context *ctx,
+			const nir_intrinsic_instr *instr)
+{
+	unsigned waitcnt = NOOP_WAITCNT;
+
+	switch (instr->intrinsic) {
+	case nir_intrinsic_memory_barrier:
+	case nir_intrinsic_group_memory_barrier:
+		waitcnt &= VM_CNT & LGKM_CNT;
+		break;
+	case nir_intrinsic_memory_barrier_atomic_counter:
+	case nir_intrinsic_memory_barrier_buffer:
+	case nir_intrinsic_memory_barrier_image:
+		waitcnt &= VM_CNT;
+		break;
+	case nir_intrinsic_memory_barrier_shared:
+		waitcnt &= LGKM_CNT;
+		break;
+	default:
+		break;
+	}
+	if (waitcnt != NOOP_WAITCNT)
+		emit_waitcnt(ctx, waitcnt);
+}
+
 static void emit_barrier(struct nir_to_llvm_context *ctx)
 {
 	/* SI only (thanks to a hw bug workaround):
@@ -3909,14 +3934,13 @@ static LLVMValueRef visit_interp(struct nir_to_llvm_context *ctx,
 }
 
 static void
-visit_emit_vertex(struct nir_to_llvm_context *ctx,
-		  const nir_intrinsic_instr *instr)
+visit_emit_vertex(struct ac_shader_abi *abi, unsigned stream, LLVMValueRef *addrs)
 {
 	LLVMValueRef gs_next_vertex;
 	LLVMValueRef can_emit;
 	int idx;
+	struct nir_to_llvm_context *ctx = nir_to_llvm_context_from_abi(abi);
 
-	assert(instr->const_index[0] == 0);
 	/* Write vertex attribute values to GSVS ring */
 	gs_next_vertex = LLVMBuildLoad(ctx->builder,
 				       ctx->gs_next_vertex,
@@ -3934,7 +3958,7 @@ visit_emit_vertex(struct nir_to_llvm_context *ctx,
 	/* loop num outputs */
 	idx = 0;
 	for (unsigned i = 0; i < RADEON_LLVM_MAX_OUTPUTS; ++i) {
-		LLVMValueRef *out_ptr = &ctx->nir->outputs[i * 4];
+		LLVMValueRef *out_ptr = &addrs[i * 4];
 		int length = 4;
 		int slot = idx;
 		int slot_inc = 1;
@@ -4144,7 +4168,12 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 		emit_discard_if(ctx, instr);
 		break;
 	case nir_intrinsic_memory_barrier:
-		emit_waitcnt(ctx->nctx, VM_CNT);
+	case nir_intrinsic_group_memory_barrier:
+	case nir_intrinsic_memory_barrier_atomic_counter:
+	case nir_intrinsic_memory_barrier_buffer:
+	case nir_intrinsic_memory_barrier_image:
+	case nir_intrinsic_memory_barrier_shared:
+		emit_membar(ctx->nctx, instr);
 		break;
 	case nir_intrinsic_barrier:
 		emit_barrier(ctx->nctx);
@@ -4167,7 +4196,8 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 		result = visit_interp(ctx->nctx, instr);
 		break;
 	case nir_intrinsic_emit_vertex:
-		visit_emit_vertex(ctx->nctx, instr);
+		assert(instr->const_index[0] == 0);
+		ctx->abi->emit_vertex(ctx->abi, 0, ctx->outputs);
 		break;
 	case nir_intrinsic_end_primitive:
 		visit_end_primitive(ctx->nctx, instr);
@@ -6497,6 +6527,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(LLVMTargetMachineRef tm,
 
 	ctx.abi.inputs = &ctx.inputs[0];
 	ctx.abi.emit_outputs = handle_shader_outputs_post;
+	ctx.abi.emit_vertex = visit_emit_vertex;
 	ctx.abi.load_ssbo = radv_load_ssbo;
 	ctx.abi.load_sampler_desc = radv_get_sampler_desc;
 	ctx.abi.clamp_shadow_reference = false;

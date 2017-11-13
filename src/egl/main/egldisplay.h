@@ -103,6 +103,7 @@ struct _egl_extensions
    EGLBoolean EXT_create_context_robustness;
    EGLBoolean EXT_image_dma_buf_import;
    EGLBoolean EXT_image_dma_buf_import_modifiers;
+   EGLBoolean EXT_pixel_format_float;
    EGLBoolean EXT_swap_buffers_with_damage;
 
    unsigned int IMG_context_priority;
@@ -112,6 +113,7 @@ struct _egl_extensions
 
    EGLBoolean KHR_cl_event2;
    EGLBoolean KHR_config_attribs;
+   EGLBoolean KHR_context_flush_control;
    EGLBoolean KHR_create_context;
    EGLBoolean KHR_fence_sync;
    EGLBoolean KHR_get_all_proc_addresses;

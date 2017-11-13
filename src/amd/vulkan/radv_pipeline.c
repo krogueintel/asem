@@ -134,7 +134,7 @@ radv_pipeline_scratch_init(struct radv_device *device,
 	if (scratch_bytes_per_wave && max_waves < min_waves) {
 		/* Not really true at this moment, but will be true on first
 		 * execution. Avoid having hanging shaders. */
-		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+		return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
 	}
 	pipeline->scratch_bytes_per_wave = scratch_bytes_per_wave;
 	pipeline->max_waves = max_waves;
@@ -1290,6 +1290,7 @@ calculate_gs_ring_sizes(struct radv_pipeline *pipeline)
 	if (pipeline->device->physical_device->rad_info.chip_class <= VI)
 		pipeline->graphics.esgs_ring_size = CLAMP(esgs_ring_size, min_esgs_ring_size, max_size);
 
+	pipeline->graphics.gs.vgt_esgs_ring_itemsize = es_info->esgs_itemsize / 4;
 	pipeline->graphics.gsvs_ring_size = MIN2(gsvs_ring_size, max_size);
 }
 
@@ -1545,7 +1546,7 @@ static void calculate_vgt_gs_mode(struct radv_pipeline *pipeline)
 	}
 }
 
-static void calculate_pa_cl_vs_out_cntl(struct radv_pipeline *pipeline)
+static void calculate_vs_outinfo(struct radv_pipeline *pipeline)
 {
 	struct ac_vs_output_info *outinfo = get_vs_output_info(pipeline);
 
@@ -1557,7 +1558,7 @@ static void calculate_pa_cl_vs_out_cntl(struct radv_pipeline *pipeline)
 	bool misc_vec_ena = outinfo->writes_pointsize ||
 		outinfo->writes_layer ||
 		outinfo->writes_viewport_index;
-	pipeline->graphics.pa_cl_vs_out_cntl =
+	pipeline->graphics.vs.pa_cl_vs_out_cntl =
 		S_02881C_USE_VTX_POINT_SIZE(outinfo->writes_pointsize) |
 		S_02881C_USE_VTX_RENDER_TARGET_INDX(outinfo->writes_layer) |
 		S_02881C_USE_VTX_VIEWPORT_INDX(outinfo->writes_viewport_index) |
@@ -1568,6 +1569,21 @@ static void calculate_pa_cl_vs_out_cntl(struct radv_pipeline *pipeline)
 		cull_dist_mask << 8 |
 		clip_dist_mask;
 
+	pipeline->graphics.vs.spi_shader_pos_format =
+		S_02870C_POS0_EXPORT_FORMAT(V_02870C_SPI_SHADER_4COMP) |
+		S_02870C_POS1_EXPORT_FORMAT(outinfo->pos_exports > 1 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE) |
+		S_02870C_POS2_EXPORT_FORMAT(outinfo->pos_exports > 2 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE) |
+		S_02870C_POS3_EXPORT_FORMAT(outinfo->pos_exports > 3 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE);
+
+	pipeline->graphics.vs.spi_vs_out_config = S_0286C4_VS_EXPORT_COUNT(MAX2(1, outinfo->param_exports) - 1);
+	/* only emitted on pre-VI */
+	pipeline->graphics.vs.vgt_reuse_off = S_028AB4_REUSE_OFF(outinfo->writes_viewport_index);
 }
 
 static uint32_t offset_to_ps_input(uint32_t offset, bool flat_shade)
@@ -1950,6 +1966,48 @@ void radv_create_shaders(struct radv_pipeline *pipeline,
 		ralloc_free(fs_m.nir);
 }
 
+static uint32_t
+radv_pipeline_stage_to_user_data_0(struct radv_pipeline *pipeline,
+				   gl_shader_stage stage, enum chip_class chip_class)
+{
+	bool has_gs = radv_pipeline_has_gs(pipeline);
+	bool has_tess = radv_pipeline_has_tess(pipeline);
+	switch (stage) {
+	case MESA_SHADER_FRAGMENT:
+		return R_00B030_SPI_SHADER_USER_DATA_PS_0;
+	case MESA_SHADER_VERTEX:
+		if (chip_class >= GFX9) {
+			return has_tess ? R_00B430_SPI_SHADER_USER_DATA_LS_0 :
+			       has_gs ? R_00B330_SPI_SHADER_USER_DATA_ES_0 :
+			       R_00B130_SPI_SHADER_USER_DATA_VS_0;
+		}
+		if (has_tess)
+			return R_00B530_SPI_SHADER_USER_DATA_LS_0;
+		else
+			return has_gs ? R_00B330_SPI_SHADER_USER_DATA_ES_0 : R_00B130_SPI_SHADER_USER_DATA_VS_0;
+	case MESA_SHADER_GEOMETRY:
+		return chip_class >= GFX9 ? R_00B330_SPI_SHADER_USER_DATA_ES_0 :
+		                            R_00B230_SPI_SHADER_USER_DATA_GS_0;
+	case MESA_SHADER_COMPUTE:
+		return R_00B900_COMPUTE_USER_DATA_0;
+	case MESA_SHADER_TESS_CTRL:
+		return chip_class >= GFX9 ? R_00B430_SPI_SHADER_USER_DATA_LS_0 :
+		                            R_00B430_SPI_SHADER_USER_DATA_HS_0;
+	case MESA_SHADER_TESS_EVAL:
+		if (chip_class >= GFX9) {
+			return has_gs ? R_00B330_SPI_SHADER_USER_DATA_ES_0 :
+			       R_00B130_SPI_SHADER_USER_DATA_VS_0;
+		}
+		if (has_gs)
+			return R_00B330_SPI_SHADER_USER_DATA_ES_0;
+		else
+			return R_00B130_SPI_SHADER_USER_DATA_VS_0;
+	default:
+		unreachable("unknown shader");
+	}
+}
+
+
 static VkResult
 radv_pipeline_init(struct radv_pipeline *pipeline,
 		   struct radv_device *device,
@@ -2051,7 +2109,7 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 		V_028710_SPI_SHADER_ZERO;
 
 	calculate_vgt_gs_mode(pipeline);
-	calculate_pa_cl_vs_out_cntl(pipeline);
+	calculate_vs_outinfo(pipeline);
 	calculate_ps_inputs(pipeline);
 
 	for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
@@ -2212,10 +2270,13 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 		pipeline->binding_stride[desc->binding] = desc->stride;
 	}
 
+	for (uint32_t i = 0; i < MESA_SHADER_STAGES; i++)
+		pipeline->user_data_0[i] = radv_pipeline_stage_to_user_data_0(pipeline, i, device->physical_device->rad_info.chip_class);
+
 	struct ac_userdata_info *loc = radv_lookup_user_sgpr(pipeline, MESA_SHADER_VERTEX,
 							     AC_UD_VS_BASE_VERTEX_START_INSTANCE);
 	if (loc->sgpr_idx != -1) {
-		pipeline->graphics.vtx_base_sgpr = radv_shader_stage_to_user_data_0(MESA_SHADER_VERTEX, device->physical_device->rad_info.chip_class, radv_pipeline_has_gs(pipeline), radv_pipeline_has_tess(pipeline));
+		pipeline->graphics.vtx_base_sgpr = pipeline->user_data_0[MESA_SHADER_VERTEX];
 		pipeline->graphics.vtx_base_sgpr += loc->sgpr_idx * 4;
 		if (radv_get_vertex_shader(pipeline)->info.info.vs.needs_draw_id)
 			pipeline->graphics.vtx_emit_num = 3;
@@ -2251,12 +2312,11 @@ radv_graphics_pipeline_create(
 	struct radv_pipeline *pipeline;
 	VkResult result;
 
-	pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
-			       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+	pipeline = vk_zalloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+			      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (pipeline == NULL)
 		return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-	memset(pipeline, 0, sizeof(*pipeline));
 	result = radv_pipeline_init(pipeline, device, cache,
 				    pCreateInfo, extra, pAllocator);
 	if (result != VK_SUCCESS) {
@@ -2308,19 +2368,18 @@ static VkResult radv_compute_pipeline_create(
 	struct radv_pipeline *pipeline;
 	VkResult result;
 
-	pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
-			       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+	pipeline = vk_zalloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+			      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (pipeline == NULL)
 		return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-	memset(pipeline, 0, sizeof(*pipeline));
 	pipeline->device = device;
 	pipeline->layout = radv_pipeline_layout_from_handle(pCreateInfo->layout);
 
 	pStages[MESA_SHADER_COMPUTE] = &pCreateInfo->stage;
 	radv_create_shaders(pipeline, device, cache, (struct radv_pipeline_key) {0}, pStages);
 
-
+	pipeline->user_data_0[MESA_SHADER_COMPUTE] = radv_pipeline_stage_to_user_data_0(pipeline, MESA_SHADER_COMPUTE, device->physical_device->rad_info.chip_class);
 	pipeline->need_indirect_descriptor_sets |= pipeline->shaders[MESA_SHADER_COMPUTE]->info.need_indirect_descriptor_sets;
 	result = radv_pipeline_scratch_init(device, pipeline);
 	if (result != VK_SUCCESS) {
