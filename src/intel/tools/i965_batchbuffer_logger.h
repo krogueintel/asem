@@ -77,12 +77,11 @@ struct i965_batchbuffer_counter {
  */
 struct i965_batchbuffer_logger {
    /**
-    * To be called by the driver to inform the batchbuffer logger
-    * that a batch buffer was created, but NOT sent to the kernel
-    * to be executed by the driver.
+    * To be called by the driver to instruct the batchbuffer logger
+    * to clear the log associated to a GEM BO from an FD.
     */
-   void (*aborted_batchbuffer)(struct i965_batchbuffer_logger *logger,
-                               int fd, uint32_t gem_bo);
+   void (*clear_batchbuffer_log)(struct i965_batchbuffer_logger *logger,
+                                 int fd, uint32_t gem_bo);
 
    /**
     * To be called by the driver if it migrates commands from one
