@@ -46,7 +46,27 @@ enum i965_batchbuffer_logger_message_type_t {
 
 /**
  * An i965_batchbuffer_logger_session_params represents how
- * to emit batchbuffer logger data.
+ * to emit batchbuffer logger data. The batchbuffer logger
+ * is controlled by the following environmental variables:
+ * - I965_DECODE_BEFORE_IOCTL if non-zero, emit batchbuffer log data
+ *                            BEFORE calling the kernel ioctl.
+ * - I965_EMIT_TOTAL_STATS gives a filename to which to emit the total
+ *                         counts and lengths of GPU commands emitted
+ *  - I965_PCI_ID pci_id Give a hexadecimal value of the PCI ID value for
+ *                       the GPU the BatchbufferLogger to decode for; this
+ *                       value is used if and only if the driver fails to
+ *                       tell the BatchbufferLogger a valid PCI ID value to
+ *                       use
+ *  - I965_DECODE_LEVEL controls the level of batchbuffer decoding
+ *     - no_decode do not decode batchbuffer at all
+ *     - instruction_decode decode instruction name only
+ *     - instruction_details_decode decode instruction contents
+ *  - I965_PRINT_RELOC_LEVEL controls at what level to print reloc data
+ *     - print_reloc_nothing do not print reloc data
+ *     - print_reloc_gem_gpu_updates print reloc data GEM by GEM
+ *  - I965_DECODE_SHADERS if set and is 0, shader binaries are written to
+ *                        file;  otherwise their disassembly is emitted
+ *                        in each session
  */
 struct i965_batchbuffer_logger_session_params {
    /**
@@ -72,8 +92,7 @@ struct i965_batchbuffer_logger_session_params {
                  const void *value, uint32_t value_length);
 
    /**
-    * Function called by i965_batchbuffer_logger_app just
-    * before an execbuffer2 call is sent to the kernel.
+    * This function is called just before the decoding of a batchbuffer.
     * \param client_data the pointer value in
     *                    i965_batchbuffer_logger_session_params::client_data
     * \param id The unique ID of the execbuffer2 ioctl, this ID
