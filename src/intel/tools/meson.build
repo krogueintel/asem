@@ -89,6 +89,19 @@ gen_shader_disassembler = executable(
   install : build_intel_tools,
 )
 
+dd = get_option('prefix') + '/lib'
+sed_replace_string = 's,[@]libdir[@],' + dd + ',g'
+i965_batchbuffer_logger_sh = custom_target(
+  'i965_batchbuffer_logger_sh',
+  input : 'i965_batchbuffer_logger_sh.in',
+  output : 'i965_batchbuffer_logger_sh',
+  command : ['sed', '-e', sed_replace_string, '@INPUT@'],
+  capture : true,
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+  install_dir : get_option('bindir'),
+)
+
 if build_intel_tools
   i965_batchbuffer_logger_headers = install_headers(
     'i965_batchbuffer_logger_app.h',
