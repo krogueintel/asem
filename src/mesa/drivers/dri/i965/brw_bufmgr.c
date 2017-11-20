@@ -630,7 +630,7 @@ bo_unreference_final(struct brw_bo *bo, time_t time)
    DBG("bo_unreference final: %d (%s)\n", bo->gem_handle, bo->name);
 
    if(bb_logger != NULL) {
-      bb_logger->aborted_batchbuffer(bb_logger, bufmgr->fd, bo->gem_handle);
+      bb_logger->clear_batchbuffer_log(bb_logger, bufmgr->fd, bo->gem_handle);
    }
    bucket = bucket_for_size(bufmgr, bo->size);
    /* Put the buffer into our internal cache for reuse if we can. */
