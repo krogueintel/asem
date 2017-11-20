@@ -99,35 +99,6 @@
  *   those entries are moved to the BatchbufferLog A in a way
  *   so that when BatchbufferLog is printed to file, the entries
  *   from dummy come first.
- *
- * - The following environmental values control what is written to
- *   file:
- *     * I965_DECODE_BEFORE_IOCTL if non-zero, emit batchbuffer log data
- *                                BEFORE calling the kernel ioctl.
- *     * I965_EMIT_CAPTURE_EXECOBJ_BATCHBUFFER_IDENTIFIER if non-zero, for those
- *                                                        execbuffer2 commands
- *                                                        with I915_EXEC_BATCH_FIRST
- *                                                        add an execobject2 to the
- *                                                        execbuffer2 ioctl whose
- *                                                        contents is a string holding
- *                                                        the execbuffer2 ID that is
- *                                                        reported to each session
- *     * I965_EMIT_TOTAL_STATS gives a filename to which to emit the total
- *                             counts and lengths of GPU commands emitted
- *     * I965_PCI_ID pci_id Give a hexadecimal value of the PCI ID value for
- *                          the GPU the BatchbufferLogger to decode for; this
- *                          value is used if and only if the driver fails to
- *                          tell the BatchbufferLogger a valid PCI ID value to
- *                          use
- *     * I965_DECODE_LEVEL controls the level of batchbuffer decoding
- *         - no_decode do not decode batchbuffer at all
- *         - instruction_decode decode instruction name only
- *         - instruction_details_decode decode instruction contents
- *     * I965_PRINT_RELOC_LEVEL controls at what level to print reloc data
- *         - print_reloc_nothing do not print reloc data
- *         - print_reloc_gem_gpu_updates print reloc data GEM by GEM
- *     * I965_DECODE_SHADERS if set and is 0, shader binaries are written to file;
- *                           otherwise their disassembly is emitted
  */
 
 namespace {
@@ -531,7 +502,7 @@ private:
 };
 
 /* BatchbufferLoggerOutput purpose is to write the block
- * structure of a log to a file
+ * structure of a log to a collection of sessions
  */
 class BatchbufferLoggerOutput:NonCopyable {
 public:
@@ -1205,7 +1176,7 @@ public:
    i965LatchState(void);
 
    void
-   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                 const GPUCommand &q);
 
    /* Tracking STATE_BASE_ADDRESS */
@@ -1221,7 +1192,7 @@ public:
 private:
    void
    update_stage_values(BatchbufferDecoder *decoder,
-                       BatchbufferLoggerOutput &pfile,
+                       BatchbufferLoggerOutput &poutput,
                        const GPUCommand &q, per_stage_values *dst);
 
    static
@@ -1232,7 +1203,7 @@ private:
 
    void
    update_state_base_address(BatchbufferDecoder *decoder,
-                             BatchbufferLoggerOutput &pfile,
+                             BatchbufferLoggerOutput &poutput,
                              const GPUCommand &q);
 };
 
@@ -1244,13 +1215,13 @@ public:
    {}
 
    void
-   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                 const GPUCommand &q);
 
    void
    decode_contents(BatchbufferDecoder *decoder,
                    enum GPUCommand::gpu_pipeline_type_t pipeline,
-                   BatchbufferLoggerOutput &pfile);
+                   BatchbufferLoggerOutput &poutput);
 
 private:
    /* register values are part of state, the key
@@ -1279,10 +1250,10 @@ public:
    void
    decode_contents(BatchbufferDecoder *decoder,
                    enum GPUCommand::gpu_pipeline_type_t pipeline,
-                   BatchbufferLoggerOutput &pfile);
+                   BatchbufferLoggerOutput &poutput);
 
    void
-   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                 const GPUCommand &Q);
 
    /* Batchbuffer decoding needs to examine and change
@@ -1305,13 +1276,13 @@ public:
    {}
 
    void
-   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+   update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                 const GPUCommand &Q);
 
    void
    decode_contents(BatchbufferDecoder *decoder,
                    enum GPUCommand::gpu_pipeline_type_t pipeline,
-                   BatchbufferLoggerOutput &pfile);
+                   BatchbufferLoggerOutput &poutput);
 
    i965HWContextData&
    ctx(void) const
@@ -1379,7 +1350,7 @@ public:
 
 
    void
-   emit_reloc_data(BatchbufferLoggerOutput &pfile);
+   emit_reloc_data(BatchbufferLoggerOutput &poutput);
 
 private:
    bool m_32bit_gpu_addresses;
@@ -1477,7 +1448,7 @@ public:
                                const GEMBufferObject *batchbuffer, uint32_t start, uint32_t end);
 
    void
-   decode_gpu_command(BatchbufferLoggerOutput &pfile, const GPUCommand &q);
+   decode_gpu_command(BatchbufferLoggerOutput &poutput, const GPUCommand &q);
 
    const GEMBufferTracker&
    tracker(void) const
@@ -1518,11 +1489,11 @@ private:
    public:
       static
       void
-      decode(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+      decode(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
              const GPUCommand &data);
 
    private:
-      typedef void (BatchbufferDecoder::*fcn)(BatchbufferLoggerOutput &pfile,
+      typedef void (BatchbufferDecoder::*fcn)(BatchbufferLoggerOutput &poutput,
                                               const GPUCommand &data);
 
       DetailedDecoder(void);
@@ -1532,10 +1503,10 @@ private:
    };
 
    void
-   emit_execbuffer2_details(BatchbufferLoggerOutput &pfile);
+   emit_execbuffer2_details(BatchbufferLoggerOutput &poutput);
 
    void
-   absorb_batchbuffer_contents(BatchbufferLoggerOutput &pfile,
+   absorb_batchbuffer_contents(BatchbufferLoggerOutput &poutput,
                                const GEMBufferObject *batchbuffer,
                                unsigned int start_dword, unsigned int end_dword);
 
@@ -1547,118 +1518,118 @@ private:
                             const GPUCommand &gpu_command);
 
    void
-   decode_gen_group(BatchbufferLoggerOutput &pfile,
+   decode_gen_group(BatchbufferLoggerOutput &poutput,
                     const GEMBufferObject *q, uint64_t offset,
                     const uint32_t *p, struct gen_group *inst);
 
    void
-   decode_gpu_execute_command(BatchbufferLoggerOutput &pfile,
+   decode_gpu_execute_command(BatchbufferLoggerOutput &poutput,
                               const GPUCommand &q);
 
    void
-   process_gpu_command(BatchbufferLoggerOutput &pfile,
+   process_gpu_command(BatchbufferLoggerOutput &poutput,
                        const GPUCommand &q);
 
    void
-   decode_pointer_helper(BatchbufferLoggerOutput &pfile,
+   decode_pointer_helper(BatchbufferLoggerOutput &poutput,
                          struct gen_group *g, uint64_t gpu_address);
 
    void
-   decode_pointer_helper(BatchbufferLoggerOutput &pfile,
+   decode_pointer_helper(BatchbufferLoggerOutput &poutput,
                          const char *instruction_name,
                          uint64_t gpu_address);
 
    void
-   decode_shader(BatchbufferLoggerOutput &pfile,
+   decode_shader(BatchbufferLoggerOutput &poutput,
                  enum shader_decode_entry_t tp, uint64_t gpu_address);
 
    void
-   decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &poutput,
                                          const std::string &label, uint32_t offset,
                                          int cnt);
 
    void
-   decode_3dstate_sampler_state_pointers_helper(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_helper(BatchbufferLoggerOutput &poutput,
                                                 uint32_t offset, int cnt);
 
    void
-   decode_media_interface_descriptor_load(BatchbufferLoggerOutput &pfile,
+   decode_media_interface_descriptor_load(BatchbufferLoggerOutput &poutput,
                                           const GPUCommand &data);
 
    void
-   decode_3dstate_xs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_xs(BatchbufferLoggerOutput &poutput,
                      const GPUCommand &data);
 
    void
-   decode_3dstate_ps(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_ps(BatchbufferLoggerOutput &poutput,
                      const GPUCommand &data);
 
    void
-   decode_3dstate_constant(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_constant(BatchbufferLoggerOutput &poutput,
                            const GPUCommand &data);
 
    void
-   decode_3dstate_binding_table_pointers_vs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers_vs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_binding_table_pointers_ds(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers_ds(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_binding_table_pointers_hs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers_hs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_binding_table_pointers_gs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers_gs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_binding_table_pointers_ps(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_binding_table_pointers_ps(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_vs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_vs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_gs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_gs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_hs(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_hs(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_ds(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_ds(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_ps(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_ps(BatchbufferLoggerOutput &poutput,
                                             const GPUCommand &data);
 
    void
-   decode_3dstate_sampler_state_pointers_gen6(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_sampler_state_pointers_gen6(BatchbufferLoggerOutput &poutput,
                                               const GPUCommand &data);
 
    void
-   decode_3dstate_viewport_state_pointers_cc(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_viewport_state_pointers_cc(BatchbufferLoggerOutput &poutput,
                                              const GPUCommand &data);
 
    void
-   decode_3dstate_viewport_state_pointers_sf_clip(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_viewport_state_pointers_sf_clip(BatchbufferLoggerOutput &poutput,
                                                   const GPUCommand &data);
 
    void
-   decode_3dstate_blend_state_pointers(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_blend_state_pointers(BatchbufferLoggerOutput &poutput,
                                        const GPUCommand &data);
 
    void
-   decode_3dstate_cc_state_pointers(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_cc_state_pointers(BatchbufferLoggerOutput &poutput,
                                     const GPUCommand &data);
 
    void
-   decode_3dstate_scissor_state_pointers(BatchbufferLoggerOutput &pfile,
+   decode_3dstate_scissor_state_pointers(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data);
 
    enum decode_level_t m_decode_level;
@@ -2193,7 +2164,7 @@ private:
     */
    std::set<GPUCommandCounter*> m_active_counters;
 
-   /* output file. */
+   /* collction of sessions */
    BatchbufferLoggerOutput m_output;
 };
 
@@ -3205,7 +3176,7 @@ i965LatchState(void):
 
 void
 i965LatchState::
-update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
              const GPUCommand &cmd)
 {
    GPUCommand::state_key op_code;
@@ -3223,22 +3194,22 @@ update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
    op_code = gen_group_get_opcode(q.inst());
    switch(op_code) {
    case _3DSTATE_VS:
-      update_stage_values(decoder, pfile, q, &m_VS);
+      update_stage_values(decoder, poutput, q, &m_VS);
       break;
    case _3DSTATE_HS:
-      update_stage_values(decoder, pfile, q, &m_HS);
+      update_stage_values(decoder, poutput, q, &m_HS);
       break;
    case _3DSTATE_DS:
-      update_stage_values(decoder, pfile, q, &m_DS);
+      update_stage_values(decoder, poutput, q, &m_DS);
       break;
    case _3DSTATE_GS:
-      update_stage_values(decoder, pfile, q, &m_GS);
+      update_stage_values(decoder, poutput, q, &m_GS);
       break;
    case _3DSTATE_PS:
-      update_stage_values(decoder, pfile, q, &m_PS);
+      update_stage_values(decoder, poutput, q, &m_PS);
       break;
    case STATE_BASE_ADDRESS:
-      update_state_base_address(decoder, pfile, q);
+      update_state_base_address(decoder, poutput, q);
       break;
    case _3D_STATE_CLIP: {
       /* TODO: for GEN5 and before, the maximum number of
@@ -3255,7 +3226,7 @@ update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
 
 void
 i965LatchState::
-update_stage_values(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_stage_values(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                     const GPUCommand &q, per_stage_values *dst)
 {
    int tmp;
@@ -3289,7 +3260,7 @@ update_state_base_address_helper(const GPUCommand &q,
 
 void
 i965LatchState::
-update_state_base_address(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_state_base_address(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
                           const GPUCommand &q)
 {
    assert(q.is_archived());
@@ -3318,7 +3289,7 @@ update_state_base_address(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &
 // i965Registers methods
 void
 i965Registers::
-update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
              const GPUCommand &q)
 {
    GPUCommand::state_key op_code;
@@ -3378,30 +3349,30 @@ void
 i965Registers::
 decode_contents(BatchbufferDecoder *decoder,
                 enum GPUCommand::gpu_pipeline_type_t pipeline,
-                BatchbufferLoggerOutput &pfile)
+                BatchbufferLoggerOutput &poutput)
 {
    /* TODO: classify registers as to what part pipeline(s)
     * they influence
     */
    (void)pipeline;
 
-   pfile.begin_block("Register Values");
+   poutput.begin_block("Register Values");
    for(const auto v : m_register_values) {
       struct gen_group *reg;
       reg = gen_spec_find_register(decoder->spec(), v.first);
 
       if (reg) {
-         pfile.begin_block_value("Register", "%s", reg->name);
-         pfile.print_value("ID", "(0x%x)", v.first);
-         pfile.print_value("value", "0x%x", v.second);
+         poutput.begin_block_value("Register", "%s", reg->name);
+         poutput.print_value("ID", "(0x%x)", v.first);
+         poutput.print_value("value", "0x%x", v.second);
       } else {
-         pfile.begin_block_value("Unknown register", "(0x%x)", v.first);
-         pfile.print_value("ID", "(0x%x)", v.first);
-         pfile.print_value("value", "0x%x", v.second);
+         poutput.begin_block_value("Unknown register", "(0x%x)", v.first);
+         poutput.print_value("ID", "(0x%x)", v.first);
+         poutput.print_value("value", "0x%x", v.second);
       }
-      pfile.end_block();
+      poutput.end_block();
    }
-   pfile.end_block();
+   poutput.end_block();
 }
 
 ///////////////////////////////////////////////
@@ -3419,7 +3390,7 @@ i965HWContextData::
 
 void
 i965HWContextData::
-update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
              const GPUCommand &q)
 {
    enum GPUCommand::gpu_command_type_t tp;
@@ -3444,7 +3415,7 @@ update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
        * are global to the entire GPU. Eventually need to adress
        * that issue.
        */
-      m_registers.update_state(decoder, pfile, q);
+      m_registers.update_state(decoder, poutput, q);
       break;
    }
 
@@ -3452,30 +3423,30 @@ update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
       /* TODO: should we track the values set by _3DSTATE_VF_INSTANCING? */
       break;
    }
-   m_latch_state.update_state(decoder, pfile, *pq);
+   m_latch_state.update_state(decoder, poutput, *pq);
 }
 
 void
 i965HWContextData::
 decode_contents(BatchbufferDecoder *decoder,
                 enum GPUCommand::gpu_pipeline_type_t pipeline,
-                BatchbufferLoggerOutput &pfile)
+                BatchbufferLoggerOutput &poutput)
 {
-   pfile.begin_block("State of Context");
+   poutput.begin_block("State of Context");
    for(const auto entry : m_state) {
       if (entry.second.gpu_pipeline_type() == pipeline) {
-         decoder->decode_gpu_command(pfile, entry.second);
+         decoder->decode_gpu_command(poutput, entry.second);
       }
    }
-   m_registers.decode_contents(decoder, pipeline, pfile);
-   pfile.end_block();
+   m_registers.decode_contents(decoder, pipeline, poutput);
+   poutput.end_block();
 }
 
 //////////////////////////////////////
 // GPUState methods
 void
 GPUState::
-update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
              const GPUCommand &q)
 {
    if (q.gpu_command_type() ==
@@ -3487,7 +3458,7 @@ update_state(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
       dst = q;
       dst.archive_data(decoder->relocs());
    } else {
-      m_ctx_data->update_state(decoder, pfile, q);
+      m_ctx_data->update_state(decoder, poutput, q);
    }
 }
 
@@ -3495,17 +3466,17 @@ void
 GPUState::
 decode_contents(BatchbufferDecoder *decoder,
                 enum GPUCommand::gpu_pipeline_type_t pipeline,
-                BatchbufferLoggerOutput &pfile)
+                BatchbufferLoggerOutput &poutput)
 {
-   m_ctx_data->decode_contents(decoder, pipeline, pfile);
+   m_ctx_data->decode_contents(decoder, pipeline, poutput);
    if (!m_state.empty()) {
-      pfile.begin_block("State of GPU, not of Context");
+      poutput.begin_block("State of GPU, not of Context");
       for(const auto entry : m_state) {
          if (entry.second.gpu_pipeline_type() == pipeline) {
-            decoder->decode_gpu_command(pfile, entry.second);
+            decoder->decode_gpu_command(poutput, entry.second);
          }
       }
-      pfile.end_block();
+      poutput.end_block();
    }
 }
 
@@ -3560,7 +3531,7 @@ DetailedDecoder(void)
 
 void
 BatchbufferDecoder::DetailedDecoder::
-decode(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
+decode(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &poutput,
        const GPUCommand &data)
 {
    static DetailedDecoder R;
@@ -3571,7 +3542,7 @@ decode(BatchbufferDecoder *decoder, BatchbufferLoggerOutput &pfile,
    iter = R.m_elements.find(opcode);
    if (iter != R.m_elements.end()) {
       fcn function(iter->second);
-      (decoder->*function)(pfile, data);
+      (decoder->*function)(poutput, data);
    }
 }
 
@@ -3613,25 +3584,25 @@ add_entries(const struct drm_i915_gem_exec_object2 &exec_object,
 
 void
 BatchRelocs::
-emit_reloc_data(BatchbufferLoggerOutput &pfile)
+emit_reloc_data(BatchbufferLoggerOutput &poutput)
 {
-   pfile.begin_block("Relocs");
+   poutput.begin_block("Relocs");
    for(const auto &v : m_relocs) {
 
       if(v.second.empty()) {
          continue;
       }
 
-      pfile.begin_block_value("Relocs on GEM", "%u", v.first->handle());
+      poutput.begin_block_value("Relocs on GEM", "%u", v.first->handle());
       for(const auto &w : v.second) {
-         pfile.begin_block("Reloc Entry");
-         pfile.print_value("Offset", "0x%012" PRIx64, w.first);
-         pfile.print_value("GPU Address", "0x%012" PRIx64, w.second);
-         pfile.end_block();
+         poutput.begin_block("Reloc Entry");
+         poutput.print_value("Offset", "0x%012" PRIx64, w.first);
+         poutput.print_value("GPU Address", "0x%012" PRIx64, w.second);
+         poutput.end_block();
       }
-      pfile.end_block();
+      poutput.end_block();
    }
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
@@ -3805,7 +3776,7 @@ BatchbufferDecoder::
 
 void
 BatchbufferDecoder::
-decode_shader(BatchbufferLoggerOutput &pfile, enum shader_decode_entry_t tp,
+decode_shader(BatchbufferLoggerOutput &poutput, enum shader_decode_entry_t tp,
               uint64_t gpu_address)
 {
    const void *shader;
@@ -3821,93 +3792,94 @@ decode_shader(BatchbufferLoggerOutput &pfile, enum shader_decode_entry_t tp,
       [shader_decode_media_compute] = "Media/Compute Shader",
    };
 
-   pfile.begin_block(labels[tp]);
+   poutput.begin_block(labels[tp]);
 
    shader = m_tracker->cpu_mapped<void>(gpu_address, &query);
-   pfile.print_value("GPU Address", "0x%012" PRIx64, gpu_address);
+   poutput.print_value("GPU Address", "0x%012" PRIx64, gpu_address);
    if (shader && query.m_gem_bo) {
       if (m_decode_shaders) {
          const char *disasm;
          disasm = m_shader_filelist->disassembly(shader, m_pci_id, m_gen_disasm);
          if (disasm) {
-            pfile.print_value("Assembly", "%s", disasm);
+            poutput.print_value("Assembly", "%s", disasm);
          }
       } else {
          const char *filename;
          filename = m_shader_filelist->filename(shader, m_pci_id, m_gen_disasm);
          if (filename) {
-            pfile.print_value("ShaderFile", "%s", filename);
+            poutput.print_value("ShaderFile", "%s", filename);
          }
       }
    } else {
-      pfile.print_value("GPU Address", "0x%012" PRIx64 "(BAD)", gpu_address);
+      poutput.print_value("GPU Address", "0x%012" PRIx64 "(BAD)", gpu_address);
    }
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-emit_execbuffer2_details(BatchbufferLoggerOutput &pfile)
+emit_execbuffer2_details(BatchbufferLoggerOutput &poutput)
 {
-   pfile.begin_block("drmIoctl(execbuffer2) details");
-   pfile.print_value("fd", "%d", m_batchbuffer_log->src()->fd);
-   pfile.print_value("Context", "%u", m_execbuffer2->rsvd1);
-   pfile.print_value("GEM BO", "%u", m_batchbuffer_log->src()->gem_bo);
-   pfile.print_value("bytes", "%d", m_execbuffer2->batch_len);
-   pfile.print_value("dwords", "%d", m_execbuffer2->batch_len / 4);
-   pfile.print_value("start", "%d", m_execbuffer2->batch_start_offset);
-   pfile.begin_block("exec-objects");
+   poutput.begin_block("drmIoctl(execbuffer2) details");
+   poutput.print_value("fd", "%d", m_batchbuffer_log->src()->fd);
+   poutput.print_value("Context", "%u", m_execbuffer2->rsvd1);
+   poutput.print_value("GEM BO", "%u", m_batchbuffer_log->src()->gem_bo);
+   poutput.print_value("bytes", "%d", m_execbuffer2->batch_len);
+   poutput.print_value("dwords", "%d", m_execbuffer2->batch_len / 4);
+   poutput.print_value("start", "%d", m_execbuffer2->batch_start_offset);
+   poutput.begin_block("exec-objects");
    for (unsigned int i = 0; i < m_buffers.size(); ++i) {
-      pfile.begin_block_value("buffer", "%u", i);
-      pfile.print_value("GEM BO", "%u", m_buffers[i]->handle());
-      pfile.print_value("ptr", "%p", m_buffers[i]);
-      pfile.print_value("GPU Address", "0x%012" PRIx64, m_buffers[i]->gpu_address_begin());
-      pfile.end_block();
+      poutput.begin_block_value("buffer", "%u", i);
+      poutput.print_value("GEM BO", "%u", m_buffers[i]->handle());
+      poutput.print_value("ptr", "%p", m_buffers[i]);
+      poutput.print_value("GPU Address", "0x%012" PRIx64, m_buffers[i]->gpu_address_begin());
+      poutput.end_block();
    }
-   pfile.end_block(); //exec-objects
+   poutput.end_block(); //exec-objects
    if (m_print_reloc_level >= print_reloc_gem_gpu_updates) {
-      m_relocs.emit_reloc_data(pfile);
+      m_relocs.emit_reloc_data(poutput);
    }
-   pfile.end_block(); //drmIoctl(execbuffer2) details
+   poutput.end_block(); //drmIoctl(execbuffer2) details
 }
 
 void
 BatchbufferDecoder::
-emit_log(BatchbufferLoggerOutput &pfile, int count)
+emit_log(BatchbufferLoggerOutput &poutput, int count)
 {
    assert(m_batchbuffer_log);
 
+   poutput.pre_execbuffer2_ioctl(count);
    m_gpu_command_counter->add_batch();
 
-   if (pfile) {
+   if (poutput) {
       if (!m_batchbuffer_log->empty()) {
-         pfile.begin_block_value("---- Batchbuffer Begin ----", "#%d, CallIds=[%u, %u]",
+         poutput.begin_block_value("---- Batchbuffer Begin ----", "#%d, CallIds=[%u, %u]",
                                  count, m_batchbuffer_log->first_api_call_id(),
                                  m_batchbuffer_log->last_api_call_id());
       } else {
-         pfile.begin_block_value("---- Batchbuffer Begin ----", "#%d", count);
+         poutput.begin_block_value("---- Batchbuffer Begin ----", "#%d", count);
       }
 
-      emit_execbuffer2_details(pfile);
-      pfile.begin_block("Contents");
+      emit_execbuffer2_details(poutput);
+      poutput.begin_block("Contents");
    }
 
-   m_batchbuffer_log->emit_log(this, pfile, m_batchbuffer,
+   m_batchbuffer_log->emit_log(this, poutput, m_batchbuffer,
                                m_execbuffer2->batch_start_offset / 4,
                                m_execbuffer2->batch_len / 4,
                                count);
 
-   if (pfile) {
-      pfile.end_block(); //Contents
-      pfile.end_block(); //Batchbuffer Begin
+   if (poutput) {
+      poutput.end_block(); //Contents
+      poutput.end_block(); //Batchbuffer Begin
    }
 }
 
 
 void
 BatchbufferDecoder::
-decode_media_interface_descriptor_load(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
+decode_media_interface_descriptor_load(BatchbufferLoggerOutput &poutput, const GPUCommand &data)
 {
    struct gen_group *grp;
    uint64_t gpu_address;
@@ -3925,9 +3897,9 @@ decode_media_interface_descriptor_load(BatchbufferLoggerOutput &pfile, const GPU
       uint64_t shader_gpu_address;
       int tmp, binding_table_count, sampler_count;
 
-      pfile.begin_block_value("Descriptor", "#%d", i);
-      pfile.print_value("GPU Address", "%012" PRIx64, gpu_address);
-      decode_gen_group(pfile, descriptor.gem_bo(), descriptor.dword_offset(),
+      poutput.begin_block_value("Descriptor", "#%d", i);
+      poutput.print_value("GPU Address", "%012" PRIx64, gpu_address);
+      decode_gen_group(poutput, descriptor.gem_bo(), descriptor.dword_offset(),
                        descriptor.contents_ptr(), descriptor.inst());
 
       shader_gpu_address = m_gpu_state.ctx().m_latch_state.m_instruction_base_address + descriptor[0];
@@ -3935,7 +3907,7 @@ decode_media_interface_descriptor_load(BatchbufferLoggerOutput &pfile, const GPU
       /* ISSUE: When decoding from UFO, we get crashes on Media/Compute
        * shader decode from within gen_disasm_disassemble().
        */
-      decode_shader(pfile, shader_decode_media_compute, shader_gpu_address);
+      decode_shader(poutput, shader_decode_media_compute, shader_gpu_address);
 
       sampler_count = -1;
       if (descriptor.extract_field_value<int>("Sampler Count", &tmp)) {
@@ -3947,20 +3919,20 @@ decode_media_interface_descriptor_load(BatchbufferLoggerOutput &pfile, const GPU
          binding_table_count = tmp;
       }
 
-      decode_3dstate_sampler_state_pointers_helper(pfile,
+      decode_3dstate_sampler_state_pointers_helper(poutput,
                                                    descriptor[3] & ~0x1f,
                                                    sampler_count);
-      decode_3dstate_binding_table_pointers(pfile, "MEDIA",
+      decode_3dstate_binding_table_pointers(poutput, "MEDIA",
                                             descriptor[4] & ~0x1f,
                                             binding_table_count);
 
-      pfile.end_block();
+      poutput.end_block();
    }
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_xs(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
+decode_3dstate_xs(BatchbufferLoggerOutput &poutput, const GPUCommand &data)
 {
    bool has_shader(false);
    uint64_t offset(0), gpu_address;
@@ -3993,12 +3965,12 @@ decode_3dstate_xs(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
    }
 
    gpu_address = m_gpu_state.ctx().m_latch_state.m_instruction_base_address + offset;
-   decode_shader(pfile, shader_tp, gpu_address);
+   decode_shader(poutput, shader_tp, gpu_address);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_ps(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
+decode_3dstate_ps(BatchbufferLoggerOutput &poutput, const GPUCommand &data)
 {
    typedef std::pair<enum shader_decode_entry_t, const char*> decode_job;
    std::vector<decode_job> decode_jobs;
@@ -4026,7 +3998,7 @@ decode_3dstate_ps(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
     * |  FALSE    |  TRUE      |  TRUE      |          | Kernel2   | Kernel1   |
     *
     * Atleast from the table, we can get a simple set or rules:
-    *  - 8-wide, it is enabled is alway at Kernel0
+    *  - 8-wide, if it is enabled, it is alway at Kernel0
     *  - if N-wide is the only one enabled, then it is at Kernel0
     *  - if there are atleast 2-enables, then 16-wide is at 2 and 32-wide is at 1.
     */
@@ -4055,66 +4027,66 @@ decode_3dstate_ps(BatchbufferLoggerOutput &pfile, const GPUCommand &data)
       uint64_t addr;
       if (data.extract_field_value<uint64_t>(J.second, &addr)) {
          addr += m_gpu_state.ctx().m_latch_state.m_instruction_base_address;
-         decode_shader(pfile, J.first, addr);
+         decode_shader(poutput, J.first, addr);
       }
    }
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_constant(BatchbufferLoggerOutput &pfile,
+decode_3dstate_constant(BatchbufferLoggerOutput &poutput,
                                const GPUCommand &data)
 {
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers_vs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers_vs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
-   decode_3dstate_binding_table_pointers(pfile, "VS", data[1] & ~0x1fu,
+   decode_3dstate_binding_table_pointers(poutput, "VS", data[1] & ~0x1fu,
                                          m_gpu_state.ctx().m_latch_state.m_VS.m_binding_table_count);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers_ds(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers_ds(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
-   decode_3dstate_binding_table_pointers(pfile, "DS", data[1] & ~0x1fu,
+   decode_3dstate_binding_table_pointers(poutput, "DS", data[1] & ~0x1fu,
                                          m_gpu_state.ctx().m_latch_state.m_DS.m_binding_table_count);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers_hs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers_hs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
-   decode_3dstate_binding_table_pointers(pfile, "HS", data[1] & ~0x1fu,
+   decode_3dstate_binding_table_pointers(poutput, "HS", data[1] & ~0x1fu,
                                          m_gpu_state.ctx().m_latch_state.m_HS.m_binding_table_count);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers_ps(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers_ps(BatchbufferLoggerOutput &poutput,
                                                 const GPUCommand &data)
 {
-   decode_3dstate_binding_table_pointers(pfile, "PS", data[1] & ~0x1fu,
+   decode_3dstate_binding_table_pointers(poutput, "PS", data[1] & ~0x1fu,
                                          m_gpu_state.ctx().m_latch_state.m_PS.m_binding_table_count);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers_gs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers_gs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
-   decode_3dstate_binding_table_pointers(pfile, "GS", data[1] & ~0x1fu,
+   decode_3dstate_binding_table_pointers(poutput, "GS", data[1] & ~0x1fu,
                                          m_gpu_state.ctx().m_latch_state.m_GS.m_binding_table_count);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &pfile,
+decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &poutput,
                                       const std::string &label, uint32_t offset,
                                       int cnt)
 {
@@ -4137,7 +4109,7 @@ decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &pfile,
       return;
    }
 
-   pfile.begin_block_value("Binding Tables", "%s", label.c_str());
+   poutput.begin_block_value("Binding Tables", "%s", label.c_str());
 
    /* i965 driver does "Track-ish" the number of binding table entries in
     * each program stage, the value of X.base.binding_table.size_bytes /4
@@ -4146,9 +4118,9 @@ decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &pfile,
     */
    if (cnt < 0) {
       cnt = 16;
-      pfile.print_value("Count", "%d (Guessing)", cnt);
+      poutput.print_value("Count", "%d (Guessing)", cnt);
    } else {
-      pfile.print_value("Count", "%d", cnt);
+      poutput.print_value("Count", "%d", cnt);
    }
 
    for (int i = 0; i < cnt; ++i) {
@@ -4160,79 +4132,79 @@ decode_3dstate_binding_table_pointers(BatchbufferLoggerOutput &pfile,
          continue;
       }
 
-      pfile.begin_block_value("Binding Table", "#%d", i);
-      pfile.print_value("offset", "%u", v[i]);
+      poutput.begin_block_value("Binding Table", "#%d", i);
+      poutput.print_value("offset", "%u", v[i]);
 
       state_gpu_address = v[i] + m_gpu_state.ctx().m_latch_state.m_surface_state_base_address;
       state_ptr = m_tracker->cpu_mapped<uint32_t>(state_gpu_address, &SQ);
       if (!SQ.m_gem_bo) {
-         pfile.print_value("GPU address", "0x%012" PRIx64 " (BAD)", state_gpu_address);
-         pfile.end_block();
+         poutput.print_value("GPU address", "0x%012" PRIx64 " (BAD)", state_gpu_address);
+         poutput.end_block();
          continue;
       }
 
-      pfile.print_value("GPU address", "0x%012" PRIx64, state_gpu_address);
-      decode_gen_group(pfile, SQ.m_gem_bo, SQ.m_offset_into_gem_bo, state_ptr, surface_state);
+      poutput.print_value("GPU address", "0x%012" PRIx64, state_gpu_address);
+      decode_gen_group(poutput, SQ.m_gem_bo, SQ.m_offset_into_gem_bo, state_ptr, surface_state);
 
-      pfile.end_block();
+      poutput.end_block();
    }
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_vs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_vs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
    int cnt;
    cnt = m_gpu_state.ctx().m_latch_state.m_VS.m_sampler_count;
-   decode_3dstate_sampler_state_pointers_helper(pfile, data[1], cnt);
+   decode_3dstate_sampler_state_pointers_helper(poutput, data[1], cnt);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_gs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_gs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
    int cnt;
    cnt = m_gpu_state.ctx().m_latch_state.m_GS.m_sampler_count;
-   decode_3dstate_sampler_state_pointers_helper(pfile, data[1], cnt);
+   decode_3dstate_sampler_state_pointers_helper(poutput, data[1], cnt);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_hs(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_hs(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
    int cnt;
    cnt = m_gpu_state.ctx().m_latch_state.m_HS.m_sampler_count;
-   decode_3dstate_sampler_state_pointers_helper(pfile, data[1], cnt);
+   decode_3dstate_sampler_state_pointers_helper(poutput, data[1], cnt);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_ds(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_ds(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
    int cnt;
    cnt = m_gpu_state.ctx().m_latch_state.m_DS.m_sampler_count;
-   decode_3dstate_sampler_state_pointers_helper(pfile, data[1], cnt);
+   decode_3dstate_sampler_state_pointers_helper(poutput, data[1], cnt);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_ps(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_ps(BatchbufferLoggerOutput &poutput,
                                          const GPUCommand &data)
 {
    int cnt;
    cnt = m_gpu_state.ctx().m_latch_state.m_PS.m_sampler_count;
-   decode_3dstate_sampler_state_pointers_helper(pfile, data[1], cnt);
+   decode_3dstate_sampler_state_pointers_helper(poutput, data[1], cnt);
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_gen6(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_gen6(BatchbufferLoggerOutput &poutput,
                                            const GPUCommand &data)
 {
    int sample_counts[3] = {
@@ -4244,41 +4216,41 @@ decode_3dstate_sampler_state_pointers_gen6(BatchbufferLoggerOutput &pfile,
    for (unsigned int stage = 0; stage < 3; ++stage) {
       int cnt;
       cnt = sample_counts[stage];
-      decode_3dstate_sampler_state_pointers_helper(pfile, data[stage + 1], cnt);
+      decode_3dstate_sampler_state_pointers_helper(poutput, data[stage + 1], cnt);
    }
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_sampler_state_pointers_helper(BatchbufferLoggerOutput &pfile,
+decode_3dstate_sampler_state_pointers_helper(BatchbufferLoggerOutput &poutput,
                                              uint32_t offset, int cnt)
 {
    struct gen_group *g;
    uint64_t gpu_address;
 
    g = gen_spec_find_struct(m_spec, "SAMPLER_STATE");
-   pfile.begin_block("SAMPLER_STATEs");
+   poutput.begin_block("SAMPLER_STATEs");
 
    if (cnt < 0) {
       cnt = 4;
-      pfile.print_value("Count", "%d (Guessing)", cnt);
+      poutput.print_value("Count", "%d (Guessing)", cnt);
    } else {
-      pfile.print_value("Count", "%d", cnt);
+      poutput.print_value("Count", "%d", cnt);
    }
 
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + offset;
    for (int i = 0; i < cnt; ++i) {
-      pfile.begin_block_value("SamplerState", "#%d", i);
-      decode_pointer_helper(pfile, g, gpu_address);
-      pfile.end_block();
+      poutput.begin_block_value("SamplerState", "#%d", i);
+      decode_pointer_helper(poutput, g, gpu_address);
+      poutput.end_block();
    }
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_viewport_state_pointers_cc(BatchbufferLoggerOutput &pfile,
+decode_3dstate_viewport_state_pointers_cc(BatchbufferLoggerOutput &poutput,
                                           const GPUCommand &data)
 {
    uint64_t gpu_address;
@@ -4287,29 +4259,29 @@ decode_3dstate_viewport_state_pointers_cc(BatchbufferLoggerOutput &pfile,
    g = gen_spec_find_struct(m_spec, "CC_VIEWPORT");
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + (data[1] & ~0x1fu);
 
-   pfile.begin_block("CC_VIEWPORTs");
+   poutput.begin_block("CC_VIEWPORTs");
 
    uint32_t cnt;
    if (m_gpu_state.ctx().m_latch_state.m_VIEWPORT_count < 0) {
       cnt = 4;
-      pfile.print_value("Count", "%d (Guessing)", cnt);
+      poutput.print_value("Count", "%d (Guessing)", cnt);
    } else {
       cnt = m_gpu_state.ctx().m_latch_state.m_VIEWPORT_count;
-      pfile.print_value("Count", "%d", cnt);
+      poutput.print_value("Count", "%d", cnt);
    }
 
    for (uint32_t i = 0; i < cnt; ++i) {
-      pfile.begin_block_value("CC-Viewport", "#%d", i);
-      decode_pointer_helper(pfile, g, gpu_address + i * 8);
-      pfile.end_block();
+      poutput.begin_block_value("CC-Viewport", "#%d", i);
+      decode_pointer_helper(poutput, g, gpu_address + i * 8);
+      poutput.end_block();
    }
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_viewport_state_pointers_sf_clip(BatchbufferLoggerOutput &pfile,
+decode_3dstate_viewport_state_pointers_sf_clip(BatchbufferLoggerOutput &poutput,
                                                const GPUCommand &data)
 {
    uint64_t gpu_address;
@@ -4318,84 +4290,84 @@ decode_3dstate_viewport_state_pointers_sf_clip(BatchbufferLoggerOutput &pfile,
    g = gen_spec_find_struct(m_spec, "SF_CLIP_VIEWPORT");
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + (data[1] & ~0x3fu);
 
-   pfile.begin_block("SF_CLIP_VIEWPORTs");
+   poutput.begin_block("SF_CLIP_VIEWPORTs");
 
    uint32_t cnt;
    if (m_gpu_state.ctx().m_latch_state.m_VIEWPORT_count < 0) {
       cnt = 4;
-      pfile.print_value("Count", "%d (Guessing)", cnt);
+      poutput.print_value("Count", "%d (Guessing)", cnt);
    } else {
       cnt = m_gpu_state.ctx().m_latch_state.m_VIEWPORT_count;
-      pfile.print_value("Count", "%d", cnt);
+      poutput.print_value("Count", "%d", cnt);
    }
 
    for (uint32_t i = 0; i < cnt; ++i) {
-      pfile.begin_block_value("Viewport", "#%d", i);
-      decode_pointer_helper(pfile, g, gpu_address + i * 64);
-      pfile.end_block();
+      poutput.begin_block_value("Viewport", "#%d", i);
+      decode_pointer_helper(poutput, g, gpu_address + i * 64);
+      poutput.end_block();
    }
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_blend_state_pointers(BatchbufferLoggerOutput &pfile,
+decode_3dstate_blend_state_pointers(BatchbufferLoggerOutput &poutput,
                                     const GPUCommand &data)
 {
    uint64_t gpu_address;
 
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + (data[1] & ~0x3fu);
-   pfile.begin_block("BLEND_STATE");
-   decode_pointer_helper(pfile, "BLEND_STATE", gpu_address);
-   pfile.end_block();
+   poutput.begin_block("BLEND_STATE");
+   decode_pointer_helper(poutput, "BLEND_STATE", gpu_address);
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_cc_state_pointers(BatchbufferLoggerOutput &pfile,
+decode_3dstate_cc_state_pointers(BatchbufferLoggerOutput &poutput,
                                  const GPUCommand &data)
 {
    uint64_t gpu_address;
 
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + (data[1] & ~0x3fu);
-   pfile.begin_block("COLOR_CALC_STATE");
-   decode_pointer_helper(pfile, "COLOR_CALC_STATE", gpu_address);
-   pfile.end_block();
+   poutput.begin_block("COLOR_CALC_STATE");
+   decode_pointer_helper(poutput, "COLOR_CALC_STATE", gpu_address);
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_3dstate_scissor_state_pointers(BatchbufferLoggerOutput &pfile,
+decode_3dstate_scissor_state_pointers(BatchbufferLoggerOutput &poutput,
                                       const GPUCommand &data)
 {
    uint64_t gpu_address;
 
    gpu_address = m_gpu_state.ctx().m_latch_state.m_dynamic_state_base_address + (data[1] & ~0x1fu);
-   pfile.begin_block("SCISSOR_RECT");
-   decode_pointer_helper(pfile, "SCISSOR_RECT", gpu_address);
-   pfile.end_block();
+   poutput.begin_block("SCISSOR_RECT");
+   decode_pointer_helper(poutput, "SCISSOR_RECT", gpu_address);
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_pointer_helper(BatchbufferLoggerOutput &pfile,
+decode_pointer_helper(BatchbufferLoggerOutput &poutput,
                       const char *instruction_name, uint64_t gpu_address)
 {
    struct gen_group *g;
 
    g = gen_spec_find_struct(m_spec, instruction_name);
    if (g) {
-      pfile.print_value("Type", instruction_name);
-      decode_pointer_helper(pfile, g, gpu_address);
+      poutput.print_value("Type", instruction_name);
+      decode_pointer_helper(poutput, g, gpu_address);
    } else {
-      pfile.print_value("Unknown Type", "%s", instruction_name);
+      poutput.print_value("Unknown Type", "%s", instruction_name);
    }
 }
 
 void
 BatchbufferDecoder::
-decode_pointer_helper(BatchbufferLoggerOutput &pfile,
+decode_pointer_helper(BatchbufferLoggerOutput &poutput,
                       struct gen_group *g, uint64_t gpu_address)
 {
    const uint32_t *p;
@@ -4407,29 +4379,29 @@ decode_pointer_helper(BatchbufferLoggerOutput &pfile,
       len = gen_group_get_length(g, p);
 
       if (len < 0) {
-         pfile.print_value("BAD length", "%d", len);
+         poutput.print_value("BAD length", "%d", len);
          return;
       }
 
       if (Q.m_offset_into_gem_bo + len > Q.m_gem_bo->size()) {
-         pfile.begin_block("Length to large");
-         pfile.print_value("length", "%d", len);
-         pfile.print_value("GEM BO offset", "%u", Q.m_offset_into_gem_bo);
-         pfile.print_value("GEM BO size", "%u", Q.m_gem_bo->size());
-         pfile.end_block();
+         poutput.begin_block("Length to large");
+         poutput.print_value("length", "%d", len);
+         poutput.print_value("GEM BO offset", "%u", Q.m_offset_into_gem_bo);
+         poutput.print_value("GEM BO size", "%u", Q.m_gem_bo->size());
+         poutput.end_block();
          return;
       }
    } else {
-      pfile.print_value("Bad GPU Address", "0x%012" PRIx64, gpu_address);
+      poutput.print_value("Bad GPU Address", "0x%012" PRIx64, gpu_address);
       return;
    }
 
-   decode_gen_group(pfile, Q.m_gem_bo, Q.m_offset_into_gem_bo, p, g);
+   decode_gen_group(poutput, Q.m_gem_bo, Q.m_offset_into_gem_bo, p, g);
 }
 
 void
 BatchbufferDecoder::
-decode_gen_group(BatchbufferLoggerOutput &pfile,
+decode_gen_group(BatchbufferLoggerOutput &poutput,
                  const GEMBufferObject *q, uint64_t dword_offset,
                  const uint32_t *p, struct gen_group *group)
 {
@@ -4442,12 +4414,12 @@ decode_gen_group(BatchbufferLoggerOutput &pfile,
          if (iter.struct_desc) {
             uint64_t struct_offset;
             struct_offset = dword_offset + iter.dword;
-            pfile.begin_block_value(iter.name, "%s", iter.value);
-            decode_gen_group(pfile, q, struct_offset,
+            poutput.begin_block_value(iter.name, "%s", iter.value);
+            decode_gen_group(poutput, q, struct_offset,
                              p + iter.dword, iter.struct_desc);
-            pfile.end_block();
+            poutput.end_block();
          } else {
-            pfile.print_value(iter.name, "%s", iter.value);
+            poutput.print_value(iter.name, "%s", iter.value);
          }
       }
    }
@@ -4455,49 +4427,49 @@ decode_gen_group(BatchbufferLoggerOutput &pfile,
 
 void
 BatchbufferDecoder::
-decode_gpu_command(BatchbufferLoggerOutput &pfile, const GPUCommand &q)
+decode_gpu_command(BatchbufferLoggerOutput &poutput, const GPUCommand &q)
 {
-   pfile.begin_block(gen_group_get_name(q.inst()));
-   decode_gen_group(pfile, q.gem_bo(), q.dword_offset(), q.contents_ptr(), q.inst());
-   DetailedDecoder::decode(this, pfile, q);
-   pfile.end_block();
+   poutput.begin_block(gen_group_get_name(q.inst()));
+   decode_gen_group(poutput, q.gem_bo(), q.dword_offset(), q.contents_ptr(), q.inst());
+   DetailedDecoder::decode(this, poutput, q);
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-decode_gpu_execute_command(BatchbufferLoggerOutput &pfile, const GPUCommand &q)
+decode_gpu_execute_command(BatchbufferLoggerOutput &poutput, const GPUCommand &q)
 {
-   pfile.begin_block("Execute GPU command");
-   pfile.print_value("Command", "%s", gen_group_get_name(q.inst()));
+   poutput.begin_block("Execute GPU command");
+   poutput.print_value("Command", "%s", gen_group_get_name(q.inst()));
 
-   decode_gpu_command(pfile, q);
-   pfile.begin_block("GPU State");
-   m_gpu_state.decode_contents(this, q.gpu_pipeline_type(), pfile);
-   pfile.end_block();
+   decode_gpu_command(poutput, q);
+   poutput.begin_block("GPU State");
+   m_gpu_state.decode_contents(this, q.gpu_pipeline_type(), poutput);
+   poutput.end_block();
 
-   pfile.end_block();
+   poutput.end_block();
 }
 
 void
 BatchbufferDecoder::
-process_gpu_command(BatchbufferLoggerOutput &pfile,
+process_gpu_command(BatchbufferLoggerOutput &poutput,
                     const GPUCommand &q)
 {
    enum GPUCommand::gpu_command_type_t tp;
 
-   m_gpu_state.update_state(this, pfile, q);
+   m_gpu_state.update_state(this, poutput, q);
    tp = q.gpu_command_type();
    switch (tp) {
    case GPUCommand::gpu_command_show_value_with_gpu_state:
-      if (pfile) {
-         decode_gpu_execute_command(pfile, q);
+      if (poutput) {
+         decode_gpu_execute_command(poutput, q);
       }
       break;
 
    case GPUCommand::gpu_command_show_value_without_gpu_state:
-      if (pfile) {
-         decode_gen_group(pfile, q.gem_bo(), q.dword_offset(), q.contents_ptr(), q.inst());
-         DetailedDecoder::decode(this, pfile, q);
+      if (poutput) {
+         decode_gen_group(poutput, q.gem_bo(), q.dword_offset(), q.contents_ptr(), q.inst());
+         DetailedDecoder::decode(this, poutput, q);
       }
       break;
 
@@ -5645,6 +5617,7 @@ begin_file_session_fcn(struct i965_batchbuffer_logger_app *pthis,
    params.client_data = file;
    params.write = &BatchbufferLoggerSession::write_file;
    params.close = &BatchbufferLoggerSession::close_file;
+   params.pre_execbuffer2_ioctl = &BatchbufferLoggerSession::flush_file;
    return begin_session_fcn(pthis, &params);
 }
 
@@ -5921,7 +5894,6 @@ post_process_ioctl(int ioctl_return_code, int fd, unsigned long request,
 
    case DRM_IOCTL_I915_GEM_EXECBUFFER2:
    case DRM_IOCTL_I915_GEM_EXECBUFFER2_WR: {
-      m_output.pre_execbuffer2_ioctl(m_execbuffer_count);
       if (!m_process_execbuffers_before_ioctl) {
          struct drm_i915_gem_execbuffer2 *execbuffer2 =
             (struct drm_i915_gem_execbuffer2*) argp;
