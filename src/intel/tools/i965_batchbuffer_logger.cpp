@@ -81,14 +81,6 @@
  *  - A BatchbufferLog object is essentially a log of what
  *    API calls are made when in a batchbuffer
  *
- *  - A BatchbufferLog object is removed when any of the
- *    following occur:
- *      * The driver calls aborted_batchbuffer(); upon removal,
- *        the log is emitted.
- *      * at drmIoctl, the GEM BO is used as the command buffer in
- *        an execbuffer ioctl. Upon this ioctl, the associated
- *        BatchbufferLog is emitted.
- *
  *  - A BatchbufferLog object is added to a GEMBufferTracker
  *    whenever a GEM BO handle not seen before is emitted by
  *    the function pointer provided by the driver that gives the
@@ -1870,7 +1862,7 @@ public:
     * them.
     */
    void
-   emit_unemitted_log(BatchbufferLoggerOutput &dst);
+   emit_unemitted_logs(BatchbufferLoggerOutput &dst);
 
    bool
    fd_has_exec_capture(void) const
@@ -2018,7 +2010,8 @@ private:
 
    static
    void
-   aborted_batchbuffer_fcn(struct i965_batchbuffer_logger*, int fd, uint32_t gem_bo);
+   clear_batchbuffer_log_fcn(struct i965_batchbuffer_logger*,
+                             int fd, uint32_t gem_bo);
 
    static
    void
@@ -2155,7 +2148,6 @@ private:
     * BatchbufferLog associated to it.
     */
    BatchbufferLog m_dummy;
-   int m_number_aborted_batchbuffers;
 
    GPUCommandCounter m_gpu_command_counter;
 
@@ -2504,7 +2496,7 @@ emit_logs(const std::map<int, GEMBufferTracker*> &trackers,
    }
 
    for (const auto &v : trackers) {
-      v.second->emit_unemitted_log(*this);
+      v.second->emit_unemitted_logs(*this);
    }
 
    if (!dummy.empty()) {
@@ -3848,8 +3840,6 @@ BatchbufferDecoder::
 emit_log(BatchbufferLoggerOutput &poutput, int count)
 {
    assert(m_batchbuffer_log);
-
-   poutput.pre_execbuffer2_ioctl(count);
    m_gpu_command_counter->add_batch();
 
    if (poutput) {
@@ -4954,7 +4944,7 @@ update_gem_bo_gpu_addresses(const struct drm_i915_gem_execbuffer2 *app,
 
 void
 GEMBufferTracker::
-emit_unemitted_log(BatchbufferLoggerOutput &dst)
+emit_unemitted_logs(BatchbufferLoggerOutput &dst)
 {
    bool has_stuff_to_emit(false);
 
@@ -5197,7 +5187,6 @@ BatchbufferLogger(void):
    m_gen_disasm(nullptr),
    m_execbuffer_count(0),
    m_dummy(),
-   m_number_aborted_batchbuffers(0),
    m_output()
 {
    static unsigned int creation_count = 0;
@@ -5205,7 +5194,7 @@ BatchbufferLogger(void):
    m_creation_ID = creation_count++;
 
    /* driver interface */
-   aborted_batchbuffer = aborted_batchbuffer_fcn;
+   clear_batchbuffer_log = clear_batchbuffer_log_fcn;
    migrate_batchbuffer = migrate_batchbuffer_fcn;
    add_message = add_message_fcn;
    release_driver = release_driver_fcn;
@@ -5330,8 +5319,8 @@ emit_total_stats(void)
 
 void
 BatchbufferLogger::
-aborted_batchbuffer_fcn(struct i965_batchbuffer_logger *pthis,
-                        int fd, uint32_t gem_bo)
+clear_batchbuffer_log_fcn(struct i965_batchbuffer_logger *pthis,
+                          int fd, uint32_t gem_bo)
 {
    BatchbufferLogger *R;
    R = static_cast<BatchbufferLogger*>(pthis);
@@ -5341,15 +5330,6 @@ aborted_batchbuffer_fcn(struct i965_batchbuffer_logger *pthis,
    BatchbufferLog *bb;
    bb = R->fetch_batchbuffer_log(fd, gem_bo);
    if (bb) {
-      if(R->m_output && !bb->empty()) {
-         ++R->m_number_aborted_batchbuffers;
-         R->m_output.begin_block_value("Aborted batchbuffer", "#%d",
-                                     R->m_number_aborted_batchbuffers);
-         R->m_output.print_value("fd", "%d", bb->src()->fd);
-         R->m_output.print_value("gem_bo", "%d", (int)bb->src()->gem_bo);
-         bb->emit_log(R->m_output);
-         R->m_output.end_block();
-      }
       R->gem_buffer_tracker(bb->src()->fd)->remove_batchbuffer_log(bb);
    }
 
@@ -5787,12 +5767,8 @@ pre_process_ioctl(int fd, unsigned long request, void *argp)
                                     &m_shader_filelist, execbuffer2);
 
          assert(decoder.batchbuffer_log());
+         m_output.pre_execbuffer2_ioctl(m_execbuffer_count);
          decoder.emit_log(m_output, m_execbuffer_count++);
-
-         /* BLEH. We are (potentially incorrectly) assuming any batchbuffer is
-          * used only once, including sub-batchbuffers.
-          */
-         tracker->remove_batchbuffer_log(decoder.batchbuffer_log());
       }
    } break;
 
@@ -5907,11 +5883,8 @@ post_process_ioctl(int ioctl_return_code, int fd, unsigned long request,
                                     &m_shader_filelist, execbuffer2);
 
          assert(decoder.batchbuffer_log());
+         m_output.pre_execbuffer2_ioctl(m_execbuffer_count);
          decoder.emit_log(m_output, m_execbuffer_count++);
-         /* BLEH. We are (potentially incorrectly) assuming any batchbuffer is
-          * used only once, including sub-batchbuffers.
-          */
-         tracker->remove_batchbuffer_log(decoder.batchbuffer_log());
       }
    } break;
 
