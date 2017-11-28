@@ -692,6 +692,7 @@ brw_new_batch(struct brw_context *brw)
 
    /* Create a new batchbuffer and reset the associated state: */
    intel_batchbuffer_reset_and_clear_render_cache(brw);
+   brw->astc5x5_wa.mode = BRW_ASTC5x5_WA_MODE_NONE;
 
    /* If the kernel supports hardware contexts, then most hardware state is
     * preserved between batches; we only need to re-emit state that is required

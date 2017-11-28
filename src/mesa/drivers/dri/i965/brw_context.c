@@ -1058,6 +1058,12 @@ brwCreateContext(gl_api api,
    if (ctx->Extensions.INTEL_performance_query)
       brw_init_performance_queries(brw);
 
+   brw->astc5x5_wa.required = (devinfo->gen == 9);
+   brw->astc5x5_wa.mode = BRW_ASTC5x5_WA_MODE_NONE;
+   brw->astc5x5_wa.texture_astc5x5_present = false;
+   brw->astc5x5_wa.texture_with_auxilary_present = false;
+   brw->astc5x5_wa.blorp_sampling_from_astc5x5 = false;
+
    vbo_use_buffer_objects(ctx);
    vbo_always_unmap_buffers(ctx);
 
