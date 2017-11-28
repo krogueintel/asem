@@ -376,6 +376,8 @@ intel_disable_rb_aux_buffer(struct brw_context *brw,
  *
  * Resolve the depth buffer's HiZ buffer, resolve the depth buffer of each
  * enabled depth texture, and flush the render cache for any dirty textures.
+ * In addition, if the ASTC5x5 workaround is needed and if ASTC5x5 textures
+ * are present, resolve textures so that auxilary buffers are not needed.
  */
 void
 brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering)
@@ -413,9 +415,13 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering)
          num_layers = INTEL_REMAINING_LAYERS;
       }
 
-      const bool disable_aux = rendering &&
+      const bool astc_disables_aux = (brw->astc5x5_wa.required &&
+         brw->astc5x5_wa.texture_astc5x5_present &&
+         tex_obj->mt->aux_usage != ISL_AUX_USAGE_NONE);
+
+      const bool disable_aux = (rendering &&
          intel_disable_rb_aux_buffer(brw, tex_obj->mt, min_level, num_levels,
-                                     "for sampling");
+                                     "for sampling")) || astc_disables_aux;
 
       intel_miptree_prepare_texture(brw, tex_obj->mt, view_format,
                                     min_level, num_levels,
@@ -683,6 +689,12 @@ brw_prepare_drawing(struct gl_context *ctx,
     */
    brw_predraw_resolve_inputs(brw, true);
    brw_predraw_resolve_framebuffer(brw);
+
+   /* if necessary, perform astc5x5 workarounds to make sure sampling
+    * from astc5x5 and textures with an auxilary surface have a command
+    * streamer stall and texture invalidate between them.
+    */
+   gen9_astc5x5_perform_wa(brw);
 
    /* Bind all inputs, derive varying and size information:
     */
