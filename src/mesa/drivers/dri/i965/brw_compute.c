@@ -179,6 +179,12 @@ brw_dispatch_compute_common(struct gl_context *ctx)
 
    brw_predraw_resolve_inputs(brw, false, NULL);
 
+   /* if necessary, perform astc5x5 workarounds to make sure sampling
+    * from astc5x5 and textures with an auxilary surface have a command
+    * streamer stall and texture invalidate between them.
+    */
+   gen9_astc5x5_perform_wa(brw);
+
    /* Flush the batch if the batch/state buffers are nearly full.  We can
     * grow them if needed, but this is not free, so we'd like to avoid it.
     */
