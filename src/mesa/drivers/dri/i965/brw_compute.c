@@ -179,6 +179,12 @@ brw_dispatch_compute_common(struct gl_context *ctx)
 
    brw_predraw_resolve_inputs(brw, false);
 
+   /* if necessary, perform astc5x5 workarounds to make sure any sampler does
+    * not sample sample from a surface using an auxilary buffer within the
+    * same batch of sampling from a surface with an ASTC5x5 format
+    */
+   brw_astc5x5_perform_wa(brw);
+
    /* Flush the batch if the batch/state buffers are nearly full.  We can
     * grow them if needed, but this is not free, so we'd like to avoid it.
     */
