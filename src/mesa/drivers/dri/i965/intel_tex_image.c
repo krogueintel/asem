@@ -824,10 +824,18 @@ intel_get_tex_sub_image(struct gl_context *ctx,
    DBG("%s\n", __func__);
 
    if (_mesa_is_bufferobj(ctx->Pack.BufferObj)) {
-      if (intel_gettexsubimage_blorp(brw, texImage,
-                                     xoffset, yoffset, zoffset,
-                                     width, height, depth, format, type,
-                                     pixels, &ctx->Pack))
+      bool blorp_success;
+
+      brw->astc5x5_wa.blorp_sampling_from_astc5x5 =
+         (texImage->TexFormat == MESA_FORMAT_RGBA_ASTC_5x5 ||
+          texImage->TexFormat == MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5);
+      blorp_success = intel_gettexsubimage_blorp(brw, texImage,
+                                                 xoffset, yoffset, zoffset,
+                                                 width, height, depth,
+                                                 format, type, pixels,
+                                                 &ctx->Pack);
+      brw->astc5x5_wa.blorp_sampling_from_astc5x5 = false;
+      if (blorp_success)
          return;
 
       perf_debug("%s: fallback to CPU mapping in PBO case\n", __func__);
