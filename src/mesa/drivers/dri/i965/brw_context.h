@@ -165,6 +165,12 @@ enum brw_cache_id {
    BRW_MAX_CACHE
 };
 
+enum brw_astc5x5_wa_mode_t {
+   BRW_ASTC5x5_WA_MODE_NONE,
+   BRW_ASTC5x5_WA_MODE_HAS_ASTC5x5,
+   BRW_ASTC5x5_WA_MODE_HAS_AUX,
+};
+
 enum brw_state_id {
    /* brw_cache_ids must come first - see brw_program_cache.c */
    BRW_STATE_URB_FENCE = BRW_MAX_CACHE,
@@ -1230,6 +1236,18 @@ struct brw_context
     */
    bool draw_aux_buffer_disabled[MAX_DRAW_BUFFERS];
 
+   /* Certain GEN's have a hardware bug where the sampler hangs if it attempts
+    * to access auxilary buffers and an ASTC5x5 compressed buffer. The workaround
+    * is to flush the pipeline between such access.
+    */
+   struct {
+      bool required;
+      enum brw_astc5x5_wa_mode_t mode;
+      bool texture_astc5x5_present;
+      bool texture_with_auxilary_present;
+      bool blorp_sampling_from_astc5x5;
+   } astc5x5_wa;
+
    __DRIcontext *driContext;
    struct intel_screen *screen;
 };
@@ -1662,6 +1680,11 @@ void gen7_emit_cs_stall_flush(struct brw_context *brw);
 void brw_query_internal_format(struct gl_context *ctx, GLenum target,
                                GLenum internalFormat, GLenum pname,
                                GLint *params);
+
+/* brw_context::astc5x5_wa */
+void brw_set_astc5x5_wa_mode(struct brw_context *brw,
+                             enum brw_astc5x5_wa_mode_t mode);
+void brw_astc5x5_perform_wa(struct brw_context *brw);
 
 #ifdef __cplusplus
 }

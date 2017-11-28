@@ -1060,6 +1060,12 @@ brwCreateContext(gl_api api,
    if (ctx->Extensions.INTEL_performance_query)
       brw_init_performance_queries(brw);
 
+   brw->astc5x5_wa.required = (devinfo->gen == 9);
+   brw->astc5x5_wa.mode = BRW_ASTC5x5_WA_MODE_NONE;
+   brw->astc5x5_wa.texture_astc5x5_present = false;
+   brw->astc5x5_wa.texture_with_auxilary_present = false;
+   brw->astc5x5_wa.blorp_sampling_from_astc5x5 = false;
+
    vbo_use_buffer_objects(ctx);
    vbo_always_unmap_buffers(ctx);
 
@@ -1132,6 +1138,65 @@ intelDestroyContext(__DRIcontext * driContextPriv)
 
    ralloc_free(brw);
    driContextPriv->driverPrivate = NULL;
+}
+
+void
+brw_set_astc5x5_wa_mode(struct brw_context *brw,
+                        enum brw_astc5x5_wa_mode_t mode)
+{
+   if (!brw->astc5x5_wa.required ||
+       mode == BRW_ASTC5x5_WA_MODE_NONE ||
+       brw->astc5x5_wa.mode == mode) {
+      return;
+   }
+
+   if (brw->astc5x5_wa.mode != BRW_ASTC5x5_WA_MODE_NONE) {
+      const uint32_t flags = PIPE_CONTROL_CS_STALL |
+         PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
+      brw_emit_pipe_control_flush(brw, flags);
+   }
+
+   brw->astc5x5_wa.mode = mode;
+}
+
+static void
+resolve_to_disable_aux_on_samplers(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   const int max_enabled_unit = ctx->Texture._MaxEnabledTexImageUnit;
+
+   for (int unit = 0; unit <= max_enabled_unit; unit++) {
+      struct gl_texture_unit *tex_unit = &ctx->Texture.Unit[unit];
+      struct gl_texture_object *tex_obj = tex_unit->_Current;
+      if (tex_obj) {
+         struct intel_mipmap_tree *mt = intel_texture_object(tex_obj)->mt;
+         if (mt && mt->aux_usage != ISL_AUX_USAGE_NONE) {
+            intel_miptree_prepare_access(brw, mt,
+                                         0, INTEL_REMAINING_LEVELS,
+                                         0, INTEL_REMAINING_LAYERS,
+                                         ISL_AUX_USAGE_NONE, false);
+         }
+      }
+   }
+}
+
+void
+brw_astc5x5_perform_wa(struct brw_context *brw)
+{
+   if (!brw->astc5x5_wa.required) {
+      return;
+   }
+
+   if (brw->astc5x5_wa.texture_astc5x5_present) {
+      if (brw->astc5x5_wa.texture_with_auxilary_present) {
+         /* resolve so that auxilary buffers are not needed
+          * by any sampler */
+         resolve_to_disable_aux_on_samplers(brw);
+      }
+      brw_set_astc5x5_wa_mode(brw, BRW_ASTC5x5_WA_MODE_HAS_ASTC5x5);
+   } else if (brw->astc5x5_wa.texture_with_auxilary_present) {
+      brw_set_astc5x5_wa_mode(brw, BRW_ASTC5x5_WA_MODE_HAS_AUX);
+   }
 }
 
 GLboolean
