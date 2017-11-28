@@ -447,6 +447,11 @@ brw_aux_surface_disabled(const struct brw_context *brw,
 {
    const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
 
+   if (brw->astc5x5_wa.required &&
+       brw->astc5x5_wa.texture_astc5x5_present) {
+      return true;
+   }
+
    for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
       const struct intel_renderbuffer *irb =
          intel_renderbuffer(fb->_ColorDrawBuffers[i]);

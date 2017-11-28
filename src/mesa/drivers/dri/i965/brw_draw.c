@@ -684,6 +684,12 @@ brw_prepare_drawing(struct gl_context *ctx,
    brw_predraw_resolve_inputs(brw, true);
    brw_predraw_resolve_framebuffer(brw);
 
+   /* if necessary, perform astc5x5 workarounds to make sure any sampler does
+    * not sample sample from a surface using an auxilary buffer within the
+    * same batch of sampling from a surface with an ASTC5x5 format
+    */
+   brw_astc5x5_perform_wa(brw);
+
    /* Bind all inputs, derive varying and size information:
     */
    brw_merge_inputs(brw, arrays);
