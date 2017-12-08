@@ -758,6 +758,7 @@ execbuffer(int fd,
    };
 
    unsigned long cmd = DRM_IOCTL_I915_GEM_EXECBUFFER2;
+   bool detected_out_of_bounds_write = false;
 
    if (in_fence != -1) {
       execbuf.rsvd2 = in_fence;
@@ -787,6 +788,20 @@ execbuffer(int fd,
              batch->validation_list[i].offset);
          bo->gtt_offset = batch->validation_list[i].offset;
       }
+
+      if (unlikely(INTEL_DEBUG & DEBUG_OUT_OF_BOUND_CHK)) {
+         if (!brw_bo_padding_is_good(bo)) {
+            detected_out_of_bounds_write = true;
+            fprintf(stderr,
+                    "Detected buffer out-of-bounds write from brw_bo %p "
+                    "(GEM %u, label = \"%s\")\n",
+                    bo, bo->gem_handle, bo->name);
+         }
+      }
+   }
+
+   if (unlikely(detected_out_of_bounds_write)) {
+      abort();
    }
 
    if (ret == 0 && out_fence != NULL)
