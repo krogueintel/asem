@@ -85,6 +85,7 @@ static const struct debug_control debug_control[] = {
    { "nohiz",       DEBUG_NO_HIZ },
    { "color",       DEBUG_COLOR },
    { "reemit",      DEBUG_REEMIT },
+   { "check_scratch", DEBUG_CHECK_SCRATCH_PAGE },
    { NULL,    0 }
 };
 
