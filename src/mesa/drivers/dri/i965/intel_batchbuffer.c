@@ -936,9 +936,34 @@ _intel_batchbuffer_flush_fence(struct brw_context *brw,
 
    ret = submit_batch(brw, in_fence_fd, out_fence_fd);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_SYNC)) {
+   if (unlikely(INTEL_DEBUG & (DEBUG_SYNC | DEBUG_OUT_OF_BOUND_CHK))) {
       fprintf(stderr, "waiting for idle\n");
       brw_bo_wait_rendering(brw->batch.batch.bo);
+   }
+
+   if (unlikely(INTEL_DEBUG & DEBUG_OUT_OF_BOUND_CHK)) {
+      bool detected_out_of_bounds_write = false;
+
+      for (int i = 0; i < brw->batch.exec_count; i++) {
+         struct brw_bo *bo = brw->batch.exec_bos[i];
+
+         /* we already waited for the batch buffer to get finished
+          * by the GPU in the above, so unless another thread is
+          * using the BO in another execbuffer2 call, we can detect
+          * writing to the padding now.
+          */
+         if (!brw_bo_padding_is_good(bo)) {
+            detected_out_of_bounds_write = true;
+            fprintf(stderr,
+                    "Detected buffer out-of-bounds write from brw_bo %p "
+                    "(GEM %u, label = \"%s\")\n",
+                    bo, bo->gem_handle, bo->name);
+         }
+      }
+
+      if (unlikely(detected_out_of_bounds_write)) {
+         abort();
+      }
    }
 
    /* Start a new batch buffer. */
