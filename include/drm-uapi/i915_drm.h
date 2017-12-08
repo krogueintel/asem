@@ -1412,6 +1412,15 @@ struct drm_i915_gem_context_param {
 #define   I915_CONTEXT_MAX_USER_PRIORITY	1023 /* inclusive */
 #define   I915_CONTEXT_DEFAULT_PRIORITY		0
 #define   I915_CONTEXT_MIN_USER_PRIORITY	-1023 /* inclusive */
+/* Notes for set/get of I915_CONTEXT_PARAM_SCRATCH_PAGE_CONTENTS:
+ *  1) for the duration of set/get, the caller must guarantee
+ *     that nothing can read/write the scratch page
+ *  2) on set and get, ioctl will write to drm_i915_gem_context_param::set
+ *     the size of the scratch page
+ *  3) on get, first drm_i915_gem_context_param::size of the scratch
+ *     page contents will be written to.
+ */
+#define I915_CONTEXT_PARAM_SCRATCH_PAGE_CONTENTS 0x7
 	__u64 value;
 };
 
