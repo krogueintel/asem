@@ -220,6 +220,39 @@ bucket_for_size(struct brw_bufmgr *bufmgr, uint64_t size)
           &bufmgr->cache_bucket[index] : NULL;
 }
 
+/* Our goal is not to have noise good enough for cryto,
+ * but instead values that are unique-ish enough that
+ * it is incredibly unlikely that a buffer overwrite
+ * will produce the exact same values.
+ */
+static uint8_t
+next_noise_value(uint8_t prev_noise)
+{
+   uint32_t v = prev_noise;
+   return (v * 103u + 227u) & 0xFF;
+}
+
+static void
+fill_noise_buffer(uint8_t *dst, uint8_t start, uint32_t length)
+{
+   for(uint32_t i = 0; i < length; ++i) {
+      dst[i] = start;
+      start = next_noise_value(start);
+   }
+}
+
+static uint8_t*
+generate_noise_buffer(uint8_t start, uint32_t length)
+{
+   uint8_t *return_value;
+   return_value = malloc(length);
+   if (return_value) {
+      fill_noise_buffer(return_value, start, length);
+   }
+
+   return return_value;
+}
+
 int
 brw_bo_busy(struct brw_bo *bo)
 {
@@ -367,7 +400,18 @@ retry:
       bo->size = bo_size;
       bo->idle = true;
 
-      struct drm_i915_gem_create create = { .size = bo_size };
+      bo->padding_size = 0;
+      if (unlikely(INTEL_DEBUG & DEBUG_OUT_OF_BOUND_CHK)) {
+         /* TODO: we want to make sure that the padding forces
+          * the BO to take another page on the (PP)GTT; 4KB
+          * may or may not be the page size for the GEM. Indeed,
+          * depending on generation, kernel version and GEM size,
+          * the page size can be one of 4KB, 64KB or 2M.
+          */
+         bo->padding_size = 4096;
+      }
+
+      struct drm_i915_gem_create create = { .size = bo_size + bo->padding_size };
 
       /* All new BOs we get from the kernel are zeroed, so we don't need to
        * worry about that here.
@@ -376,6 +420,27 @@ retry:
       if (ret != 0) {
          free(bo);
          goto err;
+      }
+
+      if (unlikely(bo->padding_size > 0)) {
+         uint8_t *noise_values;
+         struct drm_i915_gem_pwrite pwrite;
+
+         noise_values = generate_noise_buffer(create.handle, bo->padding_size);
+         if (!noise_values)
+            goto err_free;
+
+         pwrite.handle = create.handle;
+         pwrite.pad = 0;
+         pwrite.offset = bo_size;
+         pwrite.size = bo->padding_size;
+         pwrite.data_ptr = (__u64) (uintptr_t) noise_values;
+
+         ret = drmIoctl(bufmgr->fd, DRM_IOCTL_I915_GEM_PWRITE, &pwrite);
+         free(noise_values);
+
+         if (ret != 0)
+            goto err_free;
       }
 
       bo->gem_handle = create.handle;
@@ -422,6 +487,53 @@ err_free:
 err:
    mtx_unlock(&bufmgr->lock);
    return NULL;
+}
+
+bool
+brw_bo_padding_is_good(struct brw_bo *bo)
+{
+   if (bo->padding_size > 0) {
+      struct drm_i915_gem_mmap mmap_arg = {
+         .handle = bo->gem_handle,
+         .offset = bo->size,
+         .size = bo->padding_size,
+         .flags = 0,
+      };
+      uint8_t *mapped;
+      int ret;
+      uint8_t start;
+
+      /* We cannot use brw_bo_map() because it maps precisely the range
+       * [0, bo->size) and we wish to map the range of the padding which
+       * is [bo->size, bo->size + bo->pading_size)
+       */
+      ret = drmIoctl(bo->bufmgr->fd, DRM_IOCTL_I915_GEM_MMAP, &mmap_arg);
+      if (ret != 0) {
+         DBG("Unable to map mapping buffer %d (%s) buffer for pad checking.\n",
+             bo->gem_handle, bo->name);
+         return false;
+      }
+
+      mapped = (uint8_t*) (uintptr_t) mmap_arg.addr_ptr;
+      /* bah-humbug, we need to see the latest contents and
+       * if the bo is not cache coherent we likely need to
+       * invalidate the cache lines to get it.
+       */
+      if (!bo->cache_coherent && !bo->bufmgr->has_llc) {
+         gen_invalidate_range(mapped, bo->padding_size);
+      }
+
+      start = bo->gem_handle & 0xFF;
+      for (uint32_t i = 0; i < bo->padding_size; ++i) {
+         if (start != mapped[i]) {
+            drm_munmap(mapped, bo->padding_size);
+            return false;
+         }
+         start = next_noise_value(start);
+      }
+      drm_munmap(mapped, bo->padding_size);
+   }
+   return true;
 }
 
 struct brw_bo *
@@ -598,6 +710,7 @@ bo_free(struct brw_bo *bo)
       DBG("DRM_IOCTL_GEM_CLOSE %d failed (%s): %s\n",
           bo->gem_handle, bo->name, strerror(errno));
    }
+
    free(bo);
 }
 
@@ -1156,6 +1269,7 @@ brw_bo_gem_create_from_prime(struct brw_bufmgr *bufmgr, int prime_fd)
    bo->name = "prime";
    bo->reusable = false;
    bo->external = true;
+   bo->padding_size = 0;
 
    struct drm_i915_gem_get_tiling get_tiling = { .handle = bo->gem_handle };
    if (drmIoctl(bufmgr->fd, DRM_IOCTL_I915_GEM_GET_TILING, &get_tiling))
