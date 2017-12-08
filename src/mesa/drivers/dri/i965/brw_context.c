@@ -844,6 +844,7 @@ brwCreateContext(gl_api api,
 {
    struct gl_context *shareCtx = (struct gl_context *) sharedContextPrivate;
    struct intel_screen *screen = driContextPriv->driScreenPriv->driverPrivate;
+   __DRIscreen *dri_screen = screen->driScrnPriv;
    const struct gen_device_info *devinfo = &screen->devinfo;
    struct dd_function_table functions;
 
@@ -1078,6 +1079,30 @@ brwCreateContext(gl_api api,
 
    brw_disk_cache_init(brw);
 
+   brw->scratch.size = 0;
+   if (brw->hw_ctx && (INTEL_DEBUG & DEBUG_CHECK_SCRATCH_PAGE)) {
+      struct drm_i915_gem_context_param p;
+      int ret;
+
+      p.ctx_id = brw->hw_ctx;
+      p.size = 0;
+      p.param = I915_CONTEXT_PARAM_SCRATCH_PAGE_CONTENTS;
+      p.value = 0;
+      ret = drmIoctl(dri_screen->fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &p);
+      if (ret == 0 && p.size > 0) {
+         brw->scratch.size = p.size;
+         brw->scratch.values = calloc(brw->scratch.size, 1);
+         brw->scratch.tmp = calloc(brw->scratch.size, 1);
+         for (uint64_t i = 0; i < brw->scratch.size; ++i) {
+            brw->scratch.values[i] = rand() & 0xFF;
+         }
+         p.value = (__u64) (uintptr_t) brw->scratch.values;
+         ret = drmIoctl(dri_screen->fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &p);
+         assert(ret == 0);
+         assert(p.size == brw->scratch.size);
+      }
+   }
+
    return true;
 }
 
@@ -1139,6 +1164,11 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    brw->throttle_batch[0] = NULL;
 
    driDestroyOptionCache(&brw->optionCache);
+
+   if (brw->scratch.size > 0) {
+      free(brw->scratch.values);
+      free(brw->scratch.tmp);
+   }
 
    /* free the Mesa context */
    _mesa_free_context_data(&brw->ctx);

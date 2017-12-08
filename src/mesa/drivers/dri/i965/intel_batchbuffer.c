@@ -936,9 +936,22 @@ _intel_batchbuffer_flush_fence(struct brw_context *brw,
 
    ret = submit_batch(brw, in_fence_fd, out_fence_fd);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_SYNC)) {
+   if (unlikely((INTEL_DEBUG & DEBUG_SYNC) || brw->scratch.size > 0)) {
       fprintf(stderr, "waiting for idle\n");
       brw_bo_wait_rendering(brw->batch.batch.bo);
+      if (brw->scratch.size > 0) {
+         struct drm_i915_gem_context_param p;
+         int ret;
+
+         p.ctx_id = brw->hw_ctx;
+         p.size = brw->scratch.size;
+         p.param = I915_CONTEXT_PARAM_SCRATCH_PAGE_CONTENTS;
+         p.value = (__u64) (uintptr_t) brw->scratch.tmp;
+         ret = drmIoctl(brw->screen->driScrnPriv->fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &p);
+         assert(ret == 0);
+         assert(p.size == brw->scratch.size);
+         assert(memcmp(brw->scratch.tmp, brw->scratch.values, brw->scratch.size) == 0);
+      }
    }
 
    /* Start a new batch buffer. */

@@ -1263,6 +1263,16 @@ struct brw_context
     */
    bool draw_aux_buffer_disabled[MAX_DRAW_BUFFERS];
 
+   /* Checking the scratch page to detect out-of-bounds writes
+    * by the GPU; a zero value on the scratch size indicates
+    * that scratch page checking is not enabled.
+    */
+   struct {
+      uint8_t *values;
+      uint8_t *tmp;
+      uint64_t size;
+   } scratch;
+
    __DRIcontext *driContext;
    struct intel_screen *screen;
 };
