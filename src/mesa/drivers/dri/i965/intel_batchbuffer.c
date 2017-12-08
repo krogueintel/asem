@@ -1023,9 +1023,29 @@ _intel_batchbuffer_flush_fence(struct brw_context *brw,
 
    ret = submit_batch(brw, in_fence_fd, out_fence_fd);
 
-   if (unlikely(INTEL_DEBUG & DEBUG_SYNC)) {
+   if (unlikely(INTEL_DEBUG & (DEBUG_SYNC | DEBUG_CHECK_OOB))) {
       fprintf(stderr, "waiting for idle\n");
       brw_bo_wait_rendering(brw->batch.batch.bo);
+   }
+
+   if (unlikely(INTEL_DEBUG & DEBUG_CHECK_OOB)) {
+      bool detected_out_of_bounds_write = false;
+
+      for (int i = 0; i < brw->batch.exec_count; i++) {
+         struct brw_bo *bo = brw->batch.exec_bos[i];
+
+         if (!brw_bo_padding_is_good(bo)) {
+            detected_out_of_bounds_write = true;
+            fprintf(stderr,
+                    "Detected buffer out-of-bounds write from brw_bo %p "
+                    "(GEM %u, label = \"%s\")\n",
+                    bo, bo->gem_handle, bo->name);
+         }
+      }
+
+      if (unlikely(detected_out_of_bounds_write)) {
+         abort();
+      }
    }
 
    /* Start a new batch buffer. */
