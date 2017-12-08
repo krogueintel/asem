@@ -367,7 +367,14 @@ retry:
       bo->size = bo_size;
       bo->idle = true;
 
-      struct drm_i915_gem_create create = { .size = bo_size };
+      bo->padding.size = 0;
+      bo->padding.value = NULL;
+      bo->padding.tmp = NULL;
+      if (unlikely(INTEL_DEBUG & DEBUG_OUT_OF_BOUND_CHK)) {
+         bo->padding.size = getpagesize();
+      }
+
+      struct drm_i915_gem_create create = { .size = bo_size + bo->padding.size };
 
       /* All new BOs we get from the kernel are zeroed, so we don't need to
        * worry about that here.
@@ -376,6 +383,31 @@ retry:
       if (ret != 0) {
          free(bo);
          goto err;
+      }
+
+      if (unlikely(bo->padding.size > 0)) {
+         struct drm_i915_gem_pwrite pwrite;
+
+         bo->padding.value = calloc(bo->padding.size, 1);
+         bo->padding.tmp = calloc(bo->padding.size, 1);
+         if (!bo->padding.value || !bo->padding.tmp) {
+            goto err_free;
+         }
+
+         for (uint32_t i = 0; i < bo->padding.size; ++i) {
+            bo->padding.value[i] = rand() & 0xFF;
+         }
+
+         pwrite.handle = create.handle;
+         pwrite.pad = 0;
+         pwrite.offset = bo_size;
+         pwrite.size = bo->padding.size;
+         pwrite.data_ptr = (__u64) (uintptr_t) bo->padding.value;
+         ret = drmIoctl(bufmgr->fd, DRM_IOCTL_I915_GEM_PWRITE, &pwrite);
+
+         if (ret != 0) {
+            goto err_free;
+         }
       }
 
       bo->gem_handle = create.handle;
@@ -422,6 +454,26 @@ err_free:
 err:
    mtx_unlock(&bufmgr->lock);
    return NULL;
+}
+
+bool
+brw_bo_padding_is_good(struct brw_bo *bo)
+{
+   if (bo->padding.size > 0) {
+      struct drm_i915_gem_pread pread;
+      int ret;
+
+      assert(bo->padding.tmp && bo->padding.value);
+      pread.handle = bo->gem_handle;
+      pread.pad = 0;
+      pread.offset = bo->size;
+      pread.size = bo->padding.size;
+      pread.data_ptr = (__u64) (uintptr_t) bo->padding.tmp;
+      ret = drmIoctl(bo->bufmgr->fd, DRM_IOCTL_I915_GEM_PREAD, &pread);
+      assert(ret == 0);
+      return memcmp(bo->padding.tmp, bo->padding.value, bo->padding.size) == 0;
+   }
+   return true;
 }
 
 struct brw_bo *
@@ -598,6 +650,17 @@ bo_free(struct brw_bo *bo)
       DBG("DRM_IOCTL_GEM_CLOSE %d failed (%s): %s\n",
           bo->gem_handle, bo->name, strerror(errno));
    }
+
+   if (unlikely(INTEL_DEBUG & DEBUG_OUT_OF_BOUND_CHK)) {
+      if (bo->padding.value) {
+         free(bo->padding.value);
+      }
+
+      if (bo->padding.tmp) {
+         free(bo->padding.tmp);
+      }
+   }
+
    free(bo);
 }
 
@@ -1156,6 +1219,9 @@ brw_bo_gem_create_from_prime(struct brw_bufmgr *bufmgr, int prime_fd)
    bo->name = "prime";
    bo->reusable = false;
    bo->external = true;
+   bo->padding.size = 0;
+   bo->padding.value = NULL;
+   bo->padding.tmp = NULL;
 
    struct drm_i915_gem_get_tiling get_tiling = { .handle = bo->gem_handle };
    if (drmIoctl(bufmgr->fd, DRM_IOCTL_I915_GEM_GET_TILING, &get_tiling))

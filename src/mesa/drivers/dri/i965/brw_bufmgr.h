@@ -165,6 +165,16 @@ struct brw_bo {
     * Boolean of whether this buffer is cache coherent
     */
    bool cache_coherent;
+
+   /**
+    * pointer and size to memory holding values for padding for the
+    * purpose of checking out-of-bound writes.
+    */
+   struct {
+      uint32_t size;
+      uint8_t *value;
+      uint8_t *tmp;
+   } padding;
 };
 
 #define BO_ALLOC_BUSY       (1<<0)
@@ -341,6 +351,8 @@ uint32_t brw_bo_export_gem_handle(struct brw_bo *bo);
 
 int brw_reg_read(struct brw_bufmgr *bufmgr, uint32_t offset,
                  uint64_t *result);
+
+bool brw_bo_padding_is_good(struct brw_bo *bo);
 
 /** @{ */
 
