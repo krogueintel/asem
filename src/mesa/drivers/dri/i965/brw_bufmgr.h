@@ -165,6 +165,12 @@ struct brw_bo {
     * Boolean of whether this buffer is cache coherent
     */
    bool cache_coherent;
+
+   /**
+    * Padding size of weak pseudo-random values; used to check for out of
+    * bounds buffer writing.
+    */
+   uint32_t padding_size;
 };
 
 #define BO_ALLOC_BUSY       (1<<0)
@@ -345,6 +351,13 @@ uint32_t brw_bo_export_gem_handle(struct brw_bo *bo);
 
 int brw_reg_read(struct brw_bufmgr *bufmgr, uint32_t offset,
                  uint64_t *result);
+
+/* maps the padding of the brw_bo and returns true if and only if the
+ * padding is the correct noise values. The caller must make sure that
+ * the GPU is not going write to the BO; the best way to do that is to
+ * call brw_bo_wait_rendering() on the batchbuffer.
+ */
+bool brw_bo_padding_is_good(struct brw_bo *bo);
 
 /** @{ */
 
