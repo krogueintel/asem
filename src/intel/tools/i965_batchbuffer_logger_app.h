@@ -52,21 +52,38 @@ enum i965_batchbuffer_logger_message_type_t {
  *                            BEFORE calling the kernel ioctl.
  * - I965_EMIT_TOTAL_STATS gives a filename to which to emit the total
  *                         counts and lengths of GPU commands emitted
- *  - I965_PCI_ID pci_id Give a hexadecimal value of the PCI ID value for
- *                       the GPU the BatchbufferLogger to decode for; this
- *                       value is used if and only if the driver fails to
- *                       tell the BatchbufferLogger a valid PCI ID value to
- *                       use
- *  - I965_DECODE_LEVEL controls the level of batchbuffer decoding
- *     - no_decode do not decode batchbuffer at all
- *     - instruction_decode decode instruction name only
- *     - instruction_details_decode decode instruction contents
- *  - I965_PRINT_RELOC_LEVEL controls at what level to print reloc data
- *     - print_reloc_nothing do not print reloc data
- *     - print_reloc_gem_gpu_updates print reloc data GEM by GEM
- *  - I965_DECODE_SHADERS if set and is 0, shader binaries are written to
- *                        file;  otherwise their disassembly is emitted
- *                        in each session
+ * - I965_PCI_ID pci_id Give a hexadecimal value of the PCI ID value for
+ *                      the GPU the BatchbufferLogger to decode for; this
+ *                      value is used if and only if the driver fails to
+ *                      tell the BatchbufferLogger a valid PCI ID value to
+ *                      use
+ * - I965_DECODE_LEVEL controls the level of batchbuffer decoding
+ *    - no_decode do not decode batchbuffer at all
+ *    - instruction_decode decode instruction name only
+ *    - instruction_details_decode decode instruction contents
+ * - I965_PRINT_RELOC_LEVEL controls at what level to print reloc data
+ *    - print_reloc_nothing do not print reloc data
+ *    - print_reloc_gem_gpu_updates print reloc data GEM by GEM
+ * - I965_DECODE_SHADERS if set and is 0, shader binaries are written to
+ *                       file;  otherwise their disassembly is emitted
+ *                       in each session
+ * - I965_DECODE_BEFORE_IOCTL if set and set to non-zero, the logger will
+ *                            decode the contents of a batchbuffer BEFORE
+ *                            the batchbuffer is sent to the kernel
+ * - I965_EMIT_CAPTURE_EXECOBJ_BATCHBUFFER_IDENTIFIER if set and set to
+ *                                                    non-zero, if the kernel
+ *                                                    supports EXEC_CAPTURE,
+ *                                                    for those execbuffer2
+ *                                                    commands where the batch
+ *                                                    buffer is the first bo,
+ *                                                    the logger will append a
+ *                                                    an additional exec_object2
+ *                                                    which will hold a string
+ *                                                    to identifying the ioctl
+ *                                                    ID of the batchbuffer
+ * - I965_ORGANIZE_BY_IOCTL if not set or is set to non-zero, the logger will
+ *                          organize the logs emitted by ioctl instead of by
+ *                          API calls.
  */
 struct i965_batchbuffer_logger_session_params {
    /**
