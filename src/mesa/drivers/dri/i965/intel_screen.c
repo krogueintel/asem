@@ -69,6 +69,11 @@ DRI_CONF_BEGIN
               DRI_CONF_DESC(en, "Clamp the value of GL_MAX_SAMPLES to the "
                             "given integer. If negative, then do not clamp.")
       DRI_CONF_OPT_END
+
+      DRI_CONF_OPT_BEGIN(cache_max_n_items, int, 2000)
+              DRI_CONF_DESC(en, "Maximum number of items allowed in a program "
+                            "cache before the cache is cleared.")
+      DRI_CONF_OPT_END
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG

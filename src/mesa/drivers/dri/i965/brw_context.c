@@ -795,6 +795,7 @@ brw_process_driconf_options(struct brw_context *brw)
    }
 
    brw->precompile = driQueryOptionb(&brw->optionCache, "shader_precompile");
+   brw->cache_max_n_items = driQueryOptioni(&brw->optionCache, "cache_max_n_items");
 
    if (driQueryOptionb(&brw->optionCache, "precise_trig"))
       brw->screen->compiler->precise_trig = true;

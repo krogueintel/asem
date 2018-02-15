@@ -869,6 +869,7 @@ struct brw_context
    enum brw_pipeline last_pipeline;
 
    struct brw_cache cache;
+   unsigned int cache_max_n_items;
 
    /* Whether a meta-operation is in progress. */
    bool meta_in_progress;
