@@ -759,6 +759,12 @@ brw_prepare_drawing(struct gl_context *ctx,
    brw_predraw_resolve_inputs(brw, true, draw_aux_buffer_disabled);
    brw_predraw_resolve_framebuffer(brw, draw_aux_buffer_disabled);
 
+   /* if necessary, perform astc5x5 workarounds to make sure sampling
+    * from astc5x5 and textures with an auxilary surface have a command
+    * streamer stall and texture invalidate between them.
+    */
+   gen9_astc5x5_perform_wa(brw);
+
    /* Bind all inputs, derive varying and size information:
     */
    brw_merge_inputs(brw, arrays);
