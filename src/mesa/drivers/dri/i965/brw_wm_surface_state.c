@@ -441,7 +441,8 @@ swizzle_to_scs(GLenum swizzle, bool need_green_to_blue)
    return (need_green_to_blue && scs == HSW_SCS_GREEN) ? HSW_SCS_BLUE : scs;
 }
 
-static void brw_update_texture_surface(struct gl_context *ctx,
+static void
+brw_update_texture_surface(struct gl_context *ctx,
                            unsigned unit,
                            uint32_t *surf_offset,
                            bool for_gather,
@@ -581,7 +582,9 @@ static void brw_update_texture_surface(struct gl_context *ctx,
           obj->Target == GL_TEXTURE_CUBE_MAP_ARRAY)
          view.usage |= ISL_SURF_USAGE_CUBE_BIT;
 
-      enum isl_aux_usage aux_usage =
+      bool disable_aux = brw->astc5x5_wa.required &&
+         brw->astc5x5_wa.texture_astc5x5_present;
+      enum isl_aux_usage aux_usage = (disable_aux) ? ISL_AUX_USAGE_NONE :
          intel_miptree_texture_aux_usage(brw, mt, format);
 
       brw_emit_surface_state(brw, mt, mt->target, view, aux_usage,

@@ -392,6 +392,8 @@ mark_textures_used_for_txf(BITSET_WORD *used_for_txf,
  *
  * Resolve the depth buffer's HiZ buffer, resolve the depth buffer of each
  * enabled depth texture, and flush the render cache for any dirty textures.
+ * In addition, if the ASTC5x5 workaround is needed and if ASTC5x5 textures
+ * are present, resolve textures so that auxilary buffers are not needed.
  */
 void
 brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
@@ -445,10 +447,14 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
                                      "for sampling");
       }
 
+      const bool astc_disables_aux = (brw->astc5x5_wa.required &&
+         brw->astc5x5_wa.texture_astc5x5_present &&
+         tex_obj->mt->aux_usage != ISL_AUX_USAGE_NONE);
+
       intel_miptree_prepare_texture(brw, tex_obj->mt, view_format,
                                     min_level, num_levels,
                                     min_layer, num_layers,
-                                    false);
+                                    astc_disables_aux);
 
       /* If any programs are using it with texelFetch, we may need to also do
        * a prepare with an sRGB format to ensure texelFetch works "properly".
@@ -460,7 +466,7 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
             intel_miptree_prepare_texture(brw, tex_obj->mt, txf_format,
                                           min_level, num_levels,
                                           min_layer, num_layers,
-                                          false);
+                                          astc_disables_aux);
          }
       }
 
@@ -495,6 +501,16 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
             }
          }
       }
+   }
+
+   /* if an ASTC5x5 is present when we need the workaround, then
+    * the above has made sure that the textures have been resolved
+    * so that they do not need an auxilary buffer, so we clear
+    * texture_with_auxilary_present
+    */
+   if (brw->astc5x5_wa.required &&
+       brw->astc5x5_wa.texture_astc5x5_present) {
+      brw->astc5x5_wa.texture_with_auxilary_present = false;
    }
 }
 
