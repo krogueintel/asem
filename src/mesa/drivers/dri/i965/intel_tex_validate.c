@@ -179,6 +179,8 @@ brw_validate_textures(struct brw_context *brw)
    struct gl_context *ctx = &brw->ctx;
    const int max_enabled_unit = ctx->Texture._MaxEnabledTexImageUnit;
 
+   brw->astc5x5_wa.texture_astc5x5_present = false;
+   brw->astc5x5_wa.texture_with_auxilary_present = false;
    for (int unit = 0; unit <= max_enabled_unit; unit++) {
       struct gl_texture_object *tex_obj = ctx->Texture.Unit[unit]._Current;
 
@@ -194,5 +196,18 @@ brw_validate_textures(struct brw_context *brw)
 
       intel_update_max_level(tex_obj, sampler);
       intel_finalize_mipmap_tree(brw, tex_obj);
+
+      /* ASTC5x5 workaround needs to know if textures in use have
+       * auxilary in buffers and/or a texture in use is ASTC5x5
+       */
+      struct intel_texture_object *tex = intel_texture_object(tex_obj);
+      struct intel_mipmap_tree *mt = tex->mt;
+      if (mt && mt->aux_usage != ISL_AUX_USAGE_NONE) {
+         brw->astc5x5_wa.texture_with_auxilary_present = true;
+      }
+      if (tex->_Format == MESA_FORMAT_RGBA_ASTC_5x5 ||
+          tex->_Format == MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5) {
+         brw->astc5x5_wa.texture_astc5x5_present = true;
+      }
    }
 }
