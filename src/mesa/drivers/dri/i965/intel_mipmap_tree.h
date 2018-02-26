@@ -642,7 +642,8 @@ intel_miptree_prepare_texture(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
                               enum isl_format view_format,
                               uint32_t start_level, uint32_t num_levels,
-                              uint32_t start_layer, uint32_t num_layers);
+                              uint32_t start_layer, uint32_t num_layers,
+                              bool disable_aux);
 void
 intel_miptree_prepare_image(struct brw_context *brw,
                             struct intel_mipmap_tree *mt);

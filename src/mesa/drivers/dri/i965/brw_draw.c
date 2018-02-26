@@ -447,7 +447,8 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
 
       intel_miptree_prepare_texture(brw, tex_obj->mt, view_format,
                                     min_level, num_levels,
-                                    min_layer, num_layers);
+                                    min_layer, num_layers,
+                                    false);
 
       /* If any programs are using it with texelFetch, we may need to also do
        * a prepare with an sRGB format to ensure texelFetch works "properly".
@@ -458,7 +459,8 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
          if (txf_format != view_format) {
             intel_miptree_prepare_texture(brw, tex_obj->mt, txf_format,
                                           min_level, num_levels,
-                                          min_layer, num_layers);
+                                          min_layer, num_layers,
+                                          false);
          }
       }
 
@@ -530,7 +532,8 @@ brw_predraw_resolve_framebuffer(struct brw_context *brw,
          if (irb) {
             intel_miptree_prepare_texture(brw, irb->mt, irb->mt->surf.format,
                                           irb->mt_level, 1,
-                                          irb->mt_layer, irb->layer_count);
+                                          irb->mt_layer, irb->layer_count,
+                                          false);
          }
       }
    }

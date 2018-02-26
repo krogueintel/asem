@@ -2648,9 +2648,10 @@ intel_miptree_prepare_texture(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
                               enum isl_format view_format,
                               uint32_t start_level, uint32_t num_levels,
-                              uint32_t start_layer, uint32_t num_layers)
+                              uint32_t start_layer, uint32_t num_layers,
+                              bool disable_aux)
 {
-   enum isl_aux_usage aux_usage =
+   enum isl_aux_usage aux_usage = (disable_aux) ? ISL_AUX_USAGE_NONE :
       intel_miptree_texture_aux_usage(brw, mt, view_format);
    bool clear_supported = aux_usage != ISL_AUX_USAGE_NONE;
 
