@@ -4490,7 +4490,7 @@ decode_gen_group(BatchbufferLoggerOutput &poutput,
 
    gen_field_iterator_init(&iter, group, p, 0, false);
 
-   while (gen_field_iterator_next(&iter)) {
+   do {
       if (!gen_field_is_header(iter.field)) {
          if (iter.struct_desc) {
             int iter_dword = iter.bit / 32;
@@ -4505,7 +4505,7 @@ decode_gen_group(BatchbufferLoggerOutput &poutput,
             poutput.print_value(iter.name, "%s", iter.value);
          }
       }
-   }
+   } while (gen_field_iterator_next(&iter));
 }
 
 void
