@@ -357,7 +357,7 @@ grow_buffer(struct brw_context *brw,
       struct i965_logged_batchbuffer from, to;
       int fd = brw_bufmgr_fd(bufmgr);
 
-      from.gem_bo = old_bo->gem_handle;
+      from.gem_bo = bo->gem_handle;
       from.fd = fd;
 
       to.gem_bo = new_bo->gem_handle;

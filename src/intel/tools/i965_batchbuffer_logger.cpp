@@ -95,20 +95,6 @@
 
 namespace {
 
-bool
-is_header_field(struct gen_group *group, struct gen_field *field)
-{
-   uint32_t bits;
-
-   if (field->start >= 32)
-      return false;
-
-   bits = (1U << (field->end - field->start + 1)) - 1;
-   bits <<= field->start;
-
-   return (group->opcode_mask & bits) != 0;
-}
-
 template<typename T>
 T
 read_from_environment(const char *env, T default_value)
@@ -158,13 +144,6 @@ field(uint64_t value, int start, int end)
    get_start_end_pos(&start, &end);
    v = (value & mask(start, end)) >> (start);
    return static_cast<T>(v);
-}
-
-uint64_t
-field_address(uint64_t value, int start, int end)
-{
-   get_start_end_pos(&start, &end);
-   return (value & mask(start, end));
 }
 
 uint32_t
@@ -2927,40 +2906,35 @@ GPUCommandFieldValue(const gen_field_iterator &iter):
       float f;
    } v;
 
-   if ((iter.field->end - iter.field->start) > 32) {
-      v.qw = ((uint64_t) iter.p[iter.dword + 1] << 32) | iter.p[iter.dword];
-   } else {
-      v.qw = iter.p[iter.dword];
-   }
-
+   v.qw = iter.raw_value;
    switch (iter.field->type.kind) {
    case gen_type::GEN_TYPE_INT:
-      m_value.i = field<int64_t>(v.qw, iter.field->start, iter.field->end);
+      m_value.i = static_cast<int64_t>(v.qw);
       break;
    default:
    case gen_type::GEN_TYPE_UINT:
    case gen_type::GEN_TYPE_ENUM:
    case gen_type::GEN_TYPE_UNKNOWN:
-      m_value.u = field<uint64_t>(v.qw, iter.field->start, iter.field->end);
+      m_value.u = static_cast<uint64_t>(v.qw);
       break;
    case gen_type::GEN_TYPE_BOOL:
-      m_value.b = field<bool>(v.qw, iter.field->start, iter.field->end);
+      m_value.b = (v.qw != 0);
       break;
    case gen_type::GEN_TYPE_FLOAT:
       m_value.f = v.f;
       break;
    case gen_type::GEN_TYPE_ADDRESS:
    case gen_type::GEN_TYPE_OFFSET:
-      m_value.u = field_address(v.qw, iter.field->start, iter.field->end);
+      m_value.u = v.qw;
       break;
    case gen_type::GEN_TYPE_UFIXED:
       uint64_t uv;
-      uv = field<uint64_t>(v.qw, iter.field->start, iter.field->end) / float(1 << iter.field->type.f);
+      uv = static_cast<uint64_t>(v.qw);
       m_value.f = float(uv) / float(1 << iter.field->type.f);
       break;
    case gen_type::GEN_TYPE_SFIXED: {
       int64_t uv;
-      uv = field<int64_t>(v.qw, iter.field->start, iter.field->end);
+      uv = static_cast<int64_t>(v.qw);
       m_value.f = float(uv) / float(1 << iter.field->type.f);
       break;
    }
@@ -3081,9 +3055,9 @@ extract_field_value(const char *pname, T *dst,
       return false;
    }
 
-   gen_field_iterator_init(&iter, inst(), contents_ptr(), false);
+   gen_field_iterator_init(&iter, inst(), contents_ptr(), 0, false);
    while (gen_field_iterator_next(&iter)) {
-      if ((read_from_header || !is_header_field(inst(), iter.field)) &&
+      if ((read_from_header || !gen_field_is_header(iter.field)) &&
           0 == strcmp(pname, iter.name)) {
          GPUCommandFieldValue value(iter);
 
@@ -4514,16 +4488,18 @@ decode_gen_group(BatchbufferLoggerOutput &poutput,
 {
    struct gen_field_iterator iter;
 
-   gen_field_iterator_init(&iter, group, p, false);
+   gen_field_iterator_init(&iter, group, p, 0, false);
 
    while (gen_field_iterator_next(&iter)) {
-      if (!is_header_field(group, iter.field)) {
+      if (!gen_field_is_header(iter.field)) {
          if (iter.struct_desc) {
+            int iter_dword = iter.bit / 32;
             uint64_t struct_offset;
-            struct_offset = dword_offset + iter.dword;
+
+            struct_offset = dword_offset + iter_dword;
             poutput.begin_block_value(iter.name, "%s", iter.value);
             decode_gen_group(poutput, q, struct_offset,
-                             p + iter.dword, iter.struct_desc);
+                             p + iter_dword, iter.struct_desc);
             poutput.end_block();
          } else {
             poutput.print_value(iter.name, "%s", iter.value);
@@ -6143,7 +6119,7 @@ set_pci_id(int pci_id)
       }
 
       if (m_gen_disasm == nullptr) {
-         m_gen_disasm = gen_disasm_create(m_pci_id);
+         m_gen_disasm = gen_disasm_create(&m_dev_info);
       }
    }
 
