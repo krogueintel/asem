@@ -862,8 +862,8 @@ public:
    gpu_address_begin(uint32_t ctx) const
    {
       auto iter = m_gpu_address.find(ctx);
-      assert(iter != m_gpu_address.end());
-      return iter->second;
+      return (iter != m_gpu_address.end()) ?
+         iter->second : -1;
    }
 
    /* Gives the GPU address for the very end of the BO */
