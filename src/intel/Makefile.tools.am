@@ -19,9 +19,27 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+intelbindir = $(bindir)
+intellibdir = $(libdir)
+intelincludedir = $(includedir)
+
 noinst_PROGRAMS += \
 	tools/aubinator \
 	tools/aubinator_error_decode
+
+intellib_LTLIBRARIES = \
+	tools/libi965_batchbuffer_logger.la
+
+intelbin_PROGRAMS = tools/i965_batchbuffer_dump_show \
+	tools/i965_batchbuffer_dump_show_xml \
+	tools/i965_batchbuffer_dump_show_json \
+	tools/gen_shader_disassembler
+
+intelbin_SCRIPTS = tools/i965_batchbuffer_logger_sh
+CLEANFILES += $(intelbin_SCRIPTS)
+
+intelinclude_HEADERS = tools/i965_batchbuffer_logger_app.h \
+       tools/i965_batchbuffer_logger_output.h
 
 tools_aubinator_SOURCES = \
 	tools/aubinator.c \
@@ -60,4 +78,57 @@ tools_aubinator_error_decode_LDADD = \
 
 tools_aubinator_error_decode_CFLAGS = \
 	$(AM_CFLAGS) \
+	$(ZLIB_CFLAGS)
+
+tools_libi965_batchbuffer_logger_la_SOURCES = \
+	tools/i965_batchbuffer_logger.cpp \
+	tools/gen_disasm.h \
+	tools/disasm.c \
+	tools/intel_aub.h
+
+tools_libi965_batchbuffer_logger_la_LIBADD = \
+	common/libintel_common.la \
+	compiler/libintel_compiler.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	isl/libisl.la \
+	$(PTHREAD_LIBS) \
+	$(EXPAT_LIBS) \
+	$(ZLIB_LIBS)
+
+tools_libi965_batchbuffer_logger_la_CXXFLAGS = \
+	-std=c++11
+
+tools_libi965_batchbuffer_logger_la_LDFLAGS = \
+	-no-undefined -avoid-version -shared -shrext .so
+
+intel_sed_prefix_vars = sed -e 's,[@]libdir[@],$(intellibdir),g'
+tools/i965_batchbuffer_logger_sh: tools/i965_batchbuffer_logger_sh.in
+	$(intel_sed_prefix_vars) < tools/i965_batchbuffer_logger_sh.in > tools/i965_batchbuffer_logger_sh
+
+tools_i965_batchbuffer_dump_show_SOURCES = \
+	tools/i965_batchbuffer_dump_show.c
+
+tools_i965_batchbuffer_dump_show_xml_SOURCES = \
+	tools/i965_batchbuffer_dump_show_xml.cpp
+
+tools_i965_batchbuffer_dump_show_json_SOURCES = \
+	tools/i965_batchbuffer_dump_show_json.cpp
+
+tools_gen_shader_disassembler_SOURCES = \
+	tools/gen_shader_disassembler.c \
+	tools/disasm.c \
+	tools/gen_disasm.h
+
+tools_gen_shader_disassembler_LDADD = \
+	common/libintel_common.la \
+	compiler/libintel_compiler.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(PTHREAD_LIBS) \
+	$(EXPAT_LIBS) \
+	$(ZLIB_LIBS)
+
+tools_gen_shader_disassembler_CFLAGS = \
+	$(AM_CFLAGS) \
+	$(EXPAT_CFLAGS) \
 	$(ZLIB_CFLAGS)

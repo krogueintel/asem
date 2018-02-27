@@ -23,6 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <dlfcn.h>
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <time.h>
@@ -39,10 +40,14 @@
 #include "brw_defines.h"
 #include "brw_state.h"
 #include "compiler/nir/nir.h"
+#include "intel_batchbuffer.h"
+#include "brw_context.h"
 
 #include "utils.h"
 #include "util/disk_cache.h"
 #include "util/xmlpool.h"
+
+#include "tools/i965_batchbuffer_logger.h"
 
 static const __DRIconfigOptionsExtension brw_config_options = {
    .base = { __DRI_CONFIG_OPTIONS, 1 },
@@ -1569,7 +1574,12 @@ static void
 intelDestroyScreen(__DRIscreen * sPriv)
 {
    struct intel_screen *screen = sPriv->driverPrivate;
+   struct i965_batchbuffer_logger *batchbuffer_logger;
 
+   batchbuffer_logger = screen->batchbuffer_logger;
+   if(batchbuffer_logger != NULL) {
+      batchbuffer_logger->release_driver(batchbuffer_logger);
+   }
    brw_bufmgr_destroy(screen->bufmgr);
    driDestroyOptionInfo(&screen->optionCache);
 
@@ -1767,12 +1777,10 @@ err_out:
 static bool
 intel_init_bufmgr(struct intel_screen *screen)
 {
-   __DRIscreen *dri_screen = screen->driScrnPriv;
-
    if (getenv("INTEL_NO_HW") != NULL)
       screen->no_hw = true;
 
-   screen->bufmgr = brw_bufmgr_init(&screen->devinfo, dri_screen->fd);
+   screen->bufmgr = brw_bufmgr_init(screen);
    if (screen->bufmgr == NULL) {
       fprintf(stderr, "[%s:%u] Error initializing buffer manager.\n",
 	      __func__, __LINE__);
@@ -2380,6 +2388,26 @@ get_pci_device_id(struct intel_screen *screen)
    return intel_get_integer(screen, I915_PARAM_CHIPSET_ID);
 }
 
+static
+uint32_t
+intel_batchbuffer_state(const struct i965_logged_batchbuffer *st)
+{
+   struct intel_batchbuffer *batch
+      = (struct intel_batchbuffer*) st->driver_data;
+
+   assert(batch->batch.bo->gem_handle == st->gem_bo);
+   return USED_BATCH(*batch);
+}
+
+static
+void
+intel_active_batchbuffer(struct i965_logged_batchbuffer *dst)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct brw_context *brw = brw_context(ctx);
+   brw_get_active_batchbuffer(brw, dst);
+}
+
 /**
  * This is the driver specific part of the createNewScreen entry point.
  * Called when using DRI2.
@@ -2390,6 +2418,7 @@ static const
 __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
 {
    struct intel_screen *screen;
+   i965_batchbuffer_logger_acquire_fcn i965_batchbuffer_logger_acquire;
 
    if (dri_screen->image.loader) {
    } else if (dri_screen->dri2.loader->base.version <= 2 ||
@@ -2687,6 +2716,17 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
    }
 
    brw_disk_cache_init(screen);
+
+   i965_batchbuffer_logger_acquire = (i965_batchbuffer_logger_acquire_fcn)
+      dlsym(NULL, "i965_batchbuffer_logger_acquire");
+   if(i965_batchbuffer_logger_acquire) {
+      screen->batchbuffer_logger =
+         i965_batchbuffer_logger_acquire(screen->deviceID,
+                                         intel_batchbuffer_state,
+                                         intel_active_batchbuffer);
+   } else {
+      screen->batchbuffer_logger = NULL;
+   }
 
    return (const __DRIconfig**) intel_screen_make_configs(dri_screen);
 }

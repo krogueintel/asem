@@ -527,7 +527,9 @@ brw_print_program_cache(struct brw_context *brw)
       for (item = cache->items[i]; item; item = item->next) {
          fprintf(stderr, "%s:\n", cache_name(i));
          brw_disassemble(&brw->screen->devinfo, cache->map,
-                         item->offset, item->size, stderr);
+                         item->offset, item->size,
+                         INTEL_DEBUG & DEBUG_PRINT_OFFSETS,
+                         stderr);
       }
    }
 }

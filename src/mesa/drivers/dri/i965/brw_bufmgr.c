@@ -65,6 +65,8 @@
 #include "string.h"
 
 #include "i915_drm.h"
+#include "intel_screen.h"
+#include "tools/i965_batchbuffer_logger.h"
 
 #ifdef HAVE_VALGRIND
 #include <valgrind.h>
@@ -104,6 +106,7 @@ struct bo_cache_bucket {
 };
 
 struct brw_bufmgr {
+   struct intel_screen *screen;
    int fd;
 
    mtx_t lock;
@@ -631,9 +634,14 @@ bo_unreference_final(struct brw_bo *bo, time_t time)
 {
    struct brw_bufmgr *bufmgr = bo->bufmgr;
    struct bo_cache_bucket *bucket;
+   struct i965_batchbuffer_logger *bb_logger =
+      bufmgr->screen->batchbuffer_logger;
 
    DBG("bo_unreference final: %d (%s)\n", bo->gem_handle, bo->name);
 
+   if(bb_logger != NULL) {
+      bb_logger->clear_batchbuffer_log(bb_logger, bufmgr->fd, bo->gem_handle);
+   }
    bucket = bucket_for_size(bufmgr, bo->size);
    /* Put the buffer into our internal cache for reuse if we can. */
    if (bufmgr->bo_reuse && bo->reusable && bucket != NULL &&
@@ -1065,6 +1073,12 @@ brw_bufmgr_destroy(struct brw_bufmgr *bufmgr)
    free(bufmgr);
 }
 
+int
+brw_bufmgr_fd(const struct brw_bufmgr *bufmgr)
+{
+   return bufmgr->fd;
+}
+
 static int
 bo_set_tiling_internal(struct brw_bo *bo, uint32_t tiling_mode,
                        uint32_t stride)
@@ -1392,9 +1406,14 @@ gem_param(int fd, int name)
  * \param fd File descriptor of the opened DRM device.
  */
 struct brw_bufmgr *
-brw_bufmgr_init(struct gen_device_info *devinfo, int fd)
+brw_bufmgr_init(struct intel_screen *screen)
 {
    struct brw_bufmgr *bufmgr;
+   struct gen_device_info *devinfo;
+   int fd;
+
+   devinfo = &screen->devinfo;
+   fd = screen->driScrnPriv->fd;
 
    bufmgr = calloc(1, sizeof(*bufmgr));
    if (bufmgr == NULL)
@@ -1410,6 +1429,7 @@ brw_bufmgr_init(struct gen_device_info *devinfo, int fd)
     * fd so that its namespace does not clash with another.
     */
    bufmgr->fd = fd;
+   bufmgr->screen = screen;
 
    if (mtx_init(&bufmgr->lock, mtx_plain) != 0) {
       free(bufmgr);

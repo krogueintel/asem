@@ -136,7 +136,8 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
    if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
       fprintf(stderr, "gs:\n");
       brw_disassemble(&brw->screen->devinfo, c.func.store,
-                      0, program_size, stderr);
+                      0, program_size, INTEL_DEBUG & DEBUG_PRINT_OFFSETS,
+                      stderr);
       fprintf(stderr, "\n");
     }
 

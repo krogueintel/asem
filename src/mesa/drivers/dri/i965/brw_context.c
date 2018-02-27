@@ -76,6 +76,8 @@
 #include "util/disk_cache.h"
 #include "isl/isl.h"
 
+#include "tools/i965_batchbuffer_logger.h"
+
 /***************************************
  * Mesa's Driver Functions
  ***************************************/
@@ -1065,6 +1067,7 @@ brwCreateContext(gl_api api,
 
    vbo_use_buffer_objects(ctx);
    vbo_always_unmap_buffers(ctx);
+   brw->have_active_batchbuffer = true;
 
    brw->ctx.Cache = brw->screen->disk_cache;
 
@@ -1079,6 +1082,7 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    struct gl_context *ctx = &brw->ctx;
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
+   brw->have_active_batchbuffer = false;
    _mesa_meta_free(&brw->ctx);
 
    if (INTEL_DEBUG & DEBUG_SHADER_TIME) {
@@ -1731,5 +1735,38 @@ intel_update_image_buffers(struct brw_context *brw, __DRIdrawable *drawable)
                                 back_rb,
                                 images.back,
                                 __DRI_IMAGE_BUFFER_BACK);
+   }
+}
+
+void
+brw_batchbuffer_log(struct brw_context *brw, const char *fmt, ...)
+{
+   struct i965_batchbuffer_logger *logger = brw->screen->batchbuffer_logger;
+   if (logger != NULL) {
+      struct i965_logged_batchbuffer dst;
+      va_list args;
+      char buffer[4096];
+
+      brw_get_active_batchbuffer(brw, &dst);
+      va_start(args, fmt);
+      vsnprintf(buffer, sizeof(buffer), fmt, args);
+      buffer[sizeof(buffer) - 1] = 0;
+      va_end(args);
+      logger->add_message(logger, &dst, buffer);
+   }
+}
+
+void
+brw_get_active_batchbuffer(struct brw_context *brw,
+                           struct i965_logged_batchbuffer *dst)
+{
+  if (brw != NULL && brw->have_active_batchbuffer) {
+      dst->driver_data = &brw->batch;
+      dst->gem_bo = brw->batch.batch.bo->gem_handle;
+      dst->fd = brw_bufmgr_fd(brw->bufmgr);
+   } else {
+      dst->driver_data = NULL;
+      dst->gem_bo = 0;
+      dst->fd = -1;
    }
 }

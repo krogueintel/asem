@@ -273,4 +273,8 @@ option(
   type : 'string',
   value : 'avx,avx2',
   description : 'Comma delemited swr architectures. choices : avx,avx2,knl,skx'
+  'build-intel-tools',
+  type : 'boolean',
+  value : false,
+  description : 'if true, then build intel tools.'
 )

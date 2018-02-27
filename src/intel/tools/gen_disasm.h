@@ -34,7 +34,9 @@ struct gen_disasm;
 
 struct gen_disasm *gen_disasm_create(const struct gen_device_info *devinfo);
 void gen_disasm_disassemble(struct gen_disasm *disasm,
-                            void *assembly, int start, FILE *out);
+                            const void *assembly, int start, FILE *out);
+int gen_disasm_assembly_length(struct gen_disasm *disasm,
+                               const void *assembly, int start);
 
 void gen_disasm_destroy(struct gen_disasm *disasm);
 

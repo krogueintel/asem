@@ -88,7 +88,9 @@ brw_compile_clip(const struct brw_compiler *compiler,
    if (unlikely(INTEL_DEBUG & DEBUG_CLIP)) {
       fprintf(stderr, "clip:\n");
       brw_disassemble(compiler->devinfo,
-                      program, 0, *final_assembly_size, stderr);
+                      program, 0, *final_assembly_size,
+                      INTEL_DEBUG & DEBUG_PRINT_OFFSETS,
+                      stderr);
       fprintf(stderr, "\n");
    }
 

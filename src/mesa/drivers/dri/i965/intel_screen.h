@@ -44,6 +44,7 @@
 extern "C" {
 #endif
 
+struct i965_batchbuffer_logger;
 struct intel_screen
 {
    int deviceID;
@@ -118,7 +119,9 @@ struct intel_screen
    bool mesa_format_supports_render[MESA_FORMAT_COUNT];
    enum isl_format mesa_to_isl_render_format[MESA_FORMAT_COUNT];
 
+
    struct disk_cache *disk_cache;
+   struct i965_batchbuffer_logger *batchbuffer_logger;
 };
 
 extern void intelDestroyContext(__DRIcontext * driContextPriv);

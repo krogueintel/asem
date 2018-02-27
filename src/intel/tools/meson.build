@@ -18,6 +18,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+build_intel_tools = get_option('build-intel-tools')
+
 aubinator = executable(
   'aubinator',
   files('aubinator.c', 'disasm.c', 'gen_batch_decoder.c',
@@ -39,3 +41,72 @@ aubinator_error_decode = executable(
   c_args : [c_vis_args, no_override_init_args],
   build_by_default : false,
 )
+
+i965_batchbuffer_logger = shared_library(
+  'i965_batchbuffer_logger',
+  files('i965_batchbuffer_logger.cpp', 'disasm.c', 'gen_disasm.h'),
+  dependencies : [dep_zlib, dep_thread],
+  include_directories : [inc_common, inc_intel],
+  link_with : [libintel_common, libintel_compiler, libmesa_util, libnir, libisl],
+  cpp_args : ['-std=c++11'],
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+)
+
+i965_batchbuffer_dump_show = executable(
+  'i965_batchbuffer_dump_show',
+  files('i965_batchbuffer_dump_show.c'),
+  include_directories : [inc_common, inc_intel],
+  c_args : [],
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+)
+
+i965_batchbuffer_dump_show_xml = executable(
+  'i965_batchbuffer_dump_show_xml',
+  files('i965_batchbuffer_dump_show_xml.cpp'),
+  include_directories : [inc_common, inc_intel],
+  cpp_args : [],
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+)
+
+i965_batchbuffer_dump_show_json = executable(
+  'i965_batchbuffer_dump_show_json',
+  files('i965_batchbuffer_dump_show_json.cpp'),
+  include_directories : [inc_common, inc_intel],
+  cpp_args : [],
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+)
+
+gen_shader_disassembler = executable(
+  'gen_shader_disassembler',
+  files('gen_shader_disassembler.c', 'disasm.c'),
+  dependencies : [dep_thread],
+  include_directories : [inc_common, inc_intel],
+  link_with : [libintel_common, libintel_compiler, libmesa_util],
+  cpp_args : [],
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+)
+
+libdir_value = join_paths(get_option('prefix'), get_option('libdir'))
+sed_replace_string = 's,[@]libdir[@],' + libdir_value + ',g'
+i965_batchbuffer_logger_sh = custom_target(
+  'i965_batchbuffer_logger_sh',
+  input : 'i965_batchbuffer_logger_sh.in',
+  output : 'i965_batchbuffer_logger_sh',
+  command : ['sed', '-e', sed_replace_string, '@INPUT@'],
+  capture : true,
+  build_by_default : build_intel_tools,
+  install : build_intel_tools,
+  install_dir : get_option('bindir'),
+)
+
+if build_intel_tools
+  i965_batchbuffer_logger_headers = install_headers(
+    'i965_batchbuffer_logger_app.h',
+    'i965_batchbuffer_logger_output.h'
+  )
+endif
