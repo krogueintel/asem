@@ -27,6 +27,7 @@
 #include <vector>
 #include <string>
 #include <list>
+#include <iostream>
 #include <sstream>
 #include <fstream>
 #include <iomanip>
@@ -1439,7 +1440,7 @@ private:
 
    int m_count;
    std::map<key_type, std::string> m_files;
-   std::map<sha1_value, std::string> m_disassembly;
+   std::map<sha1_value, std::vector<char> > m_disassembly;
 };
 
 /* A BatchbufferDecoder assists in the decoding the contents
@@ -2693,8 +2694,8 @@ write_name_value(enum i965_batchbuffer_logger_message_type_t tp,
    name_length = std::strlen(name);
    value_length = std::vsnprintf(buffer, sizeof(buffer), fmt, va);
 
-   if (value_length > sizeof(buffer)) {
-      std::vector<char> tmp(value_length);
+   if (value_length >= sizeof(buffer)) {
+      std::vector<char> tmp(value_length + 1, '\0');
       std::vsnprintf(&tmp[0], tmp.size(), fmt, va_value);
       add_element(tp, name, name_length, &tmp[0], value_length);
    } else {
@@ -4771,22 +4772,23 @@ ShaderFileList::
 disassembly(const void *shader, int pciid, struct gen_disasm *gen_disasm)
 {
    sha1_value key;
-   std::map<sha1_value, std::string>::iterator iter;
+   std::map<sha1_value, std::vector<char> >::iterator iter;
    int shader_sz;
 
    shader_sz = gen_disasm_assembly_length(gen_disasm, shader, 0);
    _mesa_sha1_compute(shader, shader_sz, key.data());
    iter = m_disassembly.find(key);
    if (iter != m_disassembly.end()) {
-      return iter->second.c_str();
+      return &iter->second[0];
    }
 
    std::FILE *tmp;
-   std::string data;
+   std::vector<char> data;
    long sz, sz_read;
 
    tmp = std::tmpfile();
    gen_disasm_disassemble(gen_disasm, shader, 0, tmp);
+   std::fflush(tmp);
    sz = std::ftell(tmp);
    std::rewind(tmp);
    data.resize(sz + 1, '\0');
@@ -4795,9 +4797,9 @@ disassembly(const void *shader, int pciid, struct gen_disasm *gen_disasm)
    (void)sz_read;
    std::fclose(tmp);
 
-   std::string &dst(m_disassembly[key]);
+   std::vector<char> &dst(m_disassembly[key]);
    std::swap(dst, data);
-   return dst.c_str();
+   return &dst[0];
 }
 
 //////////////////////////////////
